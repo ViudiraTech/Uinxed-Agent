@@ -1,0 +1,29 @@
+{
+  "name": "ux-agent",
+  "version": "1.0.0",
+  "description": "Uinxed AI TUI Agent - 接入本地 AI 开放平台的终端助手",
+  "main": "dist/ux-agent.mjs",
+  "scripts": {
+    "start": "npm run build && node dist/ux-agent.mjs",
+    "dev": "node --watch src/index.js",
+    "build": "esbuild src/index.js --bundle --platform=node --format=esm --outfile=dist/ux-agent.mjs --external:react --external:ink --external:ink-text-input"
+  },
+  "dependencies": {
+    "ink": "^4.4.1",
+    "ink-text-input": "^5.0.1",
+    "react": "^18.3.1"
+  },
+  "bin": {
+    "ux-agent": "dist/ux-agent.mjs"
+  },
+  "type": "module",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ViudiraTech/Uinxed-Kernel"
+  },
+  "author": "Uinxed Project"
+}
