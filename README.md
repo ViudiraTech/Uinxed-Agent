@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="#特性" title="点击查看特性">
+  <a href="#features" title="点击查看特性">
     <picture>
       <source media="(prefers-reduced-motion: reduce)" srcset="PREVIEW.png">
       <img src="assets/demo.svg" alt="Uinxed Agent 终端演示" width="900">
@@ -21,16 +21,31 @@
 </p>
 
 <p align="center">
-  <a href="#特性"><img src="https://img.shields.io/badge/特性-8 大亮点-8A2BE2?style=flat-square"></a>
-  <a href="#快速开始"><img src="https://img.shields.io/badge/快速开始-30 秒上手-00C853?style=flat-square"></a>
-  <a href="#快捷键"><img src="https://img.shields.io/badge/快捷键-一览-FF6D00?style=flat-square"></a>
+  <a href="#features"><img src="https://img.shields.io/badge/特性-8%20大亮点-8A2BE2?style=flat-square"></a>
+  <a href="#quickstart"><img src="https://img.shields.io/badge/快速开始-30%20秒上手-00C853?style=flat-square"></a>
+  <a href="#shortcuts"><img src="https://img.shields.io/badge/快捷键-一览-FF6D00?style=flat-square"></a>
+  <a href="#agents"><img src="https://img.shields.io/badge/多%20Agent-协作-1E88E5?style=flat-square"></a>
+  <a href="#agents"><img src="https://img.shields.io/badge/多%20Agent-协作-1E88E5?style=flat-square"></a>
+  <a href="#architecture"><img src="https://img.shields.io/badge/架构-轻量-607D8B?style=flat-square"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-2196F3?style=flat-square"></a>
-  <a href="#架构"><img src="https://img.shields.io/badge/架构-轻量-607D8B?style=flat-square"></a>
+  <img src="https://img.shields.io/badge/Language-JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black" alt="JavaScript">
+  <img src="https://img.shields.io/badge/Runtime-Node.js-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js">
 </p>
+
+<details>
+<summary>📑 目录</summary>
+
+| | | |
+|:---|:---|:---|
+| [✨ 特性](#features) | [🚀 快速开始](#quickstart) | [🎮 快捷键](#shortcuts) |
+| [📖 内嵌命令](#commands) | [🧩 多 Agent 体系](#agents) | [⚙️ 工具清单](#tools) |
+| [🏗 架构](#architecture) | [📄 许可证](#license) | |
+
+</details>
 
 ---
 
-## ✨ 特性
+<h2 id="features">✨ 特性</h2>
 
 | | | |
 |:---:|:---:|:---:|
@@ -40,7 +55,7 @@
 
 ---
 
-## 🚀 快速开始
+<h2 id="quickstart">🚀 快速开始</h2>
 
 ```bash
 cd agent
@@ -73,7 +88,7 @@ ux-agent --model deepseek-v4-flash # 指定模型
 
 ---
 
-## 🎮 快捷键
+<h2 id="shortcuts">🎮 快捷键</h2>
 
 | 按键 | 功能 |
 |:---:|:---|
@@ -86,7 +101,7 @@ ux-agent --model deepseek-v4-flash # 指定模型
 | `/` | 命令面板 |
 | `@agent` | 委托子任务（`@explorer xxx`） |
 
-## 📖 内嵌命令
+<h2 id="commands">📖 内嵌命令</h2>
 
 | 命令 | 说明 |
 |:---|:---|
@@ -105,7 +120,7 @@ ux-agent --model deepseek-v4-flash # 指定模型
 
 ---
 
-## 🧩 多 Agent 体系
+<h2 id="agents">🧩 多 Agent 体系</h2>
 
 ### 主 Agent（`Tab` 切换）
 
@@ -125,7 +140,7 @@ ux-agent --model deepseek-v4-flash # 指定模型
 
 ---
 
-## ⚙️ 工具清单
+<h2 id="tools">⚙️ 工具清单</h2>
 
 | 工具 | 说明 |
 |:---|:---|
@@ -140,7 +155,7 @@ ux-agent --model deepseek-v4-flash # 指定模型
 
 ---
 
-## 🏗 架构
+<h2 id="architecture">🏗 架构</h2>
 
 ```
 src/
@@ -161,6 +176,6 @@ src/
 
 ---
 
-## 📄 许可证
+<h2 id="license">📄 许可证</h2>
 
 [Apache License 2.0](LICENSE)
