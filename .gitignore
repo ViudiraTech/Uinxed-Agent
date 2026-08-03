@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+.package-lock.json
+
+# Build output
+dist/
+
+# Test artifacts
+test_write.txt
+*.tmp
+scrtest*.mjs
+o*.mjs
+longtest*.mjs
+
+# Logs
+*.log
+server.log
+
+# Runtime state
+*.cache
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

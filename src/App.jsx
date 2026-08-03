@@ -18,7 +18,8 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import Markdown from "./Markdown.jsx";
-import ThinkingBlock from "./Thinking.jsx";
+import { LineRow } from "./Markdown.jsx";
+import { markdownLines, wrapPlain } from "./mdlines.js";
 import { chatStream, listModels, getProfile, checkApiKey, ApiError } from "./provider.js";
 import { TOOL_DEFS, executeTool } from "./tools.js";
 import { AGENTS, getAgent, primaryAgents, subAgents, filterTools } from "./agents.js";
@@ -79,18 +80,6 @@ function sanitizeText(s) {
     .replace(/\u200b/g, "");
 }
 
-function estHeight(content, width) {
-  const lines = sanitizeText(content).split("\n");
-  let h = 0;
-  let inCode = false;
-  for (const l of lines) {
-    if (l.trim().startsWith("```")) { h += 2; inCode = !inCode; continue; }
-    const wrapped = Math.max(1, Math.ceil(l.length / Math.max(width - 8, 20)));
-    h += wrapped;
-  }
-  return h + 2;
-}
-
 /* 错误边界:单个消息渲染失败不炸整个 TUI */
 class MessageBoundary extends React.Component {
   constructor(props) {
@@ -114,38 +103,6 @@ class MessageBoundary extends React.Component {
     }
     return this.props.children;
   }
-}
-
-function MessageItem({ m, width, expandedThinking, onToggleThinking }) {
-  const color = m.role === "user" ? "green" : m.tool ? "yellow" : "magenta";
-  const prefix = m.role === "user" ? "❯" : m.tool ? "⚙" : "◆";
-  const isToolResult = m.role === "tool_result";
-  const content = sanitizeText(m.content);
-  const reasoning = sanitizeText(m.reasoning);
-  return (
-    <MessageBoundary>
-      <Box flexDirection="column" marginBottom={1} width={Math.max(width - 2, 20)}>
-        <Text>
-          <Text bold color={color}>{prefix}</Text>{" "}
-          <Text dimColor>{fmtTime(m.time)}</Text>
-          {m.agentName && <Text color={color}> [{m.agentName}]</Text>}
-          {m.toolName && <Text color="yellow"> ⚙{m.toolName}</Text>}
-        </Text>
-        {reasoning ? (
-          <ThinkingBlock
-            reasoning={reasoning}
-            expanded={expandedThinking}
-            onToggle={onToggleThinking}
-          />
-        ) : null}
-        {isToolResult ? (
-          <Text color="gray" wrap="wrap">{content}</Text>
-        ) : (
-          <Markdown content={content} width={Math.max(width - 4, 16)} />
-        )}
-      </Box>
-    </MessageBoundary>
-  );
 }
 
 /* 连接向导弹窗 */
@@ -226,12 +183,28 @@ export default function App() {
   const [expandedThinking, setExpandedThinking] = useState(false);
   const [thinkingCache, setThinkingCache] = useState({}); // msgId -> reasoning
   const [streaming, setStreaming] = useState(null); // 当前流式消息
+  /* 子 agent 会话:delegate 时创建,可切换到子聊天区实时查看/继续对话 */
+  const [subSession, setSubSession] = useState(null); // {id, agentId, task, msgs[], streaming, busy, status, result}
+  const [subView, setSubView] = useState(false); // 是否切到子聊天区
+  const [subInput, setSubInput] = useState("");
+  const [subScrollOffset, setSubScrollOffset] = useState(0);
+  const subMsgsRef = useRef([]); // 子会话权威 API 消息序列
   const aborter = useRef(null);
   const toastTimer = useRef(null);
 
-  const WIDTH = stdout.columns || 100;
-  const HEIGHT = stdout.rows || 30;
-  const MSG_HEIGHT = Math.max(HEIGHT - 11, 8);
+  /* 终端动态尺寸:resize 时自动重算,布局吃满终端 */
+  const [termSize, setTermSize] = useState(() => [stdout.columns || 100, stdout.rows || 30]);
+  useEffect(() => {
+    const onResize = () => setTermSize([stdout.columns || 100, stdout.rows || 30]);
+    stdout.on("resize", onResize);
+    return () => stdout.off("resize", onResize);
+  }, [stdout]);
+
+  const WIDTH = termSize[0];
+  const HEIGHT = termSize[1];
+  /* 垂直布局：状态栏(1) + 消息区border(2) + 输入区(3) + 快捷键(1) = 7 */
+  const MSG_HEIGHT = Math.max(HEIGHT - 7, 10);
+  const rowWidth = Math.max(WIDTH - 4, 16);
 
   const provider = getActiveProvider();
   const agent = getAgent(agentId);
@@ -243,7 +216,7 @@ export default function App() {
     } catch {}
   }, []);
 
-  useEffect(() => { setScrollOffset(0); }, [messages.length, busy, streaming]);
+  /* 底部跟随：offset=0 时新行自动顶上来；用户上翻后保持位置（safeOffset clamp） */
 
   const toast = useCallback((msg) => {
     setStatus(msg);
@@ -286,6 +259,93 @@ export default function App() {
       setStatus(`${p.name} 未设置 Key · 提供商 ${p.name}（${p.baseUrl}）`);
     }
   }, [refreshProfile, clearScreen]);
+
+  /* ============ 子 Agent 会话(供 delegate 工具使用) ============ */
+  /* 初始化子会话状态(UI 入口 + 子聊天区数据源) */
+  const initSubSession = useCallback((subAgentName, task) => {
+    const id = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const msgs = [{ role: "system", content: getAgent(subAgentName).prompt }, { role: "user", content: task }];
+    subMsgsRef.current = msgs;
+    setSubSession({ id, agentId: subAgentName, task, msgs: [], streaming: null, busy: true, status: "运行中", result: null });
+    return id;
+  }, []);
+
+  /* 更新子会话:msgs 用 ref 里的权威序列,streaming 单独存 */
+  const updateSub = useCallback((patch) => {
+    setSubSession((prev) => prev ? { ...prev, ...patch } : prev);
+  }, []);
+
+  /* 子 agent 多轮循环:返回 { agent, result } 供主 agent 工具结果回传 */
+  const runSubAgentLoop = useCallback(async (subAgentName, task, maxSteps = 8, onProgress) => {
+    const sub = getAgent(subAgentName);
+    if (!sub || sub.role !== "subagent") return { error: `未知子 agent: ${subAgentName}（可用 explorer/general）` };
+    const subTools = filterTools(TOOL_DEFS, sub).filter((d) => d.function.name !== "delegate");
+    const subMsgs = subMsgsRef.current.length >= 2
+      ? subMsgsRef.current
+      : [{ role: "system", content: sub.prompt }, { role: "user", content: task }];
+    subMsgsRef.current = subMsgs;
+    let subAcc = { content: "", reasoning: "" };
+    let subLastFlush = 0;
+    for (let step = 0; step < maxSteps; step++) {
+      let finalRes = null;
+      subAcc = { content: "", reasoning: "" };
+      updateSub({ status: `运行中 (${step + 1}/${maxSteps})` });
+      try {
+        for await (const chunk of chatStream(subMsgs, { tools: subTools })) {
+          if (chunk.reasoning) subAcc.reasoning += chunk.reasoning;
+          if (chunk.content) {
+            subAcc.content += chunk.content;
+            /* 节流刷新:每 120ms 或有换行才更新,避免逐字闪光 */
+            const now = Date.now();
+            if (now - subLastFlush > 120 || chunk.content.includes("\n")) {
+              updateSub({ streaming: { role: "assistant", content: subAcc.content, reasoning: subAcc.reasoning, time: Date.now() } });
+              subLastFlush = now;
+            }
+            onProgress?.(subAcc);
+          }
+          if (chunk.finishReason || chunk.done) finalRes = chunk;
+        }
+      } catch (e) {
+        updateSub({ busy: false, status: "出错" });
+        return { error: `子 agent ${sub.name} 出错: ${e.message}` };
+      }
+      const toolCalls = finalRes?.toolCalls || [];
+      if (!toolCalls.length) {
+        const out = subAcc.content || "(空回复)";
+        updateSub({ busy: false, status: "完成", result: out, streaming: null });
+        return { agent: sub.name, result: out };
+      }
+      const subAssistantMsg = { role: "assistant", content: subAcc.content, tool_calls: [] };
+      subAssistantMsg.reasoning_content = subAcc.reasoning || "";
+      const subResults = [];
+      for (let ti = 0; ti < toolCalls.length; ti++) {
+        const tc = toolCalls[ti];
+        if (!tc.id) tc.id = `call_${Date.now()}_${ti}`;
+        subAssistantMsg.tool_calls.push(tc);
+        let parsed = {};
+        try { parsed = JSON.parse(tc.function.arguments || "{}"); } catch {}
+        updateSub({ status: `执行 ${tc.function.name}…` });
+        const result = await executeTool(tc.function.name, parsed, cwd);
+        subResults.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result).slice(0, 12000) });
+      }
+      subMsgs.push(subAssistantMsg);
+      for (const tr of subResults) subMsgs.push(tr);
+      subMsgsRef.current = subMsgs;
+      updateSub({ streaming: null });
+    }
+    const out = subAcc.content || "(达到步骤上限)";
+    updateSub({ busy: false, status: "完成", result: out, streaming: null });
+    return { agent: sub.name, result: out };
+  }, [cwd, updateSub]);
+
+  /* 子聊天区继续对话:把用户新消息追加进子会话再跑循环 */
+  const subSendMessage = useCallback((text) => {
+    if (!subSession) return;
+    subMsgsRef.current = [...subMsgsRef.current, { role: "user", content: text }];
+    updateSub({ busy: true, status: "运行中" });
+    setSubInput("");
+    return runSubAgentLoop(subSession.agentId, text, 8);
+  }, [subSession, runSubAgentLoop, updateSub]);
 
   /* ============ Agent 循环(流式 + 工具) ============ */
   const runAgent = useCallback(
@@ -367,18 +427,31 @@ export default function App() {
             assistantMsg.tool_calls.push(tc);
             let parsed = {};
             try { parsed = JSON.parse(tc.function.arguments || "{}"); } catch {}
+            /* 工具调用只显示一行简短提示 */
             setMessages((m) => [...m, {
-              role: "tool", agentName: active.name, toolName: tc.function.name,
-              content: `⚙ ${tc.function.name}(${JSON.stringify(parsed).slice(0, 100)})`,
+              role: "tool", agentName: active.name,
+              content: `调用工具 ${tc.function.name}`,
               time: Date.now(),
             }]);
             setStatus(`执行 ${tc.function.name}…`);
             if (tc.function.name === "bash") clearScreen();
-            const result = await executeTool(tc.function.name, parsed, cwd);
+            let result;
+            if (tc.function.name === "delegate") {
+              /* AI 主动委托子 agent:创建子会话(UI 折叠入口 + 可切换的子聊天区) */
+              const subName = parsed.agent || "general";
+              const subTask = parsed.task || "帮我完成这个任务";
+              setStatus(`委托 ${subName}…`);
+              initSubSession(subName, subTask);
+              result = await runSubAgentLoop(subName, subTask, 8);
+              result = { subagent: subName, output: result };
+            } else {
+              result = await executeTool(tc.function.name, parsed, cwd);
+            }
             const resultText = JSON.stringify(result, null, 2).slice(0, 12000);
+            /* 工具结果不展示原始 JSON，只显示一行简短状态 */
             setMessages((m) => [...m, {
-              role: "tool_result", agentName: active.name, toolName: tc.function.name,
-              content: resultText.slice(0, 2500),
+              role: "tool_result", agentName: active.name,
+              content: `✓ ${tc.function.name} 完成`,
               time: Date.now(),
             }]);
             toolResults.push({ role: "tool", tool_call_id: tc.id, content: resultText });
@@ -443,7 +516,7 @@ export default function App() {
       setBusy(false); setStreaming(null);
       setStatus("达到步骤上限");
     },
-    [messages, conversation, cwd, persist, agent, refreshProfile, streaming, clearScreen]
+    [messages, conversation, cwd, persist, agent, refreshProfile, streaming, clearScreen, runSubAgentLoop, initSubSession]
   );
 
   /* ============ 命令 ============ */
@@ -626,7 +699,16 @@ export default function App() {
   /* 按键 */
   useInput((_input, key) => {
     if (key.escape) {
+      if (subView) { setSubView(false); clearScreen(); return; }
       if (mode !== "chat") { setMode("chat"); setConnectProvider(null); return; }
+    }
+    /* 子聊天区:独立滚动上下文 */
+    if (subView) {
+      if (key.upArrow) setSubScrollOffset((o) => Math.min(o + 3, 10000));
+      if (key.downArrow) setSubScrollOffset((o) => Math.max(o - 3, 0));
+      if (key.pageUp) setSubScrollOffset((o) => o + MSG_HEIGHT);
+      if (key.pageDown) setSubScrollOffset((o) => Math.max(o - MSG_HEIGHT, 0));
+      return;
     }
     if (mode !== "chat") return;
     if (key.tab) {
@@ -637,80 +719,194 @@ export default function App() {
       clearScreen();
       setStatus(`agent → ${next.name}`);
     }
+    if (key.rightArrow && subSession && subSession.id) {
+      setSubView(true);
+      setSubScrollOffset(0);
+      clearScreen();
+      setStatus(`子 agent ${subSession.agentId} 会话 · Esc 返回主界面`);
+    }
     if (key.ctrl && (_input === "t" || _input === "T")) {
       setExpandedThinking((e) => !e);
     }
     if (key.upArrow) setScrollOffset((o) => Math.min(o + 3, 10000));
     if (key.downArrow) setScrollOffset((o) => Math.max(o - 3, 0));
     if (key.pageUp) setScrollOffset((o) => o + MSG_HEIGHT);
-    if (key.pageDown) setScrollOffset((o) => Math.max(o - MSG_HEIGHT, 0));
-  });
+    if (key.pageDown) setScrollOffset((o) => Math.max(o - MSG_HEIGHT, 0));  });
 
-  /* 滚动窗口 */
-  const itemHeights = messages.map((m) => estHeight(m.content, WIDTH) + 1);
-  let startIdx = messages.length;
-  let used = 0;
-  if (scrollOffset === 0) {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (used + itemHeights[i] > MSG_HEIGHT) break;
-      used += itemHeights[i];
-      startIdx = i;
+  /* 滚动窗口：基于行的精确切片 */
+  const msgColor = (m) => (m.role === "user" ? "green" : m.role === "tool" ? "yellow" : m.role === "tool_result" ? "gray" : "magenta");
+  const msgPrefix = (m) => (m.role === "user" ? "❯" : m.role === "tool" ? "⚙" : m.role === "tool_result" ? "✓" : "◆");
+
+  /* 单条消息 → 行数组（每行固定 1 高） */
+  const messageToRows = (m, isStreaming) => {
+    const rows = [];
+    const color = msgColor(m);
+    const prefix = msgPrefix(m);
+    const header = `${prefix} ${fmtTime(m.time)}${m.agentName ? ` [${m.agentName}]` : ""}`;
+    rows.push({ kind: "header", m, text: header, color, bold: true });
+
+    /* 思考块（折叠时只显示一行，展开时多行，长行自动换行） */
+    if (m.reasoning) {
+      if (expandedThinking) {
+        for (const l of wrapPlain(String(m.reasoning), rowWidth)) {
+          rows.push({ kind: "thinking", m, text: `  ${l}`, color: "gray", dim: true });
+        }
+      } else {
+        rows.push({ kind: "thinking", m, text: "  ↯ 已思考（Ctrl+T 展开）", color: "gray", dim: true });
+      }
     }
-  } else {
-    let offset = scrollOffset;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (offset > 0) { offset -= itemHeights[i]; continue; }
-      if (used + itemHeights[i] > MSG_HEIGHT) break;
-      used += itemHeights[i];
-      startIdx = i;
+    if (!m.content) return rows;
+
+    /* 工具结果 → 灰色单行 */
+    if (m.role === "tool_result") {
+      rows.push({ kind: "md", m, text: `  ${String(m.content).replace(/\n/g, " ")}`, color: "gray", dim: true });
+      return rows;
     }
+    /* 其余 → markdown 行模型 */
+    const lines = markdownLines(m.content, rowWidth, {});
+    for (const l of lines) rows.push({ kind: "md", m, mdline: l });
+    return rows;
+  };
+
+  /* 全部可见行（含流式中的消息） */
+  let allRows = [];
+  for (const m of messages) allRows = allRows.concat(messageToRows(m, false));
+  if (streaming) allRows = allRows.concat(messageToRows(streaming, true));
+  else if (Object.keys(thinkingCache).length && busy) {
+    allRows.push({ kind: "thinking", m: null, text: "  ↯ 推理中…", color: "gray", dim: true });
   }
-  if (startIdx < 0) startIdx = 0;
-  const visible = messages.slice(startIdx);
+  /* 子 agent 折叠入口(类似 thinking,→ 切换查看) */
+  if (subSession) {
+    const subDone = !subSession.busy;
+    allRows.push({
+      kind: "subagent", m: null,
+      text: subDone
+        ? `  ↳ 子agent ${subSession.agentId} 完成${subView ? "" : "（→ 查看结果）"}`
+        : `  ↯ 子agent ${subSession.agentId} ${subSession.status || "运行中"}${subView ? "" : "（→ 查看）"}`,
+      color: "magenta", bold: true,
+    });
+  }
+  if (busy && !streaming && !allRows.length) allRows.push({ kind: "md", m: null, text: "…", color: "gray" });
+
+  const maxScroll = Math.max(0, allRows.length - MSG_HEIGHT);
+  const safeOffset = Math.min(scrollOffset, maxScroll);
+  const start = Math.max(0, allRows.length - MSG_HEIGHT - safeOffset);
+  const visibleRows = allRows.slice(start, start + MSG_HEIGHT);
 
   const agentColor = agent.color;
 
+  /* ============ 子聊天区渲染（subView=true） ============ */
+  if (subView && subSession) {
+    const subAgent = getAgent(subSession.agentId);
+    const subColor = subAgent.color || "magenta";
+    const subMsgs = subMsgsRef.current || [];
+    /* 从 ref 构建子会话 UI 消息:user 原文 + assistant 正文 + tool 一行 */
+    const subRows = [];
+    let pendingText = null;
+    let toolName = "";
+    for (const m of subMsgs) {
+      if (m.role === "user") {
+        if (pendingText) { subRows.push({ role: "assistant", content: pendingText }); pendingText = null; }
+        subRows.push({ role: "user", content: m.content });
+      } else if (m.role === "assistant") {
+        /* 先固化已收到的正文(即使带 tool_calls 也要保留),再插工具行 */
+        if (m.content) pendingText = (pendingText || "") + m.content;
+        if (m.tool_calls && m.tool_calls.length) {
+          if (pendingText) { subRows.push({ role: "assistant", content: pendingText }); pendingText = null; }
+          const names = m.tool_calls.map((tc) => tc.function?.name || "?").join(", ");
+          toolName = names;
+        }
+      } else if (m.role === "tool") {
+        if (pendingText) { subRows.push({ role: "assistant", content: pendingText }); pendingText = null; }
+        subRows.push({ role: "tool", content: `⚙ 调用 ${toolName || "工具"}` });
+      }
+    }
+    if (pendingText) subRows.push({ role: "assistant", content: pendingText });
+    /* 流式内容 */
+    if (subSession.streaming?.content) subRows.push({ role: "assistant-stream", content: subSession.streaming.content });
+
+    /* 行模型窗口:每个 subRow 转成 markdown 行,再按 MSG_HEIGHT 切片(同主视图) */
+    const subAllRows = [];
+    const subRowToLines = (rm) => {
+      if (rm.role === "user") {
+        const prefix = "❯ ";
+        const lines = markdownLines(rm.content, Math.max(rowWidth - 2, 10), {});
+        if (!lines.length) return [{ text: prefix, color: "green" }];
+        lines[0].spans = [{ text: prefix, ...(lines[0].spans?.[0]?.color ? {} : {}) }, ...(lines[0].spans || [])];
+        lines[0].color = "green"; lines[0].bold = false;
+        return lines;
+      }
+      if (rm.role === "tool") {
+        return [{ text: rm.content, color: "gray", dim: true }];
+      }
+      const base = rm.role === "assistant-stream" ? { color: "gray", dim: true } : { color: "magenta" };
+      const lines = markdownLines(rm.content, rowWidth, base);
+      if (!lines.length) return [{ ...base, text: "" }];
+      return lines;
+    };
+    for (const rm of subRows) subAllRows.push(...subRowToLines(rm));
+    const subMax = Math.max(0, subAllRows.length - MSG_HEIGHT);
+    const subSafe = Math.min(subScrollOffset, subMax);
+    const subStart = Math.max(0, subAllRows.length - MSG_HEIGHT - subSafe);
+    const subVisible = subAllRows.slice(subStart, subStart + MSG_HEIGHT);
+
+    return (
+      <Box flexDirection="column" height={HEIGHT} borderStyle="round" borderColor={subColor}>
+        <Box flexShrink={0}>
+          <Text bold color={subColor} wrap="truncate" width={Math.max(WIDTH - 2, 10)}>
+            ◆ 子agent {subSession.agentId} · {subSession.task.slice(0, 40)}{subSession.busy ? " · 运行中" : " · 完成"} · Esc 返回
+          </Text>
+        </Box>
+        <Box flexGrow={1} flexShrink={1} height={MSG_HEIGHT} flexDirection="column" paddingX={1} overflow="hidden">
+          {subVisible.map((r, i) => (
+            <MessageBoundary key={i}>
+              {r.spans ? (
+                <LineRow line={r} width={rowWidth} />
+              ) : (
+                <Text color={r.color || "magenta"} bold={r.bold} dim={r.dim} wrap="truncate" width={rowWidth}>
+                  {r.text}
+                </Text>
+              )}
+            </MessageBoundary>
+          ))}
+          {subSession.streaming && !subSession.streaming.content && <Text dimColor>  ↯ 推理中…</Text>}
+        </Box>
+        <Box borderStyle="round" borderColor="gray" paddingX={1} flexShrink={0}>
+          <TextInput
+            value={subInput}
+            onChange={setSubInput}
+            onSubmit={subSendMessage}
+            placeholder={subSession.busy ? "子agent 运行中…" : "继续对话，Enter 发送"}
+            disabled={false}
+          />
+        </Box>
+        <Box flexShrink={0}>
+          <Text dimColor>Esc 返回主界面 · ↑↓ 滚动 · Enter 发送</Text>
+        </Box>
+      </Box>
+    );
+  }
+
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" height={HEIGHT} borderStyle="round" borderColor="gray">
       {/* 状态栏 */}
       <Box flexDirection="row" flexShrink={0}>
-        <Text bold color="cyan">◆ Uinxed</Text>
-        <Text color={agentColor} bold> {agent.name}</Text>
-        <Text dimColor> · {provider.name}</Text>
-        <Text bold> · {loadConfig().model}</Text>
-        <Text color={profile ? "green" : "yellow"}> · {profile ? profile.username : (provider.apiKey ? "已连接" : "未登录")}</Text>
-        {profile && !profile.unlimited && <Text dimColor> · ¥{(profile.quota || 0).toFixed(2)}</Text>}
-        <Text dimColor> · {status}</Text>
+        <Text bold color="cyan" wrap="truncate" width={Math.max(WIDTH - 2, 10)}>◆ Uinxed {agent.name} · {provider.name} · {loadConfig().model} · {profile ? profile.username : (provider.apiKey ? "已连接" : "未登录")}{profile && !profile.unlimited ? ` · ¥${(profile.quota || 0).toFixed(2)}` : ""} · {status}</Text>
       </Box>
 
-      {/* 消息区 */}
-      <Box flexGrow={1} flexShrink={1} height={MSG_HEIGHT} flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1} overflow="hidden">
-        {visible.map((m, i) => (
-          <MessageItem
-            key={m.time + "-" + i}
-            m={m}
-            width={WIDTH}
-            expandedThinking={expandedThinking}
-            onToggleThinking={() => setExpandedThinking((e) => !e)}
-          />
+      {/* 消息区：行模型切片，每行固定 1 高，不会炸 */}
+      <Box flexGrow={1} flexShrink={1} height={MSG_HEIGHT} flexDirection="column" paddingX={1} overflow="hidden">
+        {visibleRows.map((r, i) => (
+          <MessageBoundary key={r.m?.time + "-" + r.text + "-" + i}>
+            {r.kind === "md" && r.mdline ? (
+              <LineRow line={r.mdline} width={rowWidth} />
+            ) : (
+              <Text color={r.color} bold={r.bold} dim={r.dim} wrap="truncate" width={Math.max(rowWidth, 10)}>
+                {r.text}
+              </Text>
+            )}
+          </MessageBoundary>
         ))}
-        {streaming && (
-          <MessageItem
-            m={{ role: "assistant", content: streaming.content, reasoning: streaming.reasoning, time: Date.now() }}
-            width={WIDTH}
-            expandedThinking={expandedThinking}
-            onToggleThinking={() => setExpandedThinking((e) => !e)}
-          />
-        )}
-        {!streaming && Object.keys(thinkingCache).length > 0 && (
-          <MessageItem
-            m={{ role: "assistant", content: "◈ 推理中…", time: Date.now() }}
-            width={WIDTH}
-            expandedThinking={expandedThinking}
-            onToggleThinking={() => setExpandedThinking((e) => !e)}
-          />
-        )}
-        {busy && !streaming && <Text dimColor>…</Text>}
         {scrollOffset > 0 && <Text dimColor backgroundColor="#222" bold> ↑ 上翻中（↓ 回底部）</Text>}
       </Box>
 

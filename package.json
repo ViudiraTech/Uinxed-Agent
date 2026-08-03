@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "ink": "^4.4.1",
+    "ink-markdown-es": "^1.4.0",
     "ink-text-input": "^5.0.1",
     "react": "^18.3.1"
   },

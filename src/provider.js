@@ -158,7 +158,8 @@ export async function* chatStream(messages, { model, tools, signal, stream = tru
     for (const line of lines) {
       const parsed = parseSSELine(line.trim(), acc);
       if (parsed && parsed.done) {
-        yield { ...acc, done: true };
+        /* done 标记:content/reasoning 已通过增量 yield 交付,不能重复携带 */
+        yield { done: true, toolCalls: acc.toolCalls, finishReason: acc.finishReason || "stop", usage: acc.usage, model: acc.model };
         return;
       }
       const out = flush(parsed);
@@ -170,7 +171,7 @@ export async function* chatStream(messages, { model, tools, signal, stream = tru
     const out = flush(parsed);
     if (out && (out.content || out.reasoning || out.toolCalls.length)) yield out;
   }
-  yield { ...acc, done: true };
+  yield { done: true, toolCalls: acc.toolCalls, finishReason: acc.finishReason || "stop", usage: acc.usage, model: acc.model };
 }
 
 /* 非流式便捷调用 */

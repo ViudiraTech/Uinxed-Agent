@@ -144,6 +144,36 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "web_search",
+      description: "在互联网搜索关键词，返回标题、链接与摘要。适合查询最新资讯、文档、教程、解决方案等 fetch_url 不知道地址的场景。",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "搜索关键词，中文英文均可" },
+          max: { type: "number", description: "返回结果条数，默认 6，最大 10" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delegate",
+      description: "把子任务委托给子 agent 执行并等待返回结果。explorer=快速只读探索代码库；general=可执行多步任务（含写文件/运行命令）。适合把可独立的小任务并行拆分，最后汇总。",
+      parameters: {
+        type: "object",
+        properties: {
+          agent: { type: "string", description: "子 agent 名称：explorer 或 general" },
+          task: { type: "string", description: "交给子 agent 的任务描述" },
+        },
+        required: ["agent", "task"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_current_time",
       description: "获取当前系统时间和日期。用户询问时间/日期/今天是几号时使用。",
       parameters: {
@@ -177,6 +207,86 @@ function safeCalc(expr) {
   const fn = new Function(`return (${s})`);
   const v = fn();
   return { result: v };
+}
+
+/* HTML → 纯文本 */
+function htmlToText(html) {
+  return String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/* 网页搜索:优先 DuckDuckGo HTML 端点(无需 key),失败则回退 Bing */
+async function webSearch(query, max = 6) {
+  const q = encodeURIComponent(query);
+  const limit = Math.min(10, Math.max(1, parseInt(max, 10) || 6));
+  const ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+
+  /* DuckDuckGo */
+  try {
+    const res = await fetch(`https://html.duckduckgo.com/html/?q=${q}`, {
+      headers: { "User-Agent": ua },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.ok) {
+      const html = await res.text();
+      const results = [];
+      const blocks = html.split(/<div class="result[^"]*">/);
+      for (const b of blocks.slice(1)) {
+        const titleM = b.match(/class="result__a"[^>]*>(.*?)<\/a>/);
+        const urlM = b.match(/class="result__a"[^>]*href="([^"]+)"/);
+        const snipM = b.match(/class="result__snippet"[^>]*>(.*?)<\/a>/) || b.match(/class="result__snippet"[^>]*>(.*?)<\/(?:a|div)>/);
+        if (!titleM || !urlM) continue;
+        let url = urlM[1];
+        /* 跳过广告 */
+        if (url.includes("ad_domain") || url.includes("/y.js?")) continue;
+        /* 解码 DDG 跳转链接 */
+        const uddg = url.match(/uddg=([^&]+)/);
+        if (uddg) url = decodeURIComponent(uddg[1]);
+        results.push({
+          title: htmlToText(titleM[1]),
+          url,
+          snippet: htmlToText(snipM ? snipM[1] : ""),
+        });
+        if (results.length >= limit) break;
+      }
+      if (results.length) return { engine: "duckduckgo", results, count: results.length };
+    }
+  } catch {}
+
+  /* Bing 回退 */
+  try {
+    const res = await fetch(`https://www.bing.com/search?q=${q}&count=${limit}`, {
+      headers: { "User-Agent": ua },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.ok) {
+      const html = await res.text();
+      const results = [];
+      const blocks = html.split(/<li class="b_algo"/);
+      for (const b of blocks.slice(1)) {
+        const titleM = b.match(/<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a><\/h2>/);
+        const snipM = b.match(/<p[^>]*>(.*?)<\/p>/);
+        if (!titleM) continue;
+        results.push({
+          title: htmlToText(titleM[2]),
+          url: titleM[1],
+          snippet: htmlToText(snipM ? snipM[1] : ""),
+        });
+        if (results.length >= limit) break;
+      }
+      if (results.length) return { engine: "bing", results, count: results.length };
+    }
+  } catch {}
+
+  return { error: "搜索失败（两个引擎均不可用）" };
 }
 
 /* 工具执行器:返回可序列化结果 */
@@ -335,17 +445,14 @@ export async function executeTool(name, args, cwd) {
         return {
           status: res.status,
           contentType: res.headers.get("content-type") || "",
-          body: text
-            .replace(/<script[\s\S]*?<\/script>/gi, "")
-            .replace(/<style[\s\S]*?<\/style>/gi, "")
-            .replace(/<[^>]+>/g, " ")
-            .replace(/\s+/g, " ")
-            .slice(0, 20000),
+          body: htmlToText(text).slice(0, 20000),
         };
       } catch (e) {
         return { error: e.message };
       }
     }
+    case "web_search":
+      return webSearch(args.query, args.max);
     case "get_current_time": {
       const d = new Date();
       const p = (n) => String(n).padStart(2, "0");
