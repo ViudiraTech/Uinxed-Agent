@@ -1,77 +1,166 @@
-# Uinxed Agent
+<p align="center">
+  <a href="#特性" title="点击查看特性">
+    <picture>
+      <source media="(prefers-reduced-motion: reduce)" srcset="PREVIEW.png">
+      <img src="assets/demo.svg" alt="Uinxed Agent 终端演示" width="900">
+    </picture>
+  </a>
+</p>
 
-一个运行在终端里的 AI 编程助手（TUI Agent），支持多提供商、工具调用、流式输出与 thinking 展示。设计参考 [opencode](https://opencode.ai)。
-
-![License](https://img.shields.io/badge/License-Apache_2.0-blue)
+<details>
+<summary>🎬 静态截图（不支持 SVG 动画时）</summary>
 
 ![PREVIEW](PREVIEW.png)
 
-## 特性
+</details>
 
-- **多提供商**：内置本地网关与 DeepSeek，`/connect` 可接入任意 OpenAI 兼容服务
-- **工具调用**：bash / 读写文件 / 编辑 / 目录 / grep / glob / 网页抓取 / 计算 / 时间，共 10+ 工具
-- **多 Agent**：build / plan 主 agent（Tab 切换）+ explorer / general 子 agent（`@name` 委托）
-- **流式输出**：SSE 流式渲染，打字机效果
-- **Thinking 展示**：推理模型（如 DeepSeek reasoning 系列）的思考过程折叠显示，Enter 展开
-- **Markdown 渲染**：标题 / 列表 / 引用 / 代码块 / 行内样式
-- **命令面板**：输入 `/` 即时过滤全部命令
-- **会话持久化**：历史与配置保存在 `~/.config/ux-agent/`
+<h1 align="center">⚡ Uinxed Agent</h1>
 
-## 安装
+<p align="center">
+  <b>终端里的 AI 编程助手</b> — 流式输出 · 多 Agent 协作 · 工具调用 · Thinking 推理可视化
+</p>
+
+<p align="center">
+  <a href="#特性"><img src="https://img.shields.io/badge/特性-8 大亮点-8A2BE2?style=flat-square"></a>
+  <a href="#快速开始"><img src="https://img.shields.io/badge/快速开始-30 秒上手-00C853?style=flat-square"></a>
+  <a href="#快捷键"><img src="https://img.shields.io/badge/快捷键-一览-FF6D00?style=flat-square"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-2196F3?style=flat-square"></a>
+  <a href="#架构"><img src="https://img.shields.io/badge/架构-轻量-607D8B?style=flat-square"></a>
+</p>
+
+---
+
+## ✨ 特性
+
+| | | |
+|:---:|:---:|:---:|
+| 🏗 **多 Agent 协作**<br>build / plan 主 agent 自由切换，explorer / general 子 agent 可**委托、切入实时查看、继续对话** | 🔧 **10+ 内置工具**<br>bash / 读写编辑文件 / grep / glob / 网页搜索抓取 / 计算 / 时间 | 🧠 **Thinking 可视化**<br>推理过程折叠展示，`Ctrl+T` 展开，长行自动换行 |
+| 🌐 **多提供商**<br>内置本地网关 + DeepSeek，`/connect` 接入任意 OpenAI 兼容服务 | ⚡ **SSE 流式输出**<br>打字机效果，80ms 节流刷新，丝滑不闪屏 | 📝 **Markdown 渲染**<br>标题 / 列表 / 引用 / 代码块 / 行内样式，完整支持 |
+| ⌨️ **命令面板**<br>输入 `/` 即时过滤，13 个内嵌命令 | 💾 **会话持久化**<br>历史 + 推理内容保存在 `~/.config/ux-agent/` | 📐 **终端自适应**<br>动态尺寸监听，布局永远吃满终端不溢出 |
+
+---
+
+## 🚀 快速开始
 
 ```bash
 cd agent
 npm install
 npm run build
-npm link          # 全局安装 ux-agent 命令(可选)
+npm link            # 可选:全局安装 ux-agent 命令
 ```
 
-## 使用
+### 启动
 
 ```bash
 ux-agent                          # 启动
 ux-agent --provider deepseek      # 指定提供商
-ux-agent --key sk-xxx             # 设置 Key
+ux-agent --key sk-xxx             # 设置 API Key
+ux-agent --model deepseek-v4-flash # 指定模型
 ```
 
-### 内嵌命令
+> 💡 首次启动未配置 Key 时，直接在界面内输入即可，或运行 `/connect` 接入任意 OpenAI 兼容服务。
+
+### 60 秒体验
+
+```
+1. 输入任意问题，回车    → 看到流式打字机输出
+2. 按 Tab                → 切换到 plan（规划）agent
+3. 输入 @explorer 找一下 xxx  → 委托子 agent 探索代码
+4. 按 →                   → 切入子 agent 聊天区实时查看，Esc 返回
+5. 按 Ctrl+T             → 展开 / 收起 DeepSeek 推理过程
+6. 输入 /                 → 打开命令面板
+```
+
+---
+
+## 🎮 快捷键
+
+| 按键 | 功能 |
+|:---:|:---|
+| `Tab` | 切换主 agent（build ↔ plan） |
+| `→` | 切入子 agent 聊天区（实时查看 / 继续对话） |
+| `Esc` | 子聊天区返回主界面 / 取消弹窗 |
+| `Ctrl+T` | 展开 / 收起 thinking 推理过程 |
+| `↑` `↓` | 滚动消息 |
+| `PgUp` `PgDn` | 快速滚动一页 |
+| `/` | 命令面板 |
+| `@agent` | 委托子任务（`@explorer xxx`） |
+
+## 📖 内嵌命令
 
 | 命令 | 说明 |
-|------|------|
-| `/provider` | 列出/切换提供商 |
+|:---|:---|
+| `/provider` | 列出 / 切换提供商 |
 | `/connect` | 接入新的 OpenAI 兼容提供商 |
 | `/key` | 设置当前提供商 API Key |
 | `/model` | 切换模型 |
 | `/thinking` | 开关 thinking 展示 |
-| `/agent` | 列出/切换 agent |
+| `/agent` | 列出 / 切换 agent |
 | `/quota` | 查询本地网关余额（仅本地提供商） |
-| `/cd` `/pwd` | 工作目录 |
-| `/new` `/clear` | 会话管理 |
+| `/cd` | 切换工作目录 |
+| `/pwd` | 显示工作目录 |
+| `/new` | 清空当前会话 |
+| `/clear` | 清空本地历史 |
 | `/exit` | 退出 |
 
-### 快捷键
+---
 
-- `Tab` — 切换主 agent
-- `Enter` — 展开/收起 thinking
-- `↑/↓`、`PgUp/PgDn` — 滚动消息
-- `/` — 命令面板
-- `@agent` — 委托子任务
-- `Esc` — 取消弹窗
+## 🧩 多 Agent 体系
 
-## 架构
+### 主 Agent（`Tab` 切换）
+
+| Agent | 角色 | 工具权限 |
+|:---|:---|:---|
+| **build** | 默认 agent，完整开发工作流 | 全部（读 / 写 / 执行） |
+| **plan** | 规划分析，只读模式 | read / grep / glob / 搜索 |
+
+### 子 Agent（`@name` 或 AI 自动 `delegate`）
+
+| Agent | 角色 | 典型场景 |
+|:---|:---|:---|
+| **explorer** | 只读探索 | 快速定位文件、函数、结构 |
+| **general** | 多步任务 | 可独立完成写文件、跑命令的完整任务 |
+
+> 🤝 **协作闭环**：主 agent 可用 `delegate` 工具把子任务拆给子 agent → 子 agent 独立执行（可随时 `→` 切入观看，甚至直接对话补充要求）→ 完成后**自动回传结果**，主 agent 汇总继续推进。
+
+---
+
+## ⚙️ 工具清单
+
+| 工具 | 说明 |
+|:---|:---|
+| `bash` | 执行 shell 命令（构建 / 测试 / git） |
+| `read_file` `write_file` `edit_file` | 读 / 写 / 精确替换文件 |
+| `list_dir` `grep` `glob` | 目录浏览与代码搜索 |
+| `fetch_url` | 抓取网页正文 |
+| `web_search` | 互联网搜索（DuckDuckGo + Bing 双引擎回退） |
+| `delegate` | 委托子 agent 执行并等待回传 |
+| `get_current_time` | 当前时间 / 日期 |
+| `calc` | 安全数学计算 |
+
+---
+
+## 🏗 架构
 
 ```
 src/
-├── index.js      # 入口
+├── index.js      # 入口（CLI 参数 / 配置 / 启动渲染）
+├── App.jsx       # TUI 主界面（agent 循环 · 行模型滚动 · 子 agent 会话）
 ├── config.js     # 配置与提供商持久化
-├── provider.js   # 多提供商适配 / 流式 SSE 解析
-├── tools.js      # 工具注册表与执行器
+├── provider.js   # 多提供商适配 / SSE 流式解析（reasoning 回传）
+├── tools.js      # 工具注册表与执行器（含 web_search）
 ├── agents.js     # 多 Agent 定义与工具白名单
-├── App.jsx       # TUI 主界面
-├── Markdown.jsx  # Markdown 渲染器
+├── mdlines.js    # Markdown → 行模型（精确滚动的基础）
+├── Markdown.jsx  # Markdown 渲染器（ink-markdown-es）
 └── Thinking.jsx  # thinking 折叠组件
 ```
 
-## 许可证
+**技术栈**：Node.js · Ink (React) · marked · wrap-ansi · esbuild
 
-[Apache-2.0](LICENSE)
+**交互原理**：所有消息先转换为「行模型」（每行固定 1 终端行高），滚动 = 行索引偏移切片，因此长对话 / 大量工具调用也不会破坏布局。
+
+---
+
+## 📄 许可证
+
+[Apache License 2.0](LICENSE)

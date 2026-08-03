@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="560" viewBox="0 0 920 560" font-family="'SF Mono','Fira Code','Cascadia Mono',Menlo,Consolas,monospace">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="100%" stop-color="#161b22"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#8a2be2"/>
+      <stop offset="50%" stop-color="#00c853"/>
+      <stop offset="100%" stop-color="#2196f3"/>
+    </linearGradient>
+    <style>
+      @keyframes blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+      @keyframes fadeIn1 { 0%,4%{opacity:0} 8%,95%{opacity:1} 97%,100%{opacity:0} }
+      @keyframes fadeIn2 { 0%,14%{opacity:0} 18%,95%{opacity:1} 97%,100%{opacity:0} }
+      @keyframes fadeIn3 { 0%,24%{opacity:0} 28%,95%{opacity:1} 97%,100%{opacity:0} }
+      @keyframes fadeIn4 { 0%,34%{opacity:0} 38%,95%{opacity:1} 97%,100%{opacity:0} }
+      @keyframes fadeOut { 0%,20%{opacity:1} 26%,100%{opacity:0} }
+      @keyframes statusPulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+    </style>
+  </defs>
+
+  <!-- 窗口 -->
+  <rect x="10" y="10" width="900" height="540" rx="14" fill="url(#bg)" stroke="#30363d" stroke-width="1.5"/>
+  <!-- 标题栏 -->
+  <rect x="10" y="10" width="900" height="42" rx="14" fill="#21262d"/>
+  <rect x="10" y="32" width="900" height="20" fill="#21262d"/>
+  <circle cx="42" cy="31" r="7" fill="#ff5f57"/>
+  <circle cx="66" cy="31" r="7" fill="#febc2e"/>
+  <circle cx="90" cy="31" r="7" fill="#28c840"/>
+  <text x="460" y="36" text-anchor="middle" font-size="16" fill="#8b949e">ux-agent — ~/project</text>
+
+  <!-- 行 1：用户输入 -->
+  <text x="48" y="92" font-size="17" fill="#e6edf3">
+    <tspan fill="#00c853">❯ </tspan><tspan>帮我重构这个模块并加测试</tspan>
+  </text>
+
+  <!-- 行 2：推理指示器（先出现后消失） -->
+  <g style="animation:fadeOut 12s ease 1 forwards">
+    <text x="48" y="132" font-size="17" fill="#8b949e" style="animation:blink 1.1s infinite">↯ thinking…</text>
+  </g>
+
+  <!-- 行 3：工具调用 -->
+  <g style="animation:fadeIn1 12s ease infinite">
+    <text x="48" y="172" font-size="17" fill="#d29922">⚙ 调用工具 glob → src/**/*.js</text>
+  </g>
+  <g style="animation:fadeIn2 12s ease infinite">
+    <text x="48" y="210" font-size="17" fill="#8b949e">✓ glob 完成 · 26 个文件</text>
+  </g>
+
+  <!-- 行 4：最终回答（打字机光标前导） -->
+  <g style="animation:fadeIn3 12s ease infinite">
+    <text x="48" y="262" font-size="17" fill="#e6edf3">完成重构：拆分为 3 个模块，补了 12 个测试。</text>
+  </g>
+  <g style="animation:fadeIn4 12s ease infinite">
+    <text x="48" y="300" font-size="17" fill="#e6edf3">
+      <tspan fill="#7ee787">✓ </tspan><tspan>npm test · 12 passed (2.1s)</tspan>
+    </text>
+    <rect x="48" y="316" width="10" height="18" fill="#58a6ff" style="animation:blink 1s infinite"/>
+  </g>
+
+  <!-- 底部状态栏 -->
+  <rect x="10" y="500" width="900" height="50" rx="10" fill="#161b22" stroke="#30363d"/>
+  <text x="48" y="532" font-size="16" fill="#8b949e">◆ Uinxed build</text>
+  <text x="200" y="532" font-size="16" fill="#00c853" style="animation:statusPulse 1.6s infinite">● 已连接</text>
+  <text x="470" y="532" font-size="16" fill="#8b949e">12/12 测试</text>
+  <!-- 彩虹进度条 -->
+  <rect x="48" y="472" width="824" height="6" rx="3" fill="#21262d"/>
+  <rect x="48" y="472" width="0" height="6" rx="3" fill="url(#bar)">
+    <animate attributeName="width" values="0;824" dur="12s" repeatCount="indefinite"/>
+  </rect>
+  <text x="880" y="532" text-anchor="end" font-size="15" fill="#58a6ff">Esc 返回 · Ctrl+T 展开思考</text>
+</svg>
