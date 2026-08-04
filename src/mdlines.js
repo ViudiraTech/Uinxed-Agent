@@ -127,6 +127,33 @@ function emitPlain(text, width, out, style = {}) {
   emitWrapped([{ text, color: style.color, bold: style.bold, dim: style.dim }], width, out, style);
 }
 
+/* 单元格文本 → 按列宽换行后补到等宽的多行数组（CJK/emoji 按显示宽度,代理对不截断） */
+function cellWrap(text, w) {
+  if (w <= 0) return [" ".repeat(1)];
+  const out = [];
+  let rest = text;
+  while (stringWidth(rest) > w) {
+    let cut = 0, acc = 0;
+    for (const ch of rest) {
+      if (acc + stringWidth(ch) > w) break;
+      acc += stringWidth(ch);
+      cut += ch.length;
+    }
+    if (cut === 0) cut = 1;
+    out.push(rest.slice(0, cut) + " ".repeat(w - acc));
+    rest = rest.slice(cut);
+  }
+  if (rest || !out.length) out.push(rest + " ".repeat(Math.max(0, w - stringWidth(rest))));
+  return out;
+}
+
+/* 单元格 → 纯文本 */
+function cellText(c) {
+  if (c == null) return "";
+  const raw = c.tokens ? inlineText(c.tokens) : c.text || "";
+  return clean(raw).replace(/\s+/g, " ").trim();
+}
+
 /* Markdown 字符串 → 行数组。style: {indent, color} 基线样式 */
 export function markdownLines(md, width, style = {}) {
   const out = [];
@@ -197,11 +224,73 @@ export function markdownLines(md, width, style = {}) {
           out.push({ text: "─".repeat(Math.min(width - 4, 40)), spans: null, indent: base.indent || 0, color: "gray", dim: true });
           break;
         case "table": {
-          const rows = [t.header, ...t.rows];
-          for (const row of rows) {
-            const cells = row.map((c) => clean(c.tokens ? inlineText(c.tokens) : c.text || ""));
-            emitPlain(` ${cells.join(" │ ")} `, width, out, { indent: (base.indent || 0) + 1, color: "white" });
+          /* 列宽对齐 + 外边框:┌──┐ 包裹整个表格 */
+          const headerCells = (t.header || []).map(cellText);
+          const bodyRows = (t.rows || []).map((r) => r.map(cellText));
+          const numCols = Math.max(headerCells.length, ...bodyRows.map((r) => r.length), 1);
+          const pad = (arr) => {
+            const a = arr.slice(0, numCols);
+            while (a.length < numCols) a.push("");
+            return a;
+          };
+          const allRows = [pad(headerCells), ...bodyRows.map(pad)];
+          const widths = [];
+          for (let c = 0; c < numCols; c++) {
+            let w = 1;
+            for (const r of allRows) w = Math.max(w, stringWidth(r[c]));
+            widths.push(w);
           }
+          /* 总宽 = 边框│(2) + 各列宽 + 分隔(列间×3)。超出时压缩最宽列 */
+          const maxW = Math.max(width - 2 - (base.indent || 0), 8);
+          let totalW = 2 + widths.reduce((a, b) => a + b, 0) + (numCols - 1) * 3;
+          let guard = 0;
+          while (totalW > maxW && guard < 200) {
+            guard++;
+            let mi = 0;
+            for (let i = 1; i < numCols; i++) if (widths[i] > widths[mi]) mi = i;
+            if (widths[mi] <= 1) break;
+            widths[mi]--;
+            totalW--;
+          }
+          /* 生成单元格换行后的对齐片段 */
+          const rowSegs = (cells) => cells.map((cell, i) => cellWrap(cell, widths[i]));
+          /* 顶部边框:┌──┬──┐ */
+          out.push({
+            text: "┌" + widths.map((w) => "─".repeat(w)).join("┬") + "┐",
+            spans: null, indent: base.indent || 0, color: "gray",
+          });
+          /* 逐行渲染: 每个单元格超宽时已按列独立换行，左右各加一个 │ */
+          const emitBody = (cells, segs, isLast) => {
+            const n = Math.max(...segs.map((p) => p.length));
+            for (let l = 0; l < n; l++) {
+              const seg = cells.map((_, i) =>
+                l < segs[i].length ? segs[i][l] : " ".repeat(widths[i])
+              );
+              const isBottom = isLast && l === n - 1;
+              out.push({
+                text: "│" + seg.join("│") + (isBottom ? "│" : "│"),
+                spans: null, indent: base.indent || 0, color: isBottom ? "gray" : "white",
+                bold: false, dim: isBottom,
+              });
+            }
+          };
+          /* 表头行 + 分隔线 */
+          emitBody(allRows[0], rowSegs(allRows[0]), allRows.length === 1);
+          if (allRows.length > 1) {
+            out.push({
+              text: "├" + widths.map((w) => "─".repeat(w)).join("┼") + "┤",
+              spans: null, indent: base.indent || 0, color: "gray",
+            });
+          }
+          /* 数据行 + 底部边框 */
+          for (let r = 1; r < allRows.length; r++) {
+            const isLast = r === allRows.length - 1;
+            emitBody(allRows[r], rowSegs(allRows[r]), isLast);
+          }
+          out.push({
+            text: "└" + widths.map((w) => "─".repeat(w)).join("┴") + "┘",
+            spans: null, indent: base.indent || 0, color: "gray",
+          });
           break;
         }
         case "space": break;

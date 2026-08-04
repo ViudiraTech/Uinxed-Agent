@@ -57,6 +57,7 @@ export function loadConfig() {
       baseUrl: cfg.baseUrl || DEFAULT_BASE_URL,
       model: cfg.model || DEFAULT_MODEL,
       history: Array.isArray(cfg.history) ? cfg.history : [],
+      conversation: Array.isArray(cfg.conversation) ? cfg.conversation : [],
       providers,
       activeProvider: cfg.activeProvider || providers[0]?.id || "ux-gateway",
       thinking: cfg.thinking !== false,
@@ -66,7 +67,7 @@ export function loadConfig() {
     const providers = ensureProviders();
     return {
       apiKey: null, baseUrl: DEFAULT_BASE_URL, model: DEFAULT_MODEL,
-      history: [], providers, activeProvider: providers[0].id, thinking: true, cwd: null,
+      history: [], conversation: [], providers, activeProvider: providers[0].id, thinking: true, cwd: null,
     };
   }
 }

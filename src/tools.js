@@ -160,7 +160,7 @@ export const TOOL_DEFS = [
     type: "function",
     function: {
       name: "delegate",
-      description: "把子任务委托给子 agent 执行并等待返回结果。explorer=快速只读探索代码库；general=可执行多步任务（含写文件/运行命令）。适合把可独立的小任务并行拆分，最后汇总。",
+      description: "把子任务委托给子 agent 执行并等待返回结果。explorer=快速只读探索代码库；general=可执行多步任务（含写文件/运行命令）。适合把可独立的小任务并行拆分：一次回复中可以多次调用 delegate（每次调用都会并发运行一个子 agent），最后汇总。",
       parameters: {
         type: "object",
         properties: {
@@ -168,6 +168,56 @@ export const TOOL_DEFS = [
           task: { type: "string", description: "交给子 agent 的任务描述" },
         },
         required: ["agent", "task"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "todo_write",
+      description: "创建或重置任务清单（用于多步任务的进度可视化，界面会实时显示清单与勾选状态）。一次调用传入完整清单，会覆盖之前的清单。建议在开始多步任务前调用。",
+      parameters: {
+        type: "object",
+        properties: {
+          todos: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                subject: { type: "string", description: "任务描述（简短，如：实现登录接口）" },
+                status: {
+                  type: "string",
+                  enum: ["pending", "in_progress", "completed"],
+                  description: "任务状态，默认 pending",
+                },
+              },
+              required: ["subject"],
+            },
+            description: "完整任务清单，将覆盖当前清单",
+          },
+        },
+        required: ["todos"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "todo_update",
+      description: "更新任务清单中某一项的状态。按列表序号（index，从 1 开始）或 subject 匹配。",
+      parameters: {
+        type: "object",
+        properties: {
+          index: { type: "number", description: "任务序号（1 开始），与 subject 二选一" },
+          subject: { type: "string", description: "按任务描述匹配，与 index 二选一" },
+          status: {
+            type: "string",
+            enum: ["pending", "in_progress", "completed"],
+            description: "目标状态",
+          },
+          reason: { type: "string", description: "变更原因（可选，仅展示）" },
+        },
+        required: ["status"],
       },
     },
   },
@@ -289,8 +339,9 @@ async function webSearch(query, max = 6) {
   return { error: "搜索失败（两个引擎均不可用）" };
 }
 
-/* 工具执行器:返回可序列化结果 */
-export async function executeTool(name, args, cwd) {
+/* 工具执行器:返回可序列化结果。
+ * ctx 提供与 App 状态联动的回调: { todoWrite, todoUpdate } */
+export async function executeTool(name, args, cwd, ctx = {}) {
   switch (name) {
     case "bash": {
       const timeout = Math.max(5, parseInt(args.timeout || 30, 10) || 30) * 1000;
@@ -453,6 +504,30 @@ export async function executeTool(name, args, cwd) {
     }
     case "web_search":
       return webSearch(args.query, args.max);
+    case "delegate":
+      /* delegate 由 App 层实现(需要访问子会话状态),这里仅占位提示 */
+      return { error: "内部工具: delegate 应由 agent 运行时处理" };
+    case "todo_write": {
+      if (typeof ctx.todoWrite !== "function") return { error: "todo_write 不可用" };
+      const list = Array.isArray(args.todos) ? args.todos : [];
+      return ctx.todoWrite(
+        list.map((t, i) => ({
+          id: i + 1,
+          subject: String(t.subject || "").slice(0, 120),
+          status: ["pending", "in_progress", "completed"].includes(t.status) ? t.status : "pending",
+        }))
+      );
+    }
+    case "todo_update": {
+      if (typeof ctx.todoUpdate !== "function") return { error: "todo_update 不可用" };
+      const status = ["pending", "in_progress", "completed"].includes(args.status) ? args.status : null;
+      if (!status) return { error: `未知状态: ${args.status}` };
+      return ctx.todoUpdate({
+        index: parseInt(args.index, 10) || 0,
+        subject: args.subject ? String(args.subject) : null,
+        status,
+      });
+    }
     case "get_current_time": {
       const d = new Date();
       const p = (n) => String(n).padStart(2, "0");
