@@ -7,6 +7,10 @@
   </a>
 </p>
 
+<p align="center">
+  <img src="LOGO.png" alt="Uinxed Agent Logo" width="160">
+</p>
+
 <details>
 <summary>🎬 静态截图（不支持 SVG 动画时）</summary>
 

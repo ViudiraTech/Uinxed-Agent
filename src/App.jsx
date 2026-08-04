@@ -22,7 +22,7 @@ import { LineRow } from "./Markdown.jsx";
 import { markdownLines, wrapPlain, diffLines } from "./mdlines.js";
 import { chatStream, chat, listModels, getProfile, checkApiKey, ApiError } from "./provider.js";
 import { TOOL_DEFS, executeTool, executeToolAsync } from "./tools.js";
-import { AGENTS, getAgent, primaryAgents, subAgents, filterTools } from "./agents.js";
+import { AGENTS, getAgent, primaryAgents, subAgents, filterTools, agentSystem } from "./agents.js";
 import { listSkills, skillPromptBlock } from "./skills.js";
 import ActivityPanel, { activityRowCount } from "./ActivityPanel.jsx";
 import { fmtDuration } from "./anim.js";
@@ -559,7 +559,7 @@ export default function App() {
   const startSubAgent = useCallback((subAgentName, task) => {
     const id = `sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     subMsgsRef.current[id] = [
-      { role: "system", content: getAgent(subAgentName).prompt },
+      { role: "system", content: agentSystem(getAgent(subAgentName), loadConfig().model) },
       { role: "user", content: task },
     ];
     subAgentRef.current[id] = subAgentName;
@@ -649,7 +649,7 @@ export default function App() {
     const subTools = filterTools(TOOL_DEFS, sub).filter((d) => d.function.name !== "delegate");
     let msgs = subMsgsRef.current[sid];
     if (!msgs) {
-      msgs = [{ role: "system", content: sub.prompt }, { role: "user", content: task }];
+      msgs = [{ role: "system", content: agentSystem(sub, loadConfig().model) }, { role: "user", content: task }];
       subMsgsRef.current[sid] = msgs;
       subTokensRef.current[sid] = 0;
     }
@@ -799,7 +799,7 @@ export default function App() {
       /* 按模型上下文窗口预算裁剪历史(deepseek 1M / glm 128k) */
       const hist = fitConversation(conversation, requestHistoryBudget(loadConfig().model));
       const msgs = [
-        { role: "system", content: active.prompt + skillPromptBlock(cwd) },
+        { role: "system", content: agentSystem(active, loadConfig().model) + skillPromptBlock(cwd) },
         ...hist,
         { role: "user", content: userText },
       ];
@@ -876,7 +876,7 @@ export default function App() {
             if (res.summary) {
               setMessages((m) => [...m, { role: "assistant", agentName: "compact", content: res.summary, time: Date.now() }]);
             }
-            msgs.splice(0, msgs.length, { role: "system", content: active.prompt }, ...res.newConv);
+            msgs.splice(0, msgs.length, { role: "system", content: agentSystem(active, loadConfig().model) }, ...res.newConv);
             conversationAdded = true; /* 摘要已包含当前用户消息,避免重复前置 */
             setStatus(`✓ 上下文已自动压缩: ${Math.round(estTokens / 1000)}k → ${Math.round(estimateMessagesTokens(res.newConv) / 1000)}k tok`);
             setHistoryUsed(estimateMessagesTokens(msgs));

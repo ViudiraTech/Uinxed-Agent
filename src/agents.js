@@ -92,3 +92,10 @@ export function filterTools(defs, agent) {
   const allow = new Set(agent.tools);
   return defs.filter((d) => allow.has(d.function.name));
 }
+
+/* 系统提示:agent prompt + 当前运行的模型标识(让模型知道自己的身份/id) */
+export function agentSystem(agent, model) {
+  const id = (model || "").trim();
+  const line = id ? `\n\n## 运行时\n你当前运行的模型是: ${id}。回答与代码风格应适配该模型的能力。` : "";
+  return (agent?.prompt || "") + line;
+}
