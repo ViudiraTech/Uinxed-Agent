@@ -734,18 +734,39 @@ export default function App() {
   /* ============ Agent 循环(流式 + 工具) ============ */
 
   /* 上下文压缩:超过阈值时让模型把历史摘要成结构化总结,替换 conversation。
-   * 返回 {compacted, est, window, newConv} */
-  const compressConversation = useCallback(async (conv) => {
+   * 返回 {compacted, est, window, newConv, summary}
+   * manual=true 时跳过阈值;摘要通过 chatStream 流式输出到聊天区。 */
+  const compressConversation = useCallback(async (conv, manual = false) => {
     const model = loadConfig().model;
     const window = getContextWindow(model);
     const est = estimateMessagesTokens(conv);
-    if (est < compactThreshold(model)) return { compacted: false, est, window };
+    if (!manual && est < compactThreshold(model)) return { compacted: false, est, window };
     const prevActivity = activity;
     setActivity({ kind: "compacting", target: "" });
-    setStatus(`上下文已满（≈${Math.round(est / 1000)}k tok）,压缩中…`);
+    if (manual) {
+      setStatus(`压缩中…（≈${Math.round(est / 1000)}k tok）`);
+    } else {
+      setStatus(`上下文已满（≈${Math.round(est / 1000)}k tok）,压缩中…`);
+    }
+    /* 先插入占位消息,后续流式填充 */
+    const compactId = `compact-${Date.now()}`;
+    setMessages((m) => [...m, { id: compactId, role: "assistant", agentName: "compact", content: "", time: Date.now() }]);
+    let acc = "";
+    let lastFlush = 0;
     try {
-      const resp = await chat(buildCompactionConversation(conv), { model });
-      const summary = (resp.content || "").trim() || "(压缩摘要为空)";
+      for await (const chunk of chatStream(buildCompactionConversation(conv), { model })) {
+        if (chunk.content) {
+          acc += chunk.content;
+          const now = Date.now();
+          if (now - lastFlush > 80 || chunk.content.includes("\n")) {
+            setMessages((m) => m.map((x) => x.id === compactId ? { ...x, content: acc } : x));
+            lastFlush = now;
+          }
+        }
+      }
+      /* 最终 flush */
+      setMessages((m) => m.map((x) => x.id === compactId ? { ...x, content: acc } : x));
+      const summary = acc.trim() || "(压缩摘要为空)";
       const newConv = [
         { role: "system", content: `[上下文已压缩]\n\n以下是此前对话的结构化摘要:\n\n${summary}` },
         ...conv.slice(-6),
@@ -753,8 +774,10 @@ export default function App() {
       setConversation(newConv);
       setHistoryUsed(estimateMessagesTokens(newConv));
       setActivity(prevActivity);
-      return { compacted: true, est, window, newConv };
+      return { compacted: true, est, window, newConv, summary };
     } catch (e) {
+      /* 失败时删除占位消息 */
+      setMessages((m) => m.filter((x) => x.id !== compactId));
       setStatus(`压缩失败: ${e.message}`);
       setActivity(prevActivity);
       return { compacted: false, est, window, error: e.message };
@@ -847,8 +870,12 @@ export default function App() {
         setHistoryUsed(estTokens);
         if (!isSub && estTokens >= compactThreshold(loadConfig().model) && Date.now() - lastCompactAtRef.current > 20000) {
           lastCompactAtRef.current = Date.now();
+          setMessages((m) => [...m, { role: "assistant", agentName: "compact", content: "------ 自动压缩 --------", time: Date.now() }]);
           const res = await compressConversation(msgs.slice(1));
           if (res.compacted) {
+            if (res.summary) {
+              setMessages((m) => [...m, { role: "assistant", agentName: "compact", content: res.summary, time: Date.now() }]);
+            }
             msgs.splice(0, msgs.length, { role: "system", content: active.prompt }, ...res.newConv);
             conversationAdded = true; /* 摘要已包含当前用户消息,避免重复前置 */
             setStatus(`✓ 上下文已自动压缩: ${Math.round(estTokens / 1000)}k → ${Math.round(estimateMessagesTokens(res.newConv) / 1000)}k tok`);
@@ -1066,9 +1093,13 @@ export default function App() {
         break;
       }
       case "/compact": {
-        if (busy) { toast("请等待当前任务完成"); break; }
+        if (!conversation.length) { toast("没有对话内容可压缩"); break; }
         setStatus("压缩中…");
-        const res = await compressConversation(conversation);
+        setMessages((m) => [...m, { role: "assistant", agentName: "compact", content: "------ 压缩 --------", time: Date.now() }]);
+        const res = await compressConversation(conversation, true);
+        if (res.summary) {
+          setMessages((m) => [...m, { role: "assistant", agentName: "compact", content: res.summary, time: Date.now() }]);
+        }
         pushToolBlock({ tool: "/compact", status: res.error ? "error" : "ok", error: res.error || null, output:
           res.compacted
             ? `已压缩: ${Math.round(res.est / 1000)}k → ${Math.round(estimateMessagesTokens(res.newConv) / 1000)}k tok（窗口 ${Math.round(res.window / 1000)}k）`

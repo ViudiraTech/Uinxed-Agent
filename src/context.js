@@ -96,6 +96,16 @@ export function fitConversation(msgs, maxTokens) {
     out.unshift(msgs[i]);
     used += t;
   }
+  /* 修复:若截断后首条是 tool 消息,补上对应的 assistant(tool_calls) 消息,避免 API 报错 */
+  if (out.length && out[0].role === "tool") {
+    const firstToolId = out[0].tool_call_id;
+    for (let i = 0; i < msgs.length; i++) {
+      if (msgs[i].role === "assistant" && msgs[i].tool_calls?.some((tc) => tc.id === firstToolId)) {
+        out.unshift(msgs[i]);
+        break;
+      }
+    }
+  }
   return out;
 }
 
