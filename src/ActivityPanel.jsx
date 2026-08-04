@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import React from "react";
+import React, { useRef } from "react";
 import { Box, Text } from "ink";
 import {
   SPINNER_FRAMES_SPIN,
@@ -62,9 +62,18 @@ function SpinnerChar({ t, offset = 0, color }) {
   return <Text color={color}>{frame}</Text>;
 }
 
-/* 逐字符揭示文本(Claude Code "animated status word" ticker 效果) */
+/* 逐字符揭示文本(Claude Code "animated status word" ticker 效果)。
+ * 文本变化时重置动画时钟:旧词瞬间被占位符(光标▌)覆盖,再逐字敲出新词。
+ * 每个字符依次经历 ▌ → ·/_ → 定格,期间行宽不变、不跳格。 */
 function Reveal({ text, t, color, dimColor, t0 = 0 }) {
-  const chars = tickerChars(text, t, t0);
+  const textRef = useRef(text);
+  const startRef = useRef(null);
+  if (textRef.current !== text) {
+    textRef.current = text;
+    startRef.current = t;
+  }
+  if (startRef.current === null) startRef.current = t;
+  const chars = tickerChars(text, t - startRef.current, t0);
   return (
     <Text color={color} dimColor={dimColor}>
       {chars.map((c) => c.ch).join("")}

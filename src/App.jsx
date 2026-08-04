@@ -21,7 +21,7 @@ import Markdown from "./Markdown.jsx";
 import { LineRow } from "./Markdown.jsx";
 import { markdownLines, wrapPlain, diffLines } from "./mdlines.js";
 import { chatStream, chat, listModels, getProfile, checkApiKey, ApiError } from "./provider.js";
-import { TOOL_DEFS, executeTool } from "./tools.js";
+import { TOOL_DEFS, executeTool, executeToolAsync } from "./tools.js";
 import { AGENTS, getAgent, primaryAgents, subAgents, filterTools } from "./agents.js";
 import { listSkills, skillPromptBlock } from "./skills.js";
 import ActivityPanel, { activityRowCount } from "./ActivityPanel.jsx";
@@ -701,7 +701,7 @@ export default function App() {
         const tStart = Date.now();
         let r;
         try {
-          r = await executeTool(tc.function.name, parsed, cwd, { todoWrite, todoUpdate });
+          r = await executeToolAsync(tc.function.name, parsed, cwd, { todoWrite, todoUpdate });
         } catch (e) {
           r = { error: e.message };
         }
@@ -928,7 +928,7 @@ export default function App() {
             } else {
               setActivity({ kind: "tool", target: tc.function.name });
               try {
-                result = await executeTool(tc.function.name, parsed, cwd, { todoWrite, todoUpdate });
+                result = await executeToolAsync(tc.function.name, parsed, cwd, { todoWrite, todoUpdate });
               } catch (e) {
                 result = { error: e.message };
               }

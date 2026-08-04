@@ -18,6 +18,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { listSkills, getSkill } from "./skills.js";
+import { runToolInWorker } from "./workerPool.js";
 
 /* ============ 工具注册表 ============ */
 
@@ -354,8 +355,19 @@ async function webSearch(query, max = 6) {
   return { error: "搜索失败（两个引擎均不可用）" };
 }
 
+/* 重型/纯同步工具(阻塞主线程的部分):放入独立 worker 线程执行。
+ * 其余工具(网络/ctx 回调等)仍走主线程 executeTool。 */
+const WORKER_TOOLS = new Set(["bash", "read_file", "write_file", "edit_file", "list_dir", "grep", "glob"]);
+
+/* 工具执行入口(供 App 使用):重工具走 worker 线程,其余内联。 */
+export async function executeToolAsync(name, args, cwd, ctx = {}) {
+  if (WORKER_TOOLS.has(name)) return runToolInWorker(name, args, cwd);
+  return executeTool(name, args, cwd, ctx);
+}
+
 /* 工具执行器:返回可序列化结果。
- * ctx 提供与 App 状态联动的回调: { todoWrite, todoUpdate } */
+ * ctx 提供与 App 状态联动的回调: { todoWrite, todoUpdate }
+ * 注:heavy 工具由 worker 线程调用本函数,此处保留纯同步实现。 */
 export async function executeTool(name, args, cwd, ctx = {}) {
   switch (name) {
     case "bash": {
