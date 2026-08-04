@@ -162,11 +162,11 @@ export const TOOL_DEFS = [
     type: "function",
     function: {
       name: "delegate",
-      description: "把子任务委托给子 agent 执行并等待返回结果。explorer=快速只读探索代码库；general=可执行多步任务（含写文件/运行命令）。适合把可独立的小任务并行拆分：一次回复中可以多次调用 delegate（每次调用都会并发运行一个子 agent），最后汇总。",
+      description: "把子任务委托给子 agent 执行并等待返回结果。explorer=快速只读探索代码库；general=可执行多步任务（含写文件/运行命令）；coding=编程专家（复杂编程任务，含验证循环/红绿测试）。适合把可独立的小任务并行拆分：一次回复中可以多次调用 delegate（每次调用都会并发运行一个子 agent）。注意：子 agent 返回后要基于结果继续推进整体任务，直到全部完成才结束回合。",
       parameters: {
         type: "object",
         properties: {
-          agent: { type: "string", description: "子 agent 名称：explorer 或 general" },
+          agent: { type: "string", description: "子 agent 名称：explorer / general / coding" },
           task: { type: "string", description: "交给子 agent 的任务描述" },
         },
         required: ["agent", "task"],

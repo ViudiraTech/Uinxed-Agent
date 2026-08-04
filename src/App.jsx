@@ -16,7 +16,7 @@
 
 import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
-import TextInput from "ink-text-input";
+import TextInput from "./SafeTextInput.jsx";
 import Markdown from "./Markdown.jsx";
 import { LineRow } from "./Markdown.jsx";
 import { markdownLines, wrapPlain, diffLines } from "./mdlines.js";
@@ -234,7 +234,6 @@ export default function App() {
   const [showCommands, setShowCommands] = useState(false);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [expandedThinking, setExpandedThinking] = useState(false);
-  const [thinkingCache, setThinkingCache] = useState({}); // msgId -> reasoning
   const [streaming, setStreaming] = useState(null); // 当前流式消息
   /* 输入历史:↑/↓ 回溯,Enter 提交时记录 */
   const inputHistoryRef = useRef([]);
@@ -303,7 +302,7 @@ export default function App() {
 
   const WIDTH = termSize[0];
   const HEIGHT = termSize[1];
-  /* 动态布局:状态栏1 + 外框border2 + 输入区2 + 快捷键1 = 6 固定,
+  /* 动态布局:状态栏2 + 外框border2 + 输入区3 + 快捷键1 = 8 固定,
    * 再叠加命令面板/弹窗/活动动画面板的精确行数,消息区吃掉剩余空间。 */
   const subList = Object.values(subSessions);
   const modalLines = mode === "connect" ? 8 : mode === "login" ? 6 : mode === "model" ? 7 : mode === "migrate" ? 6 : 0;
@@ -313,7 +312,7 @@ export default function App() {
     : 0;
   const sessionListLines = showSessionList ? Math.min(sessions.length, 8) + 2 : 0;
   const activityLines = activityRowCount({ busy, subs: subList, todos, showTodos });
-  const baseFixed = 6 + modalLines + paletteLines + sessionListLines + activityLines;
+  const baseFixed = 8 + modalLines + paletteLines + sessionListLines + activityLines;
   const MSG_HEIGHT = Math.max(HEIGHT - baseFixed, 10);
   /* 子聊天区:固定 6 行开销(框边2 + 题头1 + 输入2 + 快捷键1) */
   const SUB_MSG_HEIGHT = Math.max(HEIGHT - 7, 10);
@@ -645,7 +644,7 @@ export default function App() {
   /* 子 agent 多轮循环:返回 { agent, result } 供主 agent 工具结果回传 */
   const runSubAgentLoop = useCallback(async (sid, subAgentName, task, signal) => {
     const sub = getAgent(subAgentName);
-    if (!sub || sub.role !== "subagent") return { error: `未知子 agent: ${subAgentName}` };
+    if (!sub || (sub.role !== "subagent" && sub.role !== "both")) return { error: `未知子 agent: ${subAgentName}` };
     const subTools = filterTools(TOOL_DEFS, sub).filter((d) => d.function.name !== "delegate");
     let msgs = subMsgsRef.current[sid];
     if (!msgs) {
@@ -687,6 +686,9 @@ export default function App() {
       const toolCalls = finalRes?.toolCalls || [];
       if (!toolCalls.length) {
         const out = subAcc.content || "(空回复)";
+        const finalMsg = { role: "assistant", content: out };
+        if (subAcc.reasoning) finalMsg.reasoning_content = subAcc.reasoning;
+        subMsgsRef.current[sid] = [...msgs, finalMsg];
         updateSub(sid, { busy: false, done: true, status: "完成", result: out, streaming: null });
         return { agent: sub.name, result: out };
       }
@@ -719,14 +721,15 @@ export default function App() {
 
   /* 子聊天区继续对话:把用户新消息追加进指定子会话再跑循环 */
   const continueSubConversation = useCallback((sid, text) => {
+    if (!String(text || "").trim() || subSessionsRef.current[sid]?.busy) return;
     const agentId = subAgentRef.current[sid] || "general";
-    subMsgsRef.current[sid] = [...(subMsgsRef.current[sid] || []), { role: "user", content: text }];
+    subMsgsRef.current[sid] = [...(subMsgsRef.current[sid] || []), { role: "user", content: text.trim() }];
     updateSub(sid, { busy: true, done: false, status: "运行中" });
     setSubInput("");
     cancelRequestedRef.current = false;
     const controller = new AbortController();
     aborter.current = controller;
-    return runSubAgentLoop(sid, agentId, text, controller.signal).finally(() => {
+    return runSubAgentLoop(sid, agentId, text.trim(), controller.signal).finally(() => {
       if (aborter.current === controller) aborter.current = null;
     });
   }, [runSubAgentLoop, updateSub]);
@@ -805,7 +808,6 @@ export default function App() {
       ];
 
       const streamId = Date.now() + "-" + Math.random().toString(36).slice(2, 6);
-      const thinkingId = `think-${streamId}`;
       let streamAcc = { content: "", reasoning: "" };
       let lastFlush = 0;
       let conversationAdded = false;
@@ -827,7 +829,6 @@ export default function App() {
           })) {
             if (chunk.reasoning) {
               streamAcc.reasoning += chunk.reasoning;
-              setThinkingCache((c) => ({ ...c, [thinkingId]: streamAcc.reasoning }));
             }
             if (chunk.content) {
               streamAcc.content += chunk.content;
@@ -873,9 +874,6 @@ export default function App() {
           setMessages((m) => [...m, { role: "assistant", agentName: "compact", content: "------ 自动压缩 --------", time: Date.now() }]);
           const res = await compressConversation(msgs.slice(1));
           if (res.compacted) {
-            if (res.summary) {
-              setMessages((m) => [...m, { role: "assistant", agentName: "compact", content: res.summary, time: Date.now() }]);
-            }
             msgs.splice(0, msgs.length, { role: "system", content: agentSystem(active, loadConfig().model) }, ...res.newConv);
             conversationAdded = true; /* 摘要已包含当前用户消息,避免重复前置 */
             setStatus(`✓ 上下文已自动压缩: ${Math.round(estTokens / 1000)}k → ${Math.round(estimateMessagesTokens(res.newConv) / 1000)}k tok`);
@@ -884,9 +882,7 @@ export default function App() {
         }
 
         const toolCalls = finalRes?.toolCalls || [];
-        const reasoning = thinkingCache[thinkingId] || "";
-
-          if (toolCalls.length) {
+        if (toolCalls.length) {
           /* DeepSeek: assistant 带 tool_calls 时 reasoning_content 必须回传。
            * 同时保留 AI 调用工具前输出的文字，避免被下一轮工具输出覆盖。 */
           const assistantMsg = { role: "assistant", content: streamAcc.content || "", tool_calls: [] };
@@ -900,6 +896,9 @@ export default function App() {
               time: Date.now(),
             }]);
           }
+          /* 同一份内容已经进入历史；立即移除流式副本，避免工具执行期间
+           * reasoning/content 同时从 messages 与 streaming 渲染两次。 */
+          setStreaming(null);
           /* 同一批工具调用并发执行(delegate 多次调用 = 多个子 agent 并行)。
            * 工具块(opencode 风格)内联进消息流:运行中 1 行,完成后可 Ctrl+E 展开输出。 */
           const toolResults = await Promise.all(toolCalls.map(async (tc, ti) => {
@@ -939,7 +938,11 @@ export default function App() {
               error: result?.error || null,
               dur: Date.now() - tStart,
             });
-            const resultText = JSON.stringify(result, null, 2).slice(0, 12000);
+            let resultText = JSON.stringify(result, null, 2).slice(0, 10000);
+            if (tc.function.name === "delegate") {
+              /* 委托返回后明确要求主 agent 继续推进,避免其就此结束回合 */
+              resultText += "\n\n[子 agent 已完成并返回结果。请评估该结果并继续推进整体任务：必要时修正、验证或委托下一个子任务，直到用户任务全部完成；完成后给出最终总结。不要在此结束回合。]";
+            }
             return { role: "tool", tool_call_id: tc.id, content: resultText };
           }));
           if (cancelRequestedRef.current || controller.signal.aborted) {
@@ -967,8 +970,6 @@ export default function App() {
             });
           }
           setStreaming(null);
-          /* 清理本轮 thinking 缓存 */
-          setThinkingCache((c) => { const n = { ...c }; delete n[thinkingId]; return n; });
           streamAcc = { content: "", reasoning: "" };
           continue;
         }
@@ -997,7 +998,6 @@ export default function App() {
         });
         setMessages((m) => [...m, finalMsg]);
         setStreaming(null);
-        setThinkingCache((c) => { const n = { ...c }; delete n[thinkingId]; return n; });
         const u = finalRes?.usage || {};
         setStatus(`${active.name} 完成 · ${u.prompt_tokens || 0}/${u.completion_tokens || 0} tokens${isSub ? "（子任务）" : ""}`);
         setBusy(false);
@@ -1097,9 +1097,6 @@ export default function App() {
         setStatus("压缩中…");
         setMessages((m) => [...m, { role: "assistant", agentName: "compact", content: "------ 压缩 --------", time: Date.now() }]);
         const res = await compressConversation(conversation, true);
-        if (res.summary) {
-          setMessages((m) => [...m, { role: "assistant", agentName: "compact", content: res.summary, time: Date.now() }]);
-        }
         pushToolBlock({ tool: "/compact", status: res.error ? "error" : "ok", error: res.error || null, output:
           res.compacted
             ? `已压缩: ${Math.round(res.est / 1000)}k → ${Math.round(estimateMessagesTokens(res.newConv) / 1000)}k tok（窗口 ${Math.round(res.window / 1000)}k）`
@@ -1590,17 +1587,21 @@ export default function App() {
     }
     const color = msgColor(m);
     const prefix = msgPrefix(m);
-    const header = `${prefix} ${fmtTime(m.time)}${m.agentName ? ` [${m.agentName}]` : ""}`;
+    const label = m.role === "user" ? "You" : m.role === "assistant" ? (m.agentName || "Agent") : "";
+    const header = label ? `${prefix} ${label} · ${fmtTime(m.time)}` : `${prefix} ${fmtTime(m.time)}`;
     rows.push({ kind: "header", m, text: header, color, bold: true });
 
-    /* 思考块（折叠时只显示一行，展开时多行，长行自动换行） */
+    /* 思考块：行模型渲染（opencode 风格折叠），保持固定行高不破坏布局 */
     if (m.reasoning) {
+      const sec = Math.max(1, Math.round(String(m.reasoning).trim().split("\n").length / 20));
       if (expandedThinking) {
-        for (const l of wrapPlain(String(m.reasoning), rowWidth)) {
-          rows.push({ kind: "thinking", m, text: `  ${l}`, color: "gray", dim: true });
+        rows.push({ kind: "thinking", m, text: `┌ ◈ Thought for ${sec}s ▾`, color: "cyan", bold: true });
+        for (const l of wrapPlain(String(m.reasoning), rowWidth - 2)) {
+          rows.push({ kind: "thinking", m, text: `│ ${l}`, color: "gray", dim: true });
         }
+        rows.push({ kind: "thinking", m, text: `└`, color: "gray", dim: true });
       } else {
-        rows.push({ kind: "thinking", m, text: "  ↯ 已思考（Ctrl+T 展开）", color: "gray", dim: true });
+        rows.push({ kind: "thinking", m, text: `┌ ◈ Thought for ${sec}s ▸`, color: "gray", dim: true });
       }
     }
     if (!m.content) return rows;
@@ -1624,7 +1625,7 @@ export default function App() {
     if (streaming) rows = rows.concat(messageToRows(streaming, true));
     if (busy && !streaming && !rows.length) rows.push({ kind: "md", m: null, text: "…", color: "gray" });
     return rows;
-  }, [messages, streaming, showToolDetails, rowWidth, busy]);
+  }, [messages, streaming, showToolDetails, rowWidth, busy, expandedThinking]);
 
   const maxScroll = Math.max(0, allRows.length - MSG_HEIGHT);
   const safeOffset = Math.min(scrollOffset, maxScroll);
@@ -1647,44 +1648,57 @@ export default function App() {
       /* 从 ref 构建子会话 UI 消息:user 原文 + assistant 正文 + tool 一行 */
       const subRows = [];
       let pendingText = null;
+      let pendingReasoning = null;
       let toolName = "";
+      const pushAssistant = () => {
+        if (pendingText || pendingReasoning) {
+          subRows.push({ role: "assistant", content: pendingText || "", reasoning: pendingReasoning || null });
+          pendingText = null;
+          pendingReasoning = null;
+        }
+      };
       for (const m of subMsgs) {
         if (m.role === "user") {
-          if (pendingText) { subRows.push({ role: "assistant", content: pendingText }); pendingText = null; }
+          pushAssistant();
           subRows.push({ role: "user", content: m.content });
         } else if (m.role === "assistant") {
           if (m.content) pendingText = (pendingText || "") + m.content;
+          if (m.reasoning_content) pendingReasoning = (pendingReasoning || "") + m.reasoning_content;
           if (m.tool_calls && m.tool_calls.length) {
-            if (pendingText) { subRows.push({ role: "assistant", content: pendingText }); pendingText = null; }
+            pushAssistant();
             const names = m.tool_calls.map((tc) => tc.function?.name || "?").join(", ");
             toolName = names;
           }
         } else if (m.role === "tool") {
-          if (pendingText) { subRows.push({ role: "assistant", content: pendingText }); pendingText = null; }
+          pushAssistant();
           subRows.push({ role: "tool", content: `⚙ 调用 ${toolName || "工具"}` });
         }
       }
-      if (pendingText) subRows.push({ role: "assistant", content: pendingText });
-      if (cur.streaming?.content) subRows.push({ role: "assistant-stream", content: cur.streaming.content });
+      pushAssistant();
+      if (cur.streaming) {
+        subRows.push({ role: "assistant-stream", content: cur.streaming.content || "", reasoning: cur.streaming.reasoning || null });
+      }
 
       /* 行模型窗口:每个 subRow 转成 markdown 行,再按 SUB_MSG_HEIGHT 切片(同主视图) */
       const subAllRows = [];
       const subRowToLines = (rm) => {
         if (rm.role === "user") {
-          const prefix = "❯ ";
-          const lines = markdownLines(rm.content, Math.max(rowWidth - 2, 10), {});
-          if (!lines.length) return [{ text: prefix, color: "green" }];
-          lines[0].spans = [{ text: prefix, ...(lines[0].spans?.[0]?.color ? {} : {}) }, ...(lines[0].spans || [])];
-          lines[0].color = "green"; lines[0].bold = false;
-          return lines;
+          return [{ text: `❯ You`, color: "green", bold: true }];
         }
         if (rm.role === "tool") {
           return [{ text: rm.content, color: "gray", dim: true }];
         }
-        const base = rm.role === "assistant-stream" ? { color: "gray", dim: true } : { color: subColor };
-        const lines = markdownLines(rm.content, rowWidth, base);
-        if (!lines.length) return [{ ...base, text: "" }];
-        return lines;
+        const isStream = rm.role === "assistant-stream";
+        const headerColor = isStream ? "gray" : subColor;
+        const headerText = `◆ ${cur.agentId}${isStream ? "…" : ""} · ${fmtTime(Date.now())}`;
+        const rows = [{ text: headerText, color: headerColor, bold: true }];
+        if (rm.reasoning) {
+          rows.push({ text: `  ↯ ${String(rm.reasoning).split("\n").length} 行推理`, color: "gray", dim: true });
+        }
+        if (!rm.content) return rows;
+        const lines = markdownLines(rm.content, rowWidth, { color: isStream ? "gray" : subColor, dim: isStream });
+        for (const l of lines) rows.push(l);
+        return rows;
       };
       for (const rm of subRows) subAllRows.push(...subRowToLines(rm));
       const subMax = Math.max(0, subAllRows.length - SUB_MSG_HEIGHT);
@@ -1696,9 +1710,9 @@ export default function App() {
 
       return (
         <Box flexDirection="column" height={HEIGHT} borderStyle="round" borderColor={subColor}>
-          <Box flexShrink={0}>
+          <Box flexShrink={0} paddingX={1}>
             <Text bold color={subColor} wrap="truncate" width={Math.max(WIDTH - 2, 10)}>
-              ◆ 子agent {cur.agentId}{subIds.length > 1 ? `（${subIdx + 1}/${subIds.length}，⇄ 切换）` : ""} · {String(cur.task).slice(0, 36)}{cur.busy ? " · 运行中" : cur.error ? " · 出错" : " · 完成"} · Esc 返回
+              ◆ 子 {cur.agentId}{subIds.length > 1 ? ` (${subIdx + 1}/${subIds.length})` : ""} · {String(cur.task).slice(0, 40)}{cur.busy ? " ▸ 运行中" : cur.error ? " ✗ 出错" : " ✓ 完成"}
             </Text>
           </Box>
           <Box flexGrow={1} flexShrink={1} height={SUB_MSG_HEIGHT} flexDirection="column" paddingX={1} overflow="hidden">
@@ -1715,17 +1729,17 @@ export default function App() {
             ))}
             {cur.streaming && !cur.streaming.content && <Text dimColor>  ↯ 推理中…</Text>}
           </Box>
-          <Box borderStyle="round" borderColor="gray" paddingX={1} flexShrink={0}>
+          <Box borderStyle="round" borderColor={cur.busy ? "gray" : "green"} paddingX={1} flexShrink={0}>
             <TextInput
               value={subInput}
               onChange={setSubInput}
               onSubmit={(v) => continueSubConversation(activeSubId, v)}
-              placeholder={cur.busy ? "子agent 运行中…" : "继续对话，Enter 发送"}
-              disabled={false}
+              placeholder={cur.busy ? "运行中…" : "继续对话…"}
+              disabled={cur.busy}
             />
           </Box>
           <Box flexShrink={0}>
-            <Text dimColor>Esc 返回主界面 · ⇄ 切换子agent · ↑↓ 滚动 · Enter 发送</Text>
+            <Text dimColor> ⇄ 子agent · ↑↓ 滚动 · Esc 返回</Text>
           </Box>
         </Box>
       );
@@ -1736,14 +1750,19 @@ export default function App() {
   return (
     <Box flexDirection="column" height={HEIGHT} borderStyle="round" borderColor="gray">
       {/* 状态栏 */}
-      <Box flexDirection="row" flexShrink={0}>
-        <Text bold color="cyan" wrap="truncate" width={Math.max(WIDTH - 2, 10)}>◆ Uinxed {agent.name} · [{sessions.find((s) => s.id === activeSessionId)?.name || "默认"}] · {provider.name} · {loadConfig().model} · {profile ? profile.username : (provider.apiKey ? "已连接" : "未登录")}{profile && !profile.unlimited ? ` · ¥${(profile.quota || 0).toFixed(2)}` : ""}{historyUsed > 0 ? ` · ` : ""}{historyUsed > 0 ? <Text color={ctxColor}>ctx {ctxPct}%</Text> : null} · {status}</Text>
+      <Box flexDirection="row" flexShrink={0} paddingX={1}>
+        <Text bold color="cyan" wrap="truncate" width={Math.max(WIDTH - 2, 10)}>
+          ◆ {agent.name} · {provider.name} · {loadConfig().model}
+          {profile ? ` · ${profile.username}` : provider.apiKey ? " · 已连接" : ""}
+          {historyUsed > 0 ? <Text color={ctxColor}> · ctx {ctxPct}%</Text> : null}
+          <Text dimColor> · {status}</Text>
+        </Text>
       </Box>
 
       {/* 消息区：行模型切片，每行固定 1 高，不会炸 */}
       <Box flexGrow={1} flexShrink={1} height={MSG_HEIGHT} flexDirection="column" paddingX={1} overflow="hidden">
         {visibleRows.map((r, i) => (
-          <MessageBoundary key={r.m?.time + "-" + r.text + "-" + i}>
+          <MessageBoundary key={r.m?.time + "-" + i}>
             {r.kind === "md" && r.mdline ? (
               <LineRow line={r.mdline} width={rowWidth} />
             ) : (
@@ -1819,7 +1838,7 @@ export default function App() {
               if (paletteActive && matches.length) return;
               onSubmit(v);
             }}
-            placeholder={busy ? "任务执行中…" : "输入消息、/命令 或 @agent 委托"}
+            placeholder={busy ? "…" : "/ 命令 · @agent · ↑↓ 历史"}
             disabled={busy}
           />
         )}
@@ -1833,8 +1852,8 @@ export default function App() {
         )}
       </Box>
 
-      <Box flexShrink={0}>
-        <Text dimColor>Tab 切agent · ↑↓ 滚动/历史/面板 · Ctrl+T 思考 · Ctrl+O 待办 · Ctrl+E 工具详情 → 子agent · / 命令 · @agent 委托 · Esc 取消</Text>
+      <Box flexShrink={0} paddingX={1}>
+        <Text dimColor>Tab agent · Ctrl+T/O/E · ⇄ sub · Esc 退出</Text>
       </Box>
     </Box>
   );

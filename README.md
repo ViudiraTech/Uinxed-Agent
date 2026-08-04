@@ -53,7 +53,7 @@
 
 | | | |
 |:---:|:---:|:---:|
-| 🏗 **多 Agent 协作**<br>build / plan 主 agent 一键切换，explorer / general 子 agent 可**并行委托、实时查看、继续对话，⇄ 循环切换** | 🧠 **活动动画面板**<br>Claude Code 风格：spin 帧、动词轮播 + 逐字 reveal、子 agent 状态树、耗时 / token 平滑计数 | ✅ **待办清单（Todo List）**<br>在对话中实时维护任务进度，`Ctrl+O` 一键面板 |
+| 🏗 **多 Agent 协作**<br>build / coding / plan 主 agent 一键切换，explorer / coding / general 子 agent 可**并行委托、实时查看、继续对话，⇄ 循环切换** | 🧠 **活动动画面板**<br>Claude Code 风格：spin 帧、动词轮播 + 逐字 reveal、子 agent 状态树、耗时 / token 平滑计数 | ✅ **待办清单（Todo List）**<br>在对话中实时维护任务进度，`Ctrl+O` 一键面板 |
 | 🌐 **多提供商**<br>内置本地网关 + DeepSeek，`/connect` 接入任意 OpenAI 兼容服务 | ⚡ **SSE 流式输出**<br>打字机效果，80ms 节流刷新，丝滑不卡屏 | 🧠 **Thinking 可视化**<br>推理过程折叠展示，`Ctrl+T` 展开，长行自动换行 |
 | ⌨️ **命令面板**<br>输入 `/` 即时过滤，21 个内嵌命令 | 💾 **会话持久化**<br>历史 + 推理内容保存在 `~/.config/ux-agent/`（含高速缓存压缩） | 📐 **终端自适应**<br>动态尺寸监听，布局永远吃满终端不溢出；上下文窗口实时估算，超阈值自动压缩 |
 | 🗂 **多会话管理**<br>`/new` 新建、`/sessions` 列表切换（↑↓ / Enter）、`/delete` 按编号或名称删除 | 🗄 **SQLite 存储**<br>会话量增大后自动迁移到 `~/.config/ux-agent/ux-agent.db`，`/storage` 随时与 config.json 互转 | 🧩 **Skills 技能系统**<br>遵循 Agent Skills 开放标准，兼容 Claude Code / opencode / Codex 技能目录，`/skills <名>` 一键加载专项指令 |
@@ -146,6 +146,7 @@ ux-agent --model deepseek-v4-flash # 指定模型
 | Agent | 角色 | 工具权限 |
 |:---|:---|:---|
 | **build** | 默认 agent，完整开发工作流 | 全部（读 / 写 / 执行） |
+| **coding** | 编程专家，复杂编程任务闭环（理解 → 计划 → 实现 → 验证 → 自审），强制"跑通才算完成"的验证循环 | 全部（读 / 写 / 执行） |
 | **plan** | 规划分析，只读模式 | read / grep / glob / 搜索 |
 
 ### 子 Agent（`@name` 或 AI 自动 `delegate`）
@@ -153,6 +154,7 @@ ux-agent --model deepseek-v4-flash # 指定模型
 | Agent | 角色 | 典型场景 |
 |:---|:---|:---|
 | **explorer** | 只读探索 | 快速定位文件、函数、结构 |
+| **coding** | 编程专家 | 复杂编程任务，含验证循环 / 红绿测试，可被 @coding 或 delegate 委托 |
 | **general** | 多步任务 | 可独立完成写文件、跑命令的完整任务 |
 
 > 🤝 **协作闭环**：主 agent 可用 `delegate` 工具把子任务拆给子 agent → 子 agent 独立执行（可随时 `→` 切入观看，甚至直接对话补充要求）→ 完成后**自动回传结果**，主 agent 汇总继续推进。
