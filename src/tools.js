@@ -17,6 +17,7 @@
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { listSkills, getSkill } from "./skills.js";
 
 /* ============ 工具注册表 ============ */
 
@@ -218,6 +219,20 @@ export const TOOL_DEFS = [
           reason: { type: "string", description: "变更原因（可选，仅展示）" },
         },
         required: ["status"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "use_skill",
+      description: "加载项目技能(skill)的完整指令。系统提示中列出可用技能时,任务匹配就用本工具加载再执行;先执行本工具获取指令,再按指令完成工作。",
+      parameters: {
+        type: "object",
+        properties: {
+          skill: { type: "string", description: "技能名称(见系统提示的[可用技能]列表)" },
+        },
+        required: ["skill"],
       },
     },
   },
@@ -527,6 +542,19 @@ export async function executeTool(name, args, cwd, ctx = {}) {
         subject: args.subject ? String(args.subject) : null,
         status,
       });
+    }
+    case "use_skill": {
+      const skill = getSkill(String(args.skill || ""), cwd);
+      if (!skill) {
+        const names = listSkills(cwd).map((s) => s.name);
+        return { error: `技能不存在: ${args.skill || "(空)"}。可用技能: ${names.length ? names.join(", ") : "无"}` };
+      }
+      return {
+        skill: skill.name,
+        description: skill.description,
+        instructions: skill.body.slice(0, 20000),
+        source: skill.dir,
+      };
     }
     case "get_current_time": {
       const d = new Date();

@@ -224,25 +224,25 @@ export function markdownLines(md, width, style = {}) {
           out.push({ text: "─".repeat(Math.min(width - 4, 40)), spans: null, indent: base.indent || 0, color: "gray", dim: true });
           break;
         case "table": {
-          /* 列宽对齐 + 外边框:┌──┐ 包裹整个表格 */
-          const headerCells = (t.header || []).map(cellText);
-          const bodyRows = (t.rows || []).map((r) => r.map(cellText));
+          /* 列宽对齐 + 外边框 + 单元格内联样式保留(加粗/代码等)。
+           * 短单元格保留 spans 渲染，超宽则回退纯文本换行。 */
+          const headerCells = t.header || [];
+          const bodyRows = t.rows || [];
           const numCols = Math.max(headerCells.length, ...bodyRows.map((r) => r.length), 1);
           const pad = (arr) => {
             const a = arr.slice(0, numCols);
-            while (a.length < numCols) a.push("");
+            while (a.length < numCols) a.push({ tokens: [], text: "" });
             return a;
           };
           const allRows = [pad(headerCells), ...bodyRows.map(pad)];
           const widths = [];
           for (let c = 0; c < numCols; c++) {
             let w = 1;
-            for (const r of allRows) w = Math.max(w, stringWidth(r[c]));
-            widths.push(w);
+            for (const r of allRows) w = Math.max(w, stringWidth(cellText(r[c])));
+            widths.push(w + 2);
           }
-          /* 总宽 = 边框│(2) + 各列宽 + 分隔(列间×3)。超出时压缩最宽列 */
           const maxW = Math.max(width - 2 - (base.indent || 0), 8);
-          let totalW = 2 + widths.reduce((a, b) => a + b, 0) + (numCols - 1) * 3;
+          let totalW = 2 + widths.reduce((a, b) => a + b, 0) + (numCols - 1);
           let guard = 0;
           while (totalW > maxW && guard < 200) {
             guard++;
@@ -252,40 +252,55 @@ export function markdownLines(md, width, style = {}) {
             widths[mi]--;
             totalW--;
           }
-          /* 生成单元格换行后的对齐片段 */
-          const rowSegs = (cells) => cells.map((cell, i) => cellWrap(cell, widths[i]));
-          /* 顶部边框:┌──┬──┐ */
+          /* 单元格按列宽换行，返回 span[][]（每行一个 span 数组） */
+          const cellSpanLines = (cell, colW) => {
+            const tokens = cell.tokens || [];
+            const spans = inlineSpans(tokens, { color: "white" });
+            const text = inlineText(tokens);
+            const contentW = colW - 2; // 1 space padding each side
+            if (stringWidth(text) <= contentW) {
+              const padded = text + " ".repeat(contentW - stringWidth(text));
+              return [[{ text: " " + padded + " ", color: "white" }]];
+            }
+            const wrapped = cellWrap(text, contentW);
+            return wrapped.map((l) => [{ text: " " + l + " ".repeat(contentW - stringWidth(l)), color: "white" }]);
+          };
+          const rowSpanSegs = (cells) => cells.map((cell, i) => cellSpanLines(cell, widths[i]));
+          /* 顶部边框 */
           out.push({
             text: "┌" + widths.map((w) => "─".repeat(w)).join("┬") + "┐",
             spans: null, indent: base.indent || 0, color: "gray",
           });
-          /* 逐行渲染: 每个单元格超宽时已按列独立换行，左右各加一个 │ */
-          const emitBody = (cells, segs, isLast) => {
-            const n = Math.max(...segs.map((p) => p.length));
+          /* 逐行渲染：每个单元格可能多行（换行），跨单元格对齐 */
+          const emitBody = (cells, spanSegs, isLast) => {
+            const n = Math.max(...spanSegs.map((s) => s.length));
             for (let l = 0; l < n; l++) {
-              const seg = cells.map((_, i) =>
-                l < segs[i].length ? segs[i][l] : " ".repeat(widths[i])
-              );
+              const lineSpans = [{ text: "│", color: "gray" }];
+              for (let c = 0; c < numCols; c++) {
+                if (l < spanSegs[c].length) {
+                  lineSpans.push(...spanSegs[c][l]);
+                } else {
+                  lineSpans.push({ text: " ".repeat(widths[c]), color: "white" });
+                }
+                if (c < numCols - 1) lineSpans.push({ text: "│", color: "gray" });
+              }
+              lineSpans.push({ text: "│", color: "gray" });
               const isBottom = isLast && l === n - 1;
               out.push({
-                text: "│" + seg.join("│") + (isBottom ? "│" : "│"),
-                spans: null, indent: base.indent || 0, color: isBottom ? "gray" : "white",
-                bold: false, dim: isBottom,
+                spans: lineSpans, indent: base.indent || 0,
+                color: isBottom ? "gray" : "white", bold: false, dim: isBottom,
               });
             }
           };
-          /* 表头行 + 分隔线 */
-          emitBody(allRows[0], rowSegs(allRows[0]), allRows.length === 1);
+          emitBody(allRows[0], rowSpanSegs(allRows[0]), allRows.length === 1);
           if (allRows.length > 1) {
             out.push({
               text: "├" + widths.map((w) => "─".repeat(w)).join("┼") + "┤",
               spans: null, indent: base.indent || 0, color: "gray",
             });
           }
-          /* 数据行 + 底部边框 */
           for (let r = 1; r < allRows.length; r++) {
-            const isLast = r === allRows.length - 1;
-            emitBody(allRows[r], rowSegs(allRows[r]), isLast);
+            emitBody(allRows[r], rowSpanSegs(allRows[r]), r === allRows.length - 1);
           }
           out.push({
             text: "└" + widths.map((w) => "─".repeat(w)).join("┴") + "┘",
@@ -315,6 +330,39 @@ export function markdownLines(md, width, style = {}) {
 }
 
 export { stringWidth };
+
+/* unified diff → 带颜色行数组（+绿/-红/头蓝/@@青）。返回 {text,color,bold,dim} 行 */
+function classifyDiffLine(line) {
+  if (line.startsWith("diff --git") || line.startsWith("index ") ||
+      line.startsWith("--- ") || line.startsWith("+++ ")) {
+    return { color: "blue", bold: false };
+  }
+  if (line.startsWith("@")) return { color: "cyan", bold: true };
+  if (line.startsWith("+")) return { color: "green", bold: false };
+  if (line.startsWith("-")) return { color: "red", bold: false };
+  return { color: "white", bold: false };
+}
+
+export function diffLines(diffText, width) {
+  const out = [];
+  const maxW = Math.max(width - 2, 10);
+  const raw = clean(String(diffText ?? "")).split("\n");
+  for (const line of raw) {
+    if (!line.trim() && !line.startsWith("+") && !line.startsWith("-")) {
+      if (out.length) out.push({ text: "", spans: null, indent: 0 });
+      continue;
+    }
+    const { color, bold } = classifyDiffLine(line);
+    if (stringWidth(line) <= maxW) {
+      out.push({ text: line, spans: null, indent: 0, color, bold });
+    } else {
+      for (const piece of wrapPlain(line, maxW)) {
+        out.push({ text: piece, spans: null, indent: 0, color, bold });
+      }
+    }
+  }
+  return out.filter((l) => l.text !== "");
+}
 
 /* 纯文本按宽度换行（thinking 等非 markdown 长文本），返回行数组 */
 export function wrapPlain(text, width) {

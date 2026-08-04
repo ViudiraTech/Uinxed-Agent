@@ -19,12 +19,14 @@ import { Box, Text, useApp, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import Markdown from "./Markdown.jsx";
 import { LineRow } from "./Markdown.jsx";
-import { markdownLines, wrapPlain } from "./mdlines.js";
+import { markdownLines, wrapPlain, diffLines } from "./mdlines.js";
 import { chatStream, chat, listModels, getProfile, checkApiKey, ApiError } from "./provider.js";
 import { TOOL_DEFS, executeTool } from "./tools.js";
 import { AGENTS, getAgent, primaryAgents, subAgents, filterTools } from "./agents.js";
+import { listSkills, skillPromptBlock } from "./skills.js";
 import ActivityPanel, { activityRowCount } from "./ActivityPanel.jsx";
 import { fmtDuration } from "./anim.js";
+import { execSync } from "node:child_process";
 import {
   getContextWindow, compactThreshold, requestHistoryBudget, COMPACT_RATIO,
   estimateTokenCount, estimateMessagesTokens, fitConversation, buildCompactionConversation,
@@ -61,10 +63,44 @@ const COMMANDS = [
   { cmd: "/todos", desc: "显示当前任务清单" },
   { cmd: "/cd", desc: "切换工作目录" },
   { cmd: "/pwd", desc: "显示工作目录" },
-  { cmd: "/new", desc: "清空当前会话" },
-  { cmd: "/clear", desc: "清空本地历史" },
+  { cmd: "/new", desc: "新建会话（/new <名字>）" },
+  { cmd: "/sessions", desc: "会话列表与切换（↑↓ 选择 · Enter 切换）" },
+  { cmd: "/delete", desc: "删除会话（/delete <编号或名称>）" },
+  { cmd: "/diff", desc: "代码改动审阅（git diff · +绿/-红）" },
+  { cmd: "/skills", desc: "技能系统（/skills <名称> 加载指令）" },
+  { cmd: "/clear", desc: "清空当前会话历史" },
   { cmd: "/exit", desc: "退出" },
 ];
+
+/* 会话拾取器(/sessions):↑↓ 选择高亮,Enter 切换 */
+function SessionPicker({ sessions, activeSessionId, index, width }) {
+  if (!sessions.length) return null;
+  const fmtAgo = (ts) => {
+    const s = Math.max(0, (Date.now() - ts) / 1000);
+    if (s < 60) return "刚刚";
+    if (s < 3600) return `${Math.round(s / 60)} 分钟前`;
+    if (s < 86400) return `${Math.round(s / 3600)} 小时前`;
+    return `${Math.round(s / 86400)} 天前`;
+  };
+  const cur = sessions[Math.min(index, sessions.length - 1)];
+  return (
+    <Box flexDirection="column" marginBottom={1} borderStyle="round" borderColor="cyan" paddingX={1}>
+      <Text bold color="cyan" wrap="truncate" width={Math.max(width, 10)}>
+        ▸ 会话列表（{sessions.length}）· ↑↓ 选择 · Enter 切换 · Esc 取消
+      </Text>
+      {sessions.slice(0, 8).map((s, i) => {
+        const sel = cur?.id === s.id;
+        const count = (s.history || []).length;
+        return (
+          <Text key={s.id} color={s.id === activeSessionId ? "green" : "white"}
+            bold={sel} dim={!sel} wrap="truncate" width={Math.max(width, 10)}>
+            {`  ${i + 1}. ${s.name}${s.id === activeSessionId ? "（当前）" : ""}${sel ? " ◂" : ""} · ${count} 条 · ${s.agentId || "build"}${fmtAgo(s.updatedAt) ? " · " + fmtAgo(s.updatedAt) : ""}`}
+          </Text>
+        );
+      })}
+    </Box>
+  );
+}
 
 function CommandPalette({ input, onPick }) {
   const q = input.slice(1).toLowerCase();
@@ -195,6 +231,24 @@ export default function App() {
   const [expandedThinking, setExpandedThinking] = useState(false);
   const [thinkingCache, setThinkingCache] = useState({}); // msgId -> reasoning
   const [streaming, setStreaming] = useState(null); // 当前流式消息
+  /* 输入历史:↑/↓ 回溯,Enter 提交时记录 */
+  const inputHistoryRef = useRef([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  /* 命令面板:匹配时 ↑/↓ 切换高亮,Enter 选中 */
+  const [paletteIndex, setPaletteIndex] = useState(0);
+
+  /* ===== 多会话管理:每个会话独立 history/conversation/agent/cwd ===== */
+  const [sessions, setSessions] = useState(cfg.sessions || []);
+  const [activeSessionId, setActiveSessionId] = useState(cfg.activeSessionId || null);
+  const [showSessionList, setShowSessionList] = useState(false); // /sessions 拾取器
+  const [sessionIndex, setSessionIndex] = useState(0);
+  const sessionsRef = useRef(cfg.sessions || []);
+  const activeSessionIdRef = useRef(cfg.activeSessionId || null);
+  const messagesRef = useRef([]);
+  const conversationRef = useRef(cfg.conversation || []);
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  useEffect(() => { conversationRef.current = conversation; }, [conversation]);
 
   /* ===== 多子 agent 会话:delegate/@name 可并发创建,⇄ 键切换查看 ===== */
   const [subSessions, setSubSessions] = useState({}); // id -> {id, agentId, task, status, streaming, busy, done, error, result, tokens, startedAt}
@@ -227,6 +281,7 @@ export default function App() {
   const [showToolDetails, setShowToolDetails] = useState(false);
 
   const aborter = useRef(null);
+  const cancelRequestedRef = useRef(false);
   const toastTimer = useRef(null);
 
   /* 终端动态尺寸:resize 时自动重算,布局吃满终端 */
@@ -247,8 +302,9 @@ export default function App() {
   const paletteLines = showPalette
     ? Math.min(COMMANDS.filter((c) => c.cmd.includes(input.slice(1).toLowerCase())).length, 6)
     : 0;
+  const sessionListLines = showSessionList ? Math.min(sessions.length, 8) + 2 : 0;
   const activityLines = activityRowCount({ busy, subs: subList, todos, showTodos });
-  const baseFixed = 6 + modalLines + paletteLines + activityLines;
+  const baseFixed = 6 + modalLines + paletteLines + sessionListLines + activityLines;
   const MSG_HEIGHT = Math.max(HEIGHT - baseFixed, 10);
   /* 子聊天区:固定 6 行开销(框边2 + 题头1 + 输入2 + 快捷键1) */
   const SUB_MSG_HEIGHT = Math.max(HEIGHT - 7, 10);
@@ -280,15 +336,64 @@ export default function App() {
     toastTimer.current = setTimeout(() => setStatus("就绪"), 3000);
   }, []);
 
+  /* 持久化:写入当前活动会话 + 兼容顶层 history/conversation 字段 */
   const persist = useCallback((msgs, conv) => {
+    const history = msgs
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((m) => ({ role: m.role, content: m.content, time: m.time, reasoning: m.reasoning }))
+      .slice(-200);
+    const conversation = (conv || conversationRef.current).slice(-200);
+    const sid = activeSessionIdRef.current;
+    const updated = sid
+      ? sessionsRef.current.map((s) => (s.id === sid ? { ...s, history, conversation, agentId, cwd, updatedAt: Date.now() } : s))
+      : sessionsRef.current;
+    setSessions(updated);
+    saveConfig({ history, conversation, sessions: updated, activeSessionId: sid || null });
+  }, [agentId, cwd]);
+
+  /* 切换到指定会话(先落盘当前会话,再载入目标会话) */
+  const switchSession = useCallback((sid, saveCur = true) => {
+    if (busy) { toast("请等待当前任务完成"); return; }
+    const cur = sessionsRef.current;
+    let next = cur;
+    if (saveCur && activeSessionIdRef.current) {
+      const curMsgs = messagesRef.current;
+      const curConv = conversationRef.current;
+      next = cur.map((s) => s.id === activeSessionIdRef.current
+        ? {
+          ...s,
+          history: curMsgs.filter((m) => m.role === "user" || m.role === "assistant")
+            .map((m) => ({ role: m.role, content: m.content, time: m.time, reasoning: m.reasoning }))
+            .slice(-200),
+          conversation: curConv.slice(-200),
+          agentId, cwd, updatedAt: Date.now(),
+        }
+        : s);
+    }
+    const target = next.find((s) => s.id === sid);
+    if (!target) { toast("会话不存在"); return; }
+    clearScreen();
+    setSubView(false); setActiveSubId(null); setSubSessions({});
+    setMessages(target.history.length
+      ? target.history.map((m) => ({ ...m, time: m.time || Date.now() }))
+      : [{ role: "assistant", content: "新会话已开始。", time: Date.now() }]);
+    setConversation(target.conversation || []);
+    conversationRef.current = target.conversation || [];
+    setHistoryUsed(estimateMessagesTokens(target.conversation || []));
+    if (target.agentId) setAgentId(target.agentId);
+    if (target.cwd) setCwd(target.cwd);
+    setScrollOffset(0);
+    setSessions(next);
+    setActiveSessionId(sid);
+    activeSessionIdRef.current = sid;
+    setShowSessionList(false);
+    setSessionIndex(0);
     saveConfig({
-      history: msgs
-        .filter((m) => m.role === "user" || m.role === "assistant")
-        .map((m) => ({ role: m.role, content: m.content, time: m.time, reasoning: m.reasoning }))
-        .slice(-200),
-      conversation: (conv || conversation).slice(-200),
+      history: target.history, conversation: target.conversation || [],
+      sessions: next, activeSessionId: sid,
     });
-  }, [conversation]);
+    setStatus(`已切换到会话: ${target.name}`);
+  }, [busy, toast, clearScreen, agentId, cwd]);
 
   const refreshProfile = useCallback(async () => {
     try { return await getProfile(); } catch { return null; }
@@ -297,7 +402,13 @@ export default function App() {
   useEffect(() => {
     clearScreen();
     const cfg = loadConfig();
-    const hist = cfg.history;
+    const sessList = cfg.sessions || [];
+    const active = sessList.find((s) => s.id === cfg.activeSessionId) || sessList[0] || null;
+    const hist = active ? active.history : cfg.history;
+    setSessions(sessList);
+    sessionsRef.current = sessList;
+    setActiveSessionId(active?.id || null);
+    activeSessionIdRef.current = active?.id || null;
     if (hist.length) {
       setMessages(hist.map((m) => ({ ...m, time: m.time || Date.now() })));
     } else {
@@ -309,9 +420,11 @@ export default function App() {
     }
     /* 恢复 API 深度上下文(不含 tool 块,仅 user/assistant):否则重启后模型失去前文。
      * historyUsed 同步恢复,让状态栏 ctx% 从启动起就准确。 */
-    const conv = cfg.conversation || [];
+    const conv = active ? active.conversation : cfg.conversation || [];
     setConversation(conv);
+    conversationRef.current = conv;
     if (conv.length) setHistoryUsed(estimateMessagesTokens(conv));
+    if (active?.cwd) setCwd(active.cwd);
     const p = getActiveProvider();
     if (p?.apiKey) {
       refreshProfile().then((u) => {
@@ -415,7 +528,7 @@ export default function App() {
   };
 
   /* 子 agent 多轮循环:返回 { agent, result } 供主 agent 工具结果回传 */
-  const runSubAgentLoop = useCallback(async (sid, subAgentName, task, maxSteps = 8) => {
+  const runSubAgentLoop = useCallback(async (sid, subAgentName, task, maxSteps = 8, signal) => {
     const sub = getAgent(subAgentName);
     if (!sub || sub.role !== "subagent") return { error: `未知子 agent: ${subAgentName}` };
     const subTools = filterTools(TOOL_DEFS, sub).filter((d) => d.function.name !== "delegate");
@@ -432,7 +545,7 @@ export default function App() {
       subAcc = { content: "", reasoning: "" };
       updateSub(sid, { status: `运行中 (${step + 1}/${maxSteps})` });
       try {
-        for await (const chunk of chatStream(msgs, { tools: subTools })) {
+        for await (const chunk of chatStream(msgs, { tools: subTools, signal })) {
           if (chunk.reasoning) subAcc.reasoning += chunk.reasoning;
           if (chunk.content) {
             subAcc.content += chunk.content;
@@ -449,6 +562,10 @@ export default function App() {
         );
         updateSub(sid, { tokens: subTokensRef.current[sid] });
       } catch (e) {
+        if (e.name === "AbortError" || signal?.aborted) {
+          updateSub(sid, { busy: false, done: true, status: "已停止", error: null, streaming: null });
+          return { agent: sub.name, cancelled: true, result: null };
+        }
         updateSub(sid, { busy: false, done: true, status: "出错", error: e.message, streaming: null });
         return { agent: sub.name, error: e.message, result: null };
       }
@@ -476,6 +593,10 @@ export default function App() {
         subTokensRef.current[sid] = (subTokensRef.current[sid] || 0) + estimateTokenCount(JSON.stringify(r));
         return { role: "tool", tool_call_id: tc.id, content: JSON.stringify(r).slice(0, 12000) };
       }));
+      if (signal?.aborted) {
+        updateSub(sid, { busy: false, done: true, status: "已停止", streaming: null });
+        return { agent: sub.name, cancelled: true, result: null };
+      }
       subMsgsRef.current[sid] = msgs = [...msgs, subAssistantMsg, ...subResults];
       updateSub(sid, { streaming: null });
     }
@@ -490,7 +611,12 @@ export default function App() {
     subMsgsRef.current[sid] = [...(subMsgsRef.current[sid] || []), { role: "user", content: text }];
     updateSub(sid, { busy: true, done: false, status: "运行中" });
     setSubInput("");
-    return runSubAgentLoop(sid, agentId, text, 8);
+    cancelRequestedRef.current = false;
+    const controller = new AbortController();
+    aborter.current = controller;
+    return runSubAgentLoop(sid, agentId, text, 8, controller.signal).finally(() => {
+      if (aborter.current === controller) aborter.current = null;
+    });
   }, [runSubAgentLoop, updateSub]);
 
   /* ============ Agent 循环(流式 + 工具) ============ */
@@ -538,7 +664,7 @@ export default function App() {
       /* 按模型上下文窗口预算裁剪历史(deepseek 1M / glm 128k) */
       const hist = fitConversation(conversation, requestHistoryBudget(loadConfig().model));
       const msgs = [
-        { role: "system", content: active.prompt },
+        { role: "system", content: active.prompt + skillPromptBlock(cwd) },
         ...hist,
         { role: "user", content: userText },
       ];
@@ -551,16 +677,18 @@ export default function App() {
       busySinceRef.current = Date.now();
       turnTokensRef.current = 0;
       setHistoryUsed(estimateMessagesTokens(msgs));
+      cancelRequestedRef.current = false;
+      const controller = new AbortController();
+      aborter.current = controller;
 
       for (let step = 0; step < 12; step++) {
         setStatus(`${active.name} 思考中… (${step + 1}/12)`);
         setActivity({ kind: "thinking", target: "" });
         let finalRes = null;
-        aborter.current = new AbortController();
         try {
           for await (const chunk of chatStream(msgs, {
             tools: toolDefs,
-            signal: aborter.current.signal,
+            signal: controller.signal,
           })) {
             if (chunk.reasoning) {
               streamAcc.reasoning += chunk.reasoning;
@@ -584,9 +712,10 @@ export default function App() {
             setStreaming({ id: streamId, role: "assistant", content: streamAcc.content, reasoning: streamAcc.reasoning, time: Date.now() });
           }
         } catch (e) {
-          if (e.name === "AbortError") {
+          if (e.name === "AbortError" || controller.signal.aborted) {
             setStatus("已取消"); setStreaming(null); setBusy(false);
             setActivity(null); turnTokensRef.current = 0;
+            if (aborter.current === controller) aborter.current = null;
             return;
           }
           setMessages((m) => [...m, {
@@ -597,6 +726,7 @@ export default function App() {
           setStatus("出错");
           setStreaming(null); setBusy(false);
           setActivity(null); turnTokensRef.current = 0;
+          if (aborter.current === controller) aborter.current = null;
           return;
         }
 
@@ -640,9 +770,9 @@ export default function App() {
               const subTask = parsed.task || "帮我完成这个任务";
               setActivity({ kind: "delegate", target: subName });
               const sid = startSubAgent(subName, subTask);
-              const subRes = await runSubAgentLoop(sid, subName, subTask, 8);
+              const subRes = await runSubAgentLoop(sid, subName, subTask, 8, controller.signal);
               updateSub(sid, {
-                busy: false, done: true, status: subRes.error ? "出错" : "完成",
+                busy: false, done: true, status: subRes.cancelled ? "已停止" : subRes.error ? "出错" : "完成",
                 result: subRes.result, error: subRes.error || null,
               });
               result = { subagent: subName, output: subRes };
@@ -664,6 +794,12 @@ export default function App() {
             const resultText = JSON.stringify(result, null, 2).slice(0, 12000);
             return { role: "tool", tool_call_id: tc.id, content: resultText };
           }));
+          if (cancelRequestedRef.current || controller.signal.aborted) {
+            setStatus("已取消"); setStreaming(null); setBusy(false);
+            setActivity(null); turnTokensRef.current = 0;
+            if (aborter.current === controller) aborter.current = null;
+            return;
+          }
           msgs.push(assistantMsg);            // assistant 在前
           for (const tr of toolResults) msgs.push(tr);  // tool 结果在后
           if (!conversationAdded) {
@@ -719,6 +855,7 @@ export default function App() {
         setBusy(false);
         setActivity(null);
         turnTokensRef.current = 0;
+        if (aborter.current === controller) aborter.current = null;
         refreshProfile();
         return;
       }
@@ -726,6 +863,7 @@ export default function App() {
       setBusy(false); setStreaming(null);
       setActivity(null); turnTokensRef.current = 0;
       setStatus("达到步骤上限");
+      if (aborter.current === controller) aborter.current = null;
     },
     [messages, conversation, cwd, persist, agent, refreshProfile, streaming, clearScreen,
      runSubAgentLoop, startSubAgent, updateSub, todoWrite, todoUpdate, compressConversation,
@@ -869,33 +1007,151 @@ export default function App() {
       case "/pwd":
         setStatus(`工作目录: ${cwd}`);
         break;
-      case "/new":
+      case "/new": {
+        /* 保存当前会话并新建(会话可 /sessions 恢复) */
+        const name = arg.trim() || `会话 ${sessionsRef.current.length + 1}`;
+        const sid = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+        const curMsgs = messagesRef.current;
+        const curConv = conversationRef.current;
+        const cur = sessionsRef.current;
+        const updated = activeSessionIdRef.current
+          ? cur.map((s) => s.id === activeSessionIdRef.current
+            ? {
+              ...s,
+              history: curMsgs.filter((m) => m.role === "user" || m.role === "assistant")
+                .map((m) => ({ role: m.role, content: m.content, time: m.time, reasoning: m.reasoning }))
+                .slice(-200),
+              conversation: curConv.slice(-200), agentId, cwd, updatedAt: Date.now(),
+            }
+            : s)
+          : cur;
+        const all = [...updated, { id: sid, name, history: [], conversation: [], agentId, cwd, updatedAt: Date.now() }];
+        setSessions(all);
+        sessionsRef.current = all;
+        setActiveSessionId(sid);
+        activeSessionIdRef.current = sid;
+        setShowSessionList(false);
         clearScreen();
-        setMessages([{ role: "assistant", content: "新会话已开始。", time: Date.now() }]);
+        setMessages([{ role: "assistant", content: `新会话「${name}」已开始。`, time: Date.now() }]);
         setConversation([]);
-        saveConfig({ history: [], conversation: [] });
+        conversationRef.current = [];
+        setHistoryUsed(0);
+        setSubSessions({}); setSubView(false);
+        setScrollOffset(0);
+        saveConfig({ history: [], conversation: [], sessions: all, activeSessionId: sid });
+        setStatus(`新会话: ${name}，共 ${all.length} 个会话（/sessions 切换）`);
         break;
+      }
       case "/clear":
         clearScreen();
-        setMessages([{ role: "assistant", content: "历史已清空。", time: Date.now() }]);
+        setMessages([{ role: "assistant", content: "当前会话历史已清空。", time: Date.now() }]);
         setConversation([]);
-        saveConfig({ history: [], conversation: [] });
+        conversationRef.current = [];
+        setHistoryUsed(0);
+        persist([{ role: "assistant", content: "当前会话历史已清空。", time: Date.now() }], []);
         break;
+      case "/sessions": {
+        const list = sessionsRef.current;
+        if (!list.length) {
+          pushToolBlock({ tool: "/sessions", status: "ok", output: "暂无会话。/new 创建;每次对话自动落盘到当前会话。" });
+          break;
+        }
+        setSessionIndex(Math.max(0, list.findIndex((s) => s.id === activeSessionIdRef.current)));
+        setShowSessionList(true);
+        setShowCommands(false);
+        setStatus("↑↓ 选择会话 · Enter 切换 · Esc 取消");
+        break;
+      }
+      case "/delete": {
+        const list = sessionsRef.current;
+        if (!list.length) { toast("没有可删除的会话"); break; }
+        let target = null;
+        if (/^\d+$/.test(arg)) target = list[Math.min(Number(arg) - 1, list.length - 1)];
+        else target = list.find((s) => s.id === arg || s.name === arg);
+        if (!target) { toast(`没有会话: ${arg}（编号或名称）`); break; }
+        const remaining = list.filter((s) => s.id !== target.id) || [];
+        setSessions(remaining);
+        sessionsRef.current = remaining;
+        saveConfig({ sessions: remaining });
+        if (!remaining.length) {
+          if (target.id === activeSessionIdRef.current) {
+            setMessages([{ role: "assistant", content: "会话已清空。输入 /new 开始新会话。", time: Date.now() }]);
+            setConversation([]); conversationRef.current = []; setHistoryUsed(0);
+            activeSessionIdRef.current = null; setActiveSessionId(null);
+            saveConfig({ history: [], conversation: [], sessions: [], activeSessionId: null });
+          }
+        } else if (target.id === activeSessionIdRef.current) {
+          switchSession(remaining[0].id, false);
+        }
+        setStatus(`已删除会话: ${target.name}`);
+        break;
+      }
+      case "/diff": {
+        setStatus("生成代码改动…");
+        try {
+          const q = JSON.stringify(cwd);
+          const stat = execSync(`git -C ${q} diff HEAD --stat --color=never 2>/dev/null`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+          const body = execSync(`git -C ${q} diff HEAD --color=never 2>/dev/null`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).toString();
+          const staged = execSync(`git -C ${q} diff --cached --color=never 2>/dev/null`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).toString();
+          let untracked = [];
+          try { untracked = execSync(`git -C ${q} ls-files --others --exclude-standard`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).toString().trim().split("\n").filter(Boolean); } catch {}
+          if (!stat && !staged.trim() && !untracked.length) {
+            pushToolBlock({ tool: "/diff", status: "ok", output: "工作区无改动（git HEAD 一致）。" });
+            break;
+          }
+          const parts = [];
+          if (stat) parts.push(stat);
+          if (staged.trim()) parts.push("── 已暂存 ──\n" + staged.trim());
+          if (body.trim()) parts.push(body.trim());
+          if (untracked.length) parts.push(`── 未跟踪 ${untracked.length} 个文件 ──\n${untracked.map((f) => `- ${f}`).join("\n")}`);
+          setMessages((m) => [...m, {
+            role: "diff", tool: "/diff", status: "ok",
+            content: parts.join("\n\n"), time: Date.now(),
+          }]);
+          setStatus(`代码改动审阅: ${stat ? stat.split("\n").pop().trim() : "无暂存改动"}（+绿 / -红）`);
+        } catch (e) {
+          pushToolBlock({ tool: "/diff", status: "error", error: `${cwd} 不是 git 仓库`, output: "/diff 需要 git 仓库。可用 git init 初始化后重试。" });
+        }
+        break;
+      }
+      case "/skills": {
+        if (arg) {
+          const res = await executeTool("use_skill", { skill: arg }, cwd, {});
+          if (res && res.error) {
+            pushToolBlock({ tool: `/skills ${arg}`, status: "error", error: res.error, output: "可用: /skills 或 /skills <名称>" });
+          } else {
+            pushToolBlock({ tool: `/skills ${arg}`, status: "ok", output: `【${res.skill}】${res.description || ""}\n来源: ${res.source}\n\n${res.instructions}` });
+          }
+        } else {
+          const skills = listSkills(cwd);
+          pushToolBlock({
+            tool: "/skills", status: "ok",
+            output: skills.length
+              ? skills.map((s) => `- ${s.name}${s.description ? `: ${s.description}` : ""}（${s.dir}）`).join("\n") + "\n\n加载指令: /skills <名称>"
+              : "未在 .ux-agent/skills/ 下找到技能。创建目录后自动识别:\n  项目: <项目>/.ux-agent/skills/<name>/SKILL.md\n  全局: ~/.config/ux-agent/skills/<name>/SKILL.md",
+          });
+        }
+        break;
+      }
       case "/exit":
         exit();
         break;
       default:
         setStatus(`未知命令: ${name}（/help）`);
     }
-  }, [cwd, exit, refreshProfile, clearScreen, toast, compressConversation, conversation, todos, pushToolBlock]);
+  }, [cwd, exit, refreshProfile, clearScreen, toast, compressConversation, conversation, todos, pushToolBlock, persist, switchSession]);
 
   /* ============ 输入 ============ */
-  const onSubmit = (value) => {
-    if (busy) { toast("请等待当前任务完成"); return; }
-    const text = value.trim();
-    if (!text) return;
-    setShowCommands(false);
-    if (text.startsWith("/")) { runCommand(text); setInput(""); return; }
+   const onSubmit = (value) => {
+     if (busy) { toast("请等待当前任务完成"); return; }
+     const text = value.trim();
+     if (!text) return;
+     setShowCommands(false);
+     if (inputHistoryRef.current[0] !== text) {
+       inputHistoryRef.current = [text, ...inputHistoryRef.current].slice(0, 50);
+     }
+     setHistoryIndex(-1);
+     if (text.startsWith("/")) { runCommand(text); setInput(""); return; }
     const p = getActiveProvider();
     if (!p.apiKey) { setMode("login"); setStatus(`请为 ${p.name} 输入 API Key`); return; }
     const sub = subAgents().find((a) => text.startsWith(`@${a.name}`));
@@ -914,7 +1170,10 @@ export default function App() {
       busySinceRef.current = Date.now();
       turnTokensRef.current = 0;
       const sid = startSubAgent(sub.name, rest || "帮我完成这个任务");
-      runSubAgentLoop(sid, sub.name, rest || "帮我完成这个任务", 8).then((res) => {
+      cancelRequestedRef.current = false;
+      const controller = new AbortController();
+      aborter.current = controller;
+      runSubAgentLoop(sid, sub.name, rest || "帮我完成这个任务", 8, controller.signal).then((res) => {
         setBusy(false);
         if (res?.result) {
           setMessages((m) => [...m, {
@@ -929,10 +1188,12 @@ export default function App() {
             time: Date.now(),
           }]);
         }
-        setStatus(`子agent ${sub.name} ${res?.error ? "出错" : "完成"}（→ 查看结果）`);
+        setStatus(`子agent ${sub.name} ${res?.cancelled ? "已停止" : res?.error ? "出错" : "完成"}（→ 查看结果）`);
         setActivity(null); turnTokensRef.current = 0;
       }).catch(() => {
         setBusy(false); setStatus(`子agent ${sub.name} 异常`); setActivity(null);
+      }).finally(() => {
+        if (aborter.current === controller) aborter.current = null;
       });
       return;
     }
@@ -990,6 +1251,12 @@ export default function App() {
   };
   useInput((_input, key) => {
     if (key.escape) {
+      if (aborter.current && !aborter.current.signal.aborted) {
+        cancelRequestedRef.current = true;
+        aborter.current.abort();
+        setStatus("正在停止…");
+        return;
+      }
       if (subView) {
         subScrollRef.current[activeSubId] = subScrollOffset;
         setSubView(false);
@@ -1009,6 +1276,17 @@ export default function App() {
       return;
     }
     if (mode !== "chat") return;
+    /* 会话拾取器(/sessions):↑↓ 选择,Enter 切换,Esc 取消 */
+    if (showSessionList) {
+      const list = sessionsRef.current;
+      if (key.escape) { setShowSessionList(false); setStatus("就绪"); return; }
+      if (key.upArrow) { setSessionIndex((i) => Math.max(i - 1, 0)); return; }
+      if (key.downArrow) { setSessionIndex((i) => Math.min(i + 1, list.length - 1)); return; }
+      if (key.return && list.length) {
+        switchSession(list[Math.min(sessionIndex, list.length - 1)].id);
+        return;
+      }
+    }
     if (key.tab) {
       const primaries = primaryAgents();
       const idx = primaries.findIndex((a) => a.id === agentId);
@@ -1039,11 +1317,45 @@ export default function App() {
         return !v;
       });
     }
-    if (key.ctrl && (_input === "e" || _input === "E")) {
+     if (key.ctrl && (_input === "e" || _input === "E")) {
       setShowToolDetails((v) => {
         setStatus(v ? "工具详情已折叠" : "工具详情已展开（Ctrl+E 切换）");
         return !v;
       });
+    }
+    /* 命令面板:↑/↓ 切换高亮,Enter 选中当前高亮命令 */
+    if (showPalette) {
+      const matches = COMMANDS.filter((c) => c.cmd.includes(input.slice(1).toLowerCase()));
+      if (key.upArrow) { setPaletteIndex((i) => Math.max(i - 1, 0)); return; }
+      if (key.downArrow) { setPaletteIndex((i) => Math.min(i + 1, matches.length - 1)); return; }
+      if (key.return && matches.length) {
+        const pick = matches[Math.min(paletteIndex, matches.length - 1)];
+        setInput(pick.cmd);
+        setShowCommands(false);
+        setPaletteIndex(0);
+        onSubmit(pick.cmd);
+        return;
+      }
+    }
+    /* 输入历史:输入框有内容时↑/↓回溯;为空时↑/↓滚聊天区 */
+    if (key.upArrow && input) {
+      if (inputHistoryRef.current.length) {
+        const idx = Math.min(historyIndex + 1, inputHistoryRef.current.length - 1);
+        setHistoryIndex(idx);
+        setInput(inputHistoryRef.current[idx]);
+      }
+      return;
+    }
+    if (key.downArrow && input) {
+      if (historyIndex > 0) {
+        const idx = historyIndex - 1;
+        setHistoryIndex(idx);
+        setInput(inputHistoryRef.current[idx]);
+      } else {
+        setHistoryIndex(-1);
+        setInput("");
+      }
+      return;
     }
     if (key.upArrow) setScrollOffset((o) => Math.min(o + 3, 10000));
     if (key.downArrow) setScrollOffset((o) => Math.max(o - 3, 0));
@@ -1058,6 +1370,14 @@ export default function App() {
   /* 单条消息 → 行数组（每行固定 1 高） */
   const messageToRows = (m, isStreaming) => {
     const rows = [];
+    /* 代码改动审阅(/diff):绿+/红- 高亮,始终展开 */
+    if (m.role === "diff") {
+      rows.push({ kind: "tool", m, text: `◇ ${m.tool || "代码改动"} · ${m.status || "ok"}`, color: "blue", bold: true });
+      for (const l of diffLines(m.content, rowWidth)) {
+        rows.push({ kind: "diff", m, text: `  ${l.text}`, color: l.color, bold: l.bold, dim: l.dim });
+      }
+      return rows;
+    }
     /* 工具块(opencode 风格):折叠 = 1 行状态头,展开 = 状态头 + 参数 + 输出。
      * 命令输出(/help 等)始终展开。随消息流滚动,不悬浮、不挤占。 */
     if (m.role === "tool") {
@@ -1230,7 +1550,7 @@ export default function App() {
     <Box flexDirection="column" height={HEIGHT} borderStyle="round" borderColor="gray">
       {/* 状态栏 */}
       <Box flexDirection="row" flexShrink={0}>
-        <Text bold color="cyan" wrap="truncate" width={Math.max(WIDTH - 2, 10)}>◆ Uinxed {agent.name} · {provider.name} · {loadConfig().model} · {profile ? profile.username : (provider.apiKey ? "已连接" : "未登录")}{profile && !profile.unlimited ? ` · ¥${(profile.quota || 0).toFixed(2)}` : ""}{historyUsed > 0 ? ` · ` : ""}{historyUsed > 0 ? <Text color={ctxColor}>ctx {ctxPct}%</Text> : null} · {status}</Text>
+        <Text bold color="cyan" wrap="truncate" width={Math.max(WIDTH - 2, 10)}>◆ Uinxed {agent.name} · [{sessions.find((s) => s.id === activeSessionId)?.name || "默认"}] · {provider.name} · {loadConfig().model} · {profile ? profile.username : (provider.apiKey ? "已连接" : "未登录")}{profile && !profile.unlimited ? ` · ¥${(profile.quota || 0).toFixed(2)}` : ""}{historyUsed > 0 ? ` · ` : ""}{historyUsed > 0 ? <Text color={ctxColor}>ctx {ctxPct}%</Text> : null} · {status}</Text>
       </Box>
 
       {/* 消息区：行模型切片，每行固定 1 高，不会炸 */}
@@ -1267,6 +1587,11 @@ export default function App() {
       {/* 命令面板 */}
       {showPalette && <CommandPalette input={input} />}
 
+      {/* 会话拾取器 */}
+      {showSessionList && (
+        <SessionPicker sessions={sessions} activeSessionId={activeSessionId} index={sessionIndex} width={rowWidth} />
+      )}
+
       {/* Claude Code 风格活动动画面板（思考/工具/子agent/待办） */}
       <Box flexShrink={0} height={activityLines} overflow="hidden">
         <ActivityPanel
@@ -1287,8 +1612,15 @@ export default function App() {
         {mode === "chat" && (
           <TextInput
             value={input}
-            onChange={(v) => { setInput(v); setShowCommands(v.startsWith("/")); }}
-            onSubmit={onSubmit}
+            onChange={(v) => { setInput(v); setShowCommands(v.startsWith("/")); setPaletteIndex(0); setHistoryIndex(-1); }}
+            onSubmit={(v) => {
+              /* 命令面板有匹配时,Enter 交给面板处理(面板已提交选中的命令),
+               * 避免 TextInput 与面板各执行一次 → 命令跑两遍 */
+              const paletteActive = mode === "chat" && showCommands && v.startsWith("/");
+              const matches = paletteActive ? COMMANDS.filter((c) => c.cmd.includes(v.slice(1).toLowerCase())) : [];
+              if (paletteActive && matches.length) return;
+              onSubmit(v);
+            }}
             placeholder={busy ? "任务执行中…" : "输入消息、/命令 或 @agent 委托"}
             disabled={busy}
           />
@@ -1304,7 +1636,7 @@ export default function App() {
       </Box>
 
       <Box flexShrink={0}>
-        <Text dimColor>Tab 切agent · ↑↓ 滚动 · Ctrl+T 思考 · Ctrl+O 待办 · Ctrl+E 工具详情 · → 子agent · / 命令 · @agent 委托 · Esc 取消</Text>
+        <Text dimColor>Tab 切agent · ↑↓ 滚动/历史/面板 · Ctrl+T 思考 · Ctrl+O 待办 · Ctrl+E 工具详情 → 子agent · / 命令 · @agent 委托 · Esc 取消</Text>
       </Box>
     </Box>
   );

@@ -52,12 +52,32 @@ export function loadConfig() {
     const raw = fs.readFileSync(CONFIG_FILE, "utf8");
     const cfg = JSON.parse(raw);
     const providers = ensureProviders(cfg.providers);
+    const sessions = Array.isArray(cfg.sessions) ? cfg.sessions : [];
+    /* 旧版单会话数据迁移成 sessions */
+    if (!sessions.length && (Array.isArray(cfg.history) && cfg.history.length || Array.isArray(cfg.conversation) && cfg.conversation.length)) {
+      sessions.push({
+        id: "s-default",
+        name: "会话 1",
+        history: Array.isArray(cfg.history) ? cfg.history : [],
+        conversation: Array.isArray(cfg.conversation) ? cfg.conversation : [],
+        agentId: cfg.agentId || "build",
+        cwd: cfg.cwd || null,
+        updatedAt: Date.now(),
+      });
+      /* 一次性落盘,下次直接读 sessions 不再迁移 */
+      try {
+        fs.mkdirSync(CONFIG_DIR, { recursive: true });
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify({ ...cfg, sessions, activeSessionId: "s-default" }, null, 2), "utf8");
+      } catch {}
+    }
     return {
       apiKey: null, // 废弃:全部走 provider.apiKey
       baseUrl: cfg.baseUrl || DEFAULT_BASE_URL,
       model: cfg.model || DEFAULT_MODEL,
       history: Array.isArray(cfg.history) ? cfg.history : [],
       conversation: Array.isArray(cfg.conversation) ? cfg.conversation : [],
+      sessions,
+      activeSessionId: cfg.activeSessionId || sessions[0]?.id || null,
       providers,
       activeProvider: cfg.activeProvider || providers[0]?.id || "ux-gateway",
       thinking: cfg.thinking !== false,
@@ -67,7 +87,8 @@ export function loadConfig() {
     const providers = ensureProviders();
     return {
       apiKey: null, baseUrl: DEFAULT_BASE_URL, model: DEFAULT_MODEL,
-      history: [], conversation: [], providers, activeProvider: providers[0].id, thinking: true, cwd: null,
+      history: [], conversation: [], sessions: [], activeSessionId: null,
+      providers, activeProvider: providers[0].id, thinking: true, cwd: null,
     };
   }
 }
