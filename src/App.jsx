@@ -860,9 +860,19 @@ export default function App() {
         const reasoning = thinkingCache[thinkingId] || "";
 
           if (toolCalls.length) {
-          /* DeepSeek: assistant 带 tool_calls 时 reasoning_content 必须回传 */
-          const assistantMsg = { role: "assistant", content: "", tool_calls: [] };
+          /* DeepSeek: assistant 带 tool_calls 时 reasoning_content 必须回传。
+           * 同时保留 AI 调用工具前输出的文字，避免被下一轮工具输出覆盖。 */
+          const assistantMsg = { role: "assistant", content: streamAcc.content || "", tool_calls: [] };
           assistantMsg.reasoning_content = streamAcc.reasoning || "";
+          if (streamAcc.content || streamAcc.reasoning) {
+            setMessages((m) => [...m, {
+              role: "assistant",
+              agentName: active.name,
+              content: streamAcc.content || "",
+              reasoning: streamAcc.reasoning || undefined,
+              time: Date.now(),
+            }]);
+          }
           /* 同一批工具调用并发执行(delegate 多次调用 = 多个子 agent 并行)。
            * 工具块(opencode 风格)内联进消息流:运行中 1 行,完成后可 Ctrl+E 展开输出。 */
           const toolResults = await Promise.all(toolCalls.map(async (tc, ti) => {

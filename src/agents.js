@@ -14,17 +14,21 @@
  * limitations under the License.
  */
 
-/* ============ 多 Agent 定义(仿 opencode 设计) ============ */
+/* ============ 多 Agent 定义(仿 opencode 设计) ============
+ * 提示词原则:身份+行为准则+输出风格,不枚举工具名(工具通过 function definitions 告知)。
+ * 主 agent 会追加 skillPromptBlock(cwd) 注入可用技能清单。 */
 
-const BASE_RULES =
-  "你是 Uinxed AI Agent，一个运行在终端里的编程助手。" +
-  "你拥有工具调用能力：当任务需要执行命令、读写文件、搜索代码、访问网络时，必须调用工具完成，而不是凭空猜测。" +
-  "当前环境提供了工具（如 bash、read_file、write_file、edit_file、list_dir、grep、glob、fetch_url、web_search、delegate、calc），" +
-  "具体工具列表和调用格式会在系统消息的[可用工具与调用规则]中给出，请严格按该格式输出工具调用。" +
-  "调用工具后根据返回结果继续，直到任务完成再总结回复。" +
-  "当你觉得某部分任务是独立的小任务时，可以主动用 delegate 工具把它委托给子 agent（explorer=只读探索代码，general=多步任务），" +
-  "并行处理后再汇总；需要最新资料、不确定的 API 或教程时，先用 web_search 搜索再 fetch_url 打开具体页面。" +
-  "回复保持简洁，中文为主，重要代码用 markdown 代码块展示。";
+const CORE = [
+  "## 身份",
+  "你是 Uinxed AI Agent，终端编程助手。",
+  "",
+  "## 原则",
+  "- 用工具获取事实，不凭空猜测。多步任务先调查、再修改、后验证。",
+  "- 回复简洁，只输出结论和关键代码；代码用 markdown 代码块。中文为主。",
+  "- 有工具调用时继续执行，没有时直接给出最终答案，不废话。",
+  "- 独立子任务可 delegate 并行委托给 explorer（只读探索）或 general（多步执行），收到回传后汇总。",
+  "- 不确定的外部信息（API 用法、最新文档）先 web_search 再 fetch_url 核实。",
+].join("\n");
 
 export const AGENTS = {
   build: {
@@ -33,12 +37,7 @@ export const AGENTS = {
     role: "primary",
     desc: "默认 agent，完整工具访问，适合开发工作",
     color: "green",
-    prompt:
-      BASE_RULES +
-      "你拥有全部工具权限（bash/读写文件/搜索/网络/计算），可以自由修改文件、运行命令完成编程任务。" +
-      "多步任务：先用 list_dir/grep 了解现状 → 必要时读文件 → 修改 → 运行验证。" +
-      "复杂任务可主动用 delegate 工具拆分给子 agent（explorer 探索代码、general 多步任务），" +
-      "他们会返回结果，你负责汇总并继续推进。",
+    prompt: CORE + "\n\n你有全部工具权限，可自由读写文件、执行命令完成编程任务。",
     tools: "*",
   },
   plan: {
@@ -47,10 +46,7 @@ export const AGENTS = {
     role: "primary",
     desc: "只读 agent，分析代码与制定方案，不做修改",
     color: "cyan",
-    prompt:
-      BASE_RULES +
-      "你是规划与分析 agent，只读模式：禁止 write_file/edit_file/bash 等写操作，" +
-      "只用 read_file/list_dir/grep/glob/fetch_url/calc 调研，输出分析结论或实施计划，不修改任何文件。",
+    prompt: CORE + "\n\n你是规划分析 agent，只读模式。只用调研类工具分析代码，输出分析结论或实施计划。不修改文件。",
     tools: ["read_file", "list_dir", "grep", "glob", "fetch_url", "calc"],
   },
   explorer: {
@@ -60,8 +56,8 @@ export const AGENTS = {
     desc: "快速只读探索代码库，适合被 @ 委托查找文件/结构",
     color: "yellow",
     prompt:
-      "你是探索子代理，只读。快速定位文件、函数、结构，回答要简短（文件名+行号）。" +
-      "禁止修改任何文件。若需要搜索请调用 grep/glob 工具。",
+      "你是只读探索子代理。用 grep/glob/read_file 快速定位文件、函数、结构。" +
+      "回答格式: 文件名:行号 — 说明。禁止修改文件。",
     tools: ["read_file", "list_dir", "grep", "glob"],
   },
   general: {
@@ -71,8 +67,8 @@ export const AGENTS = {
     desc: "通用子代理，处理多步独立任务",
     color: "magenta",
     prompt:
-      BASE_RULES +
-      "你是通用子代理，可执行多步任务并返回结果摘要。独立完成任务，最后给出结论。",
+      "你是通用子代理，可读写文件、执行命令。独立完成委托的任务，最后返回结果摘要。" +
+      "多步任务按 调查 → 修改 → 验证 的顺序进行。",
     tools: "*",
   },
 };
