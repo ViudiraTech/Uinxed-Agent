@@ -43,7 +43,7 @@ import {
   CONFIG_DIR,
   CONFIG_FILE,
 } from "./config.js";
-import { initDb, closeDb, dbReady, dbLoadSessions, dbSaveSession, dbDeleteSession, dbSessionCount, DB_FILE } from "./db.js";
+import { initDb, closeDb, dbReady, dbLoadSessions, dbSaveSession, dbDeleteSession, dbDeleteAllSessions, dbSessionCount, DB_FILE } from "./db.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -74,6 +74,7 @@ const COMMANDS = [
   { cmd: "/diff", desc: "代码改动审阅（git diff · +绿/-红）" },
   { cmd: "/skills", desc: "技能系统（/skills <名称> 加载指令）" },
   { cmd: "/clear", desc: "清空当前会话历史" },
+  { cmd: "/restore", desc: "恢复出厂设置（删除所有会话数据）" },
   { cmd: "/exit", desc: "退出" },
 ];
 
@@ -250,6 +251,7 @@ export default function App() {
   const storageRef = useRef(cfg.storage === "db" && dbReady());
   const pendingLegacyRef = useRef(null); // 待迁移的旧 config.json 会话数据
   const [migrateInput, setMigrateInput] = useState("");
+  const [restoreInput, setRestoreInput] = useState("");
   const sessionsRef = useRef(cfg.sessions || []);
   const activeSessionIdRef = useRef(cfg.activeSessionId || null);
   const messagesRef = useRef([]);
@@ -529,6 +531,29 @@ export default function App() {
     restoreApp(loadConfig(), ok);
     setStatus(ok ? "已迁移到数据库（可随时用 /storage config 切回）" : "迁移失败，继续使用 config.json");
   }, [restoreApp, changeStorage]);
+
+  const onRestoreSubmit = useCallback((v) => {
+    const ans = String(v || "").trim().toLowerCase();
+    if (ans !== "y" && ans !== "yes") {
+      setMode("chat");
+      setStatus("已取消恢复");
+      return;
+    }
+    dbDeleteAllSessions();
+    closeDb();
+    try { fs.rmSync(DB_FILE, { force: true }); } catch {}
+    try { fs.rmSync(CONFIG_FILE, { force: true }); } catch {}
+    setSessions([]);
+    sessionsRef.current = [];
+    setActiveSessionId(null);
+    activeSessionIdRef.current = null;
+    setMessages([{ role: "assistant", content: "已恢复出厂设置，所有数据已清除。", time: Date.now() }]);
+    setConversation([]);
+    conversationRef.current = [];
+    setHistoryUsed(0);
+    setMode("chat");
+    setStatus("已恢复出厂设置");
+  }, []);
 
   useEffect(() => {
     clearScreen();
@@ -1304,6 +1329,9 @@ export default function App() {
         }
         break;
       }
+      case "/restore":
+        setMode("restore");
+        break;
       case "/exit":
         exit();
         break;
@@ -1437,6 +1465,8 @@ export default function App() {
       if (mode !== "chat") {
         /* 迁移弹窗 Esc = 暂不迁移(等价 n) */
         if (mode === "migrate") { onMigrateSubmit("n"); return; }
+        /* 恢复弹窗 Esc = 取消 */
+        if (mode === "restore") { onRestoreSubmit("n"); return; }
         setMode("chat"); setConnectProvider(null); return;
       }
     }
@@ -1797,6 +1827,17 @@ export default function App() {
             <Text bold color="cyan" wrap="wrap">检测到旧版 config.json 会话数据（{pendingLegacyRef.current?.sessions?.length || 1} 个），是否迁移到 SQLite？</Text>
             <TextInput value={migrateInput} onChange={setMigrateInput} onSubmit={onMigrateSubmit} placeholder="y 迁入数据库（推荐） · n 继续用 config.json" />
             <Text dimColor wrap="wrap">迁移后 config.json 只保留配置（不再膨胀）；Esc = 暂不迁移</Text>
+          </Box>
+        </Box>
+      )}
+
+      {/* 恢复出厂确认弹窗 */}
+      {mode === "restore" && (
+        <Box borderStyle="round" borderColor="red" paddingX={1} height={6}>
+          <Box flexDirection="column">
+            <Text bold color="red" wrap="wrap">⚠ 确认恢复出厂设置？这将删除所有会话数据（数据库 + config.json 会话记录），此操作不可撤销。</Text>
+            <TextInput value={restoreInput} onChange={setRestoreInput} onSubmit={onRestoreSubmit} placeholder="y 确认删除所有数据 · Esc 取消" />
+            <Text dimColor wrap="wrap">删除后需要重新创建会话；Esc = 取消</Text>
           </Box>
         </Box>
       )}

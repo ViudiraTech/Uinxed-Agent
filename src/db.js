@@ -112,6 +112,11 @@ export function dbDeleteSession(id) {
   try { initDb().prepare("DELETE FROM sessions WHERE id = ?").run(id); } catch {}
 }
 
+export function dbDeleteAllSessions() {
+  if (!dbReady()) return;
+  try { initDb().prepare("DELETE FROM sessions").run(); } catch {}
+}
+
 function safeJson(s) {
   try { return JSON.parse(s || "[]"); } catch { return []; }
 }
