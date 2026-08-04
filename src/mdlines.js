@@ -364,7 +364,8 @@ export function diffLines(diffText, width) {
   return out.filter((l) => l.text !== "");
 }
 
-/* 纯文本按宽度换行（thinking 等非 markdown 长文本），返回行数组 */
+/* 纯文本按宽度换行（thinking 等非 markdown 长文本），返回行数组。
+ * O(n) 逐字符累计显示宽度,避免对巨型单行反复 stringWidth(全行) 导致 O(n²)。 */
 export function wrapPlain(text, width) {
   const maxW = Math.max(width - 2, 10);
   const raw = clean(String(text ?? "")).split("\n");
@@ -372,14 +373,15 @@ export function wrapPlain(text, width) {
   for (const line of raw) {
     if (!line) { out.push(""); continue; }
     if (stringWidth(line) <= maxW) { out.push(line); continue; }
-    let rest = line;
-    while (stringWidth(rest) > maxW) {
-      let cut = Math.max(1, Math.floor(maxW / 2));
-      while (cut < rest.length && stringWidth(rest.slice(0, cut)) < maxW) cut++;
-      out.push(rest.slice(0, cut));
-      rest = rest.slice(cut);
+    let pos = 0;
+    while (pos < line.length) {
+      let end = pos + 1;
+      while (end <= line.length && stringWidth(line.slice(pos, end)) <= maxW) end++;
+      end--;
+      if (end <= pos) end = pos + 1;
+      out.push(line.slice(pos, end));
+      pos = end;
     }
-    if (rest) out.push(rest);
   }
   return out;
 }

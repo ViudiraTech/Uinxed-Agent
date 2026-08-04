@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import Markdown from "./Markdown.jsx";
@@ -643,7 +643,7 @@ export default function App() {
   };
 
   /* 子 agent 多轮循环:返回 { agent, result } 供主 agent 工具结果回传 */
-  const runSubAgentLoop = useCallback(async (sid, subAgentName, task, maxSteps = 8, signal) => {
+  const runSubAgentLoop = useCallback(async (sid, subAgentName, task, signal) => {
     const sub = getAgent(subAgentName);
     if (!sub || sub.role !== "subagent") return { error: `未知子 agent: ${subAgentName}` };
     const subTools = filterTools(TOOL_DEFS, sub).filter((d) => d.function.name !== "delegate");
@@ -655,10 +655,10 @@ export default function App() {
     }
     let subAcc = { content: "", reasoning: "" };
     let subLastFlush = 0;
-    for (let step = 0; step < maxSteps; step++) {
+    for (let step = 0; ; step++) {
       let finalRes = null;
       subAcc = { content: "", reasoning: "" };
-      updateSub(sid, { status: `运行中 (${step + 1}/${maxSteps})` });
+      updateSub(sid, { status: `运行中 (${step + 1} 步)` });
       try {
         for await (const chunk of chatStream(msgs, { tools: subTools, signal })) {
           if (chunk.reasoning) subAcc.reasoning += chunk.reasoning;
@@ -715,9 +715,6 @@ export default function App() {
       subMsgsRef.current[sid] = msgs = [...msgs, subAssistantMsg, ...subResults];
       updateSub(sid, { streaming: null });
     }
-    const out = subAcc.content || "(达到步骤上限)";
-    updateSub(sid, { busy: false, done: true, status: "完成", result: out, streaming: null });
-    return { agent: sub.name, result: out };
   }, [cwd, updateSub, todoWrite, todoUpdate]);
 
   /* 子聊天区继续对话:把用户新消息追加进指定子会话再跑循环 */
@@ -729,7 +726,7 @@ export default function App() {
     cancelRequestedRef.current = false;
     const controller = new AbortController();
     aborter.current = controller;
-    return runSubAgentLoop(sid, agentId, text, 8, controller.signal).finally(() => {
+    return runSubAgentLoop(sid, agentId, text, controller.signal).finally(() => {
       if (aborter.current === controller) aborter.current = null;
     });
   }, [runSubAgentLoop, updateSub]);
@@ -796,8 +793,8 @@ export default function App() {
       const controller = new AbortController();
       aborter.current = controller;
 
-      for (let step = 0; step < 12; step++) {
-        setStatus(`${active.name} 思考中… (${step + 1}/12)`);
+      for (let step = 0; ; step++) {
+        setStatus(`${active.name} 思考中… (第 ${step + 1} 次)`);
         setActivity({ kind: "thinking", target: "" });
         let finalRes = null;
         try {
@@ -885,7 +882,7 @@ export default function App() {
               const subTask = parsed.task || "帮我完成这个任务";
               setActivity({ kind: "delegate", target: subName });
               const sid = startSubAgent(subName, subTask);
-              const subRes = await runSubAgentLoop(sid, subName, subTask, 8, controller.signal);
+              const subRes = await runSubAgentLoop(sid, subName, subTask, controller.signal);
               updateSub(sid, {
                 busy: false, done: true, status: subRes.cancelled ? "已停止" : subRes.error ? "出错" : "完成",
                 result: subRes.result, error: subRes.error || null,
@@ -893,7 +890,6 @@ export default function App() {
               result = { subagent: subName, output: subRes };
             } else {
               setActivity({ kind: "tool", target: tc.function.name });
-              if (tc.function.name === "bash") clearScreen();
               try {
                 result = await executeTool(tc.function.name, parsed, cwd, { todoWrite, todoUpdate });
               } catch (e) {
@@ -974,11 +970,6 @@ export default function App() {
         refreshProfile();
         return;
       }
-      setMessages((m) => [...m, { role: "assistant", agentName: active.name, content: "步骤数已达上限。", time: Date.now() }]);
-      setBusy(false); setStreaming(null);
-      setActivity(null); turnTokensRef.current = 0;
-      setStatus("达到步骤上限");
-      if (aborter.current === controller) aborter.current = null;
     },
     [messages, conversation, cwd, persist, agent, refreshProfile, streaming, clearScreen,
      runSubAgentLoop, startSubAgent, updateSub, todoWrite, todoUpdate, compressConversation,
@@ -1315,7 +1306,7 @@ export default function App() {
       cancelRequestedRef.current = false;
       const controller = new AbortController();
       aborter.current = controller;
-      runSubAgentLoop(sid, sub.name, rest || "帮我完成这个任务", 8, controller.signal).then((res) => {
+      runSubAgentLoop(sid, sub.name, rest || "帮我完成这个任务", controller.signal).then((res) => {
         setBusy(false);
         if (res?.result) {
           setMessages((m) => [...m, {
@@ -1541,13 +1532,18 @@ export default function App() {
       if (!isCmd) head += open ? " · 折叠详情" : " · 展开详情";
       rows.push({ kind: "tool", m, text: head, color, bold: true });
       if (open) {
+        const ck = `_t${rowWidth}`;
+        if (m[ck]) { rows.push(...m[ck]); return rows; }
+        const toolRows = [];
         const brief = toolArgsBrief(m.args);
-        if (brief) rows.push({ kind: "tool", m, text: `  $ ${brief}`, color: "gray", dim: true });
+        if (brief) toolRows.push({ kind: "tool", m, text: `  $ ${brief}`, color: "gray", dim: true });
         if (outText) {
           for (const l of wrapPlain(outText, Math.max(rowWidth - 2, 8))) {
-            rows.push({ kind: "tool", m, text: `  ${l}`, color: "gray", dim: true });
+            toolRows.push({ kind: "tool", m, text: `  ${l}`, color: "gray", dim: true });
           }
         }
+        m[ck] = toolRows;
+        rows.push(...toolRows);
       }
       return rows;
     }
@@ -1579,11 +1575,15 @@ export default function App() {
     return rows;
   };
 
-  /* 全部可见行（含流式中的消息；思考/子agent活动动画改由 ActivityPanel 呈现） */
-  let allRows = [];
-  for (const m of messages) allRows = allRows.concat(messageToRows(m, false));
-  if (streaming) allRows = allRows.concat(messageToRows(streaming, true));
-  if (busy && !streaming && !allRows.length) allRows.push({ kind: "md", m: null, text: "…", color: "gray" });
+  /* 全部可见行（含流式中的消息；思考/子agent活动动画改由 ActivityPanel 呈现）。
+   * useMemo:避免每次渲染重复 wrap 所有工具输出(展开时 O(n)→O(n²))。 */
+  const allRows = useMemo(() => {
+    let rows = [];
+    for (const m of messages) rows = rows.concat(messageToRows(m, false));
+    if (streaming) rows = rows.concat(messageToRows(streaming, true));
+    if (busy && !streaming && !rows.length) rows.push({ kind: "md", m: null, text: "…", color: "gray" });
+    return rows;
+  }, [messages, streaming, showToolDetails, rowWidth, busy]);
 
   const maxScroll = Math.max(0, allRows.length - MSG_HEIGHT);
   const safeOffset = Math.min(scrollOffset, maxScroll);

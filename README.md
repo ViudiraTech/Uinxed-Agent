@@ -53,7 +53,7 @@
 | 🏗 **多 Agent 协作**<br>build / plan 主 agent 一键切换，explorer / general 子 agent 可**并行委托、实时查看、继续对话，⇄ 循环切换** | 🧠 **活动动画面板**<br>Claude Code 风格：spin 帧、动词轮播 + 逐字 reveal、子 agent 状态树、耗时 / token 平滑计数 | ✅ **待办清单（Todo List）**<br>在对话中实时维护任务进度，`Ctrl+O` 一键面板 |
 | 🌐 **多提供商**<br>内置本地网关 + DeepSeek，`/connect` 接入任意 OpenAI 兼容服务 | ⚡ **SSE 流式输出**<br>打字机效果，80ms 节流刷新，丝滑不卡屏 | 🧠 **Thinking 可视化**<br>推理过程折叠展示，`Ctrl+T` 展开，长行自动换行 |
 | ⌨️ **命令面板**<br>输入 `/` 即时过滤，21 个内嵌命令 | 💾 **会话持久化**<br>历史 + 推理内容保存在 `~/.config/ux-agent/`（含高速缓存压缩） | 📐 **终端自适应**<br>动态尺寸监听，布局永远吃满终端不溢出；上下文窗口实时估算，超阈值自动压缩 |
-| 🗂 **多会话管理**<br>`/new` 新建、`/sessions` 列表切换（↑↓ / Enter）、`/delete` 按编号或名称删除 | 🗄 **SQLite 存储**<br>会话量增大后自动迁移到 `~/.config/ux-agent/ux-agent.db`，`/storage` 随时与 config.json 互转 | 🧩 **Skills 技能系统**<br>项目级 `.ux-agent/skills/` + 全局技能，`/skills <名>` 一键加载专项指令 |
+| 🗂 **多会话管理**<br>`/new` 新建、`/sessions` 列表切换（↑↓ / Enter）、`/delete` 按编号或名称删除 | 🗄 **SQLite 存储**<br>会话量增大后自动迁移到 `~/.config/ux-agent/ux-agent.db`，`/storage` 随时与 config.json 互转 | 🧩 **Skills 技能系统**<br>遵循 Agent Skills 开放标准，兼容 Claude Code / opencode / Codex 技能目录，`/skills <名>` 一键加载专项指令 |
 
 ---
 
@@ -176,32 +176,41 @@ ux-agent --model deepseek-v4-flash # 指定模型
 
 <h2 id="skills">🧩 Skills 技能系统</h2>
 
-技能（Skill）= 可复用的**专项指令包**：一段带 frontmatter 的 Markdown，描述「何时使用 + 怎么做」。主 agent 从 system prompt 看到技能清单，任务匹配时用 `use_skill` 工具加载完整指令后执行——无需重新描述需求，指令保持一致性。
+技能（Skill）= 可复用的**专项指令包**：一段带 frontmatter 的 Markdown，描述「何时使用 + 怎么做」。主 agent 从 system prompt 看到技能清单，任务匹配时用 `use_skill` 工具加载完整指令后执行。
 
-### 创建位置
+ux-agent 遵循 **[Agent Skills 开放标准](https://agentskills.io)**（Anthropic 发布，Claude Code / opencode / Codex CLI / Cursor 等 20+ 工具通用）——**同一个技能目录，三个平台都能用**。
 
-| 位置 | 路径 | 可见范围 |
-|:---|:---|:---|
-| 项目级 | `<项目>/.ux-agent/skills/<name>/SKILL.md` | 仅当前项目（推荐，随代码走） |
-| 全局 | `~/.config/ux-agent/skills/<name>/SKILL.md` | 所有项目 |
+### 发现位置（全部兼容）
 
-同名技能**项目级覆盖全局**，再同名覆盖内置。
+| 层级 | 目录（依次优先） |
+|:---|:---|
+| 项目级 | `.ux-agent/skills/` → `.opencode/skills/` → `.claude/skills/` → `.agents/skills/` |
+| 全局 | `~/.config/ux-agent/skills/` → `~/.config/opencode/skills/` → `~/.claude/skills/` → `~/.agents/skills/` |
 
-### SKILL.md 格式
+- 同名技能：**项目级覆盖全局**，再覆盖内置；项目目录内 `.ux-agent` 优先。
+- **一处编写到处可用**：`.claude/skills/<name>/` 可被 opencode / Codex 直接读取；若用 Codex，给 `.agents/skills/<name>` 建一个指向 `.claude/skills/<name>` 的符号链接即可，编辑一处三平台同步。
+- 符号链接目录同样会跟随扫描。
+
+### SKILL.md 格式（统一标准）
 
 ```markdown
 ---
-name: skill-name          # 必填，kebab-case 小写，与目录名一致
-description: 一句话说明     # 必填，说明何时使用（会注入 system prompt）
+name: skill-name          # 必填，kebab-case 小写，≤64 字符，须与目录名一致
+description: 一句话        # 必填，≤1024 字符，说明做什么与何时用（注入 system prompt）
+license: MIT              # 可选：SPDX 许可
+compatibility: ...        # 可选：对运行环境 / 依赖的要求
+metadata: { ... }         # 可选：任意字符串键值
 ---
-（技能正文，markdown，加载后完整提供给模型）
+（技能正文，markdown，激活时完整提供给模型）
 ```
+
+技能目录还可带 `references/`、`scripts/`、`assets/` 等附加文件，正文里按需引用（渐进式披露）。
 
 ### 使用方式
 
-- **自动**：技能描述注入 system prompt，主 agent 判断匹配后自行用 `use_skill` 加载。
-- **手动**：`/skills` 查看全部可用技能，`/skills <名称>` 立即加载指令到当前上下文。
-- **内置**：自带 `skill-creator` 技能（写技能指南），`/skills skill-creator` 即可使用；在终端输入「创建一个技能 xxx」也会自动触发。
+- **自动**：技能名称 + 描述注入 system prompt，主 agent 判断匹配后自行用 `use_skill` 加载完整指令执行。
+- **手动**：`/skills` 查看全部可用技能，`/skills <名称>` 立即加载到当前上下文。
+- **内置**：自带 `skill-creator` 技能（编写新技能的标准指南），`/skills skill-creator` 即可使用；输入「创建一个技能 xxx」也会自动触发。
 
 ---
 
@@ -230,7 +239,7 @@ src/
 ├── context.js       # 上下文估算与自动压缩（token / 窗口 / 阈值 / 摘要构建）
 ├── config.js        # 配置与提供商持久化（storage 方案路由）
 ├── db.js            # SQLite 会话存储（WAL · 增删改查 · 与 config.json 互转）
-├── skills.js        # Skills 技能系统（项目级 / 全局 / 内置扫描与 prompt 注入）
+├── skills.js        # Skills 技能系统（Agent Skills 开放标准 · 多平台目录发现 · prompt 注入）
 ├── provider.js      # 多提供商适配 / SSE 流式解析（reasoning 回传）
 ├── tools.js         # 工具注册表与执行器（含 delegate / todo_* / use_skill）
 ├── agents.js        # 多 Agent 定义与工具白名单
