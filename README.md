@@ -1,22 +1,6 @@
 <p align="center">
-  <a href="#features" title="点击查看特性">
-    <picture>
-      <source media="(prefers-reduced-motion: reduce)" srcset="PREVIEW.png">
-      <img src="assets/demo.svg" alt="Uinxed Agent 终端演示" width="900">
-    </picture>
-  </a>
+  <img src="LOGO.png" alt="Uinxed Agent Logo" width="180">
 </p>
-
-<p align="center">
-  <img src="LOGO.png" alt="Uinxed Agent Logo" width="160">
-</p>
-
-<details>
-<summary>🎬 静态截图（不支持 SVG 动画时）</summary>
-
-![PREVIEW](PREVIEW.png)
-
-</details>
 
 <h1 align="center">⚡ Uinxed Agent</h1>
 
@@ -29,12 +13,27 @@
   <a href="#quickstart"><img src="https://img.shields.io/badge/快速开始-30%20秒上手-00C853?style=flat-square"></a>
   <a href="#shortcuts"><img src="https://img.shields.io/badge/快捷键-一览-FF6D00?style=flat-square"></a>
   <a href="#agents"><img src="https://img.shields.io/badge/多%20Agent-协作-1E88E5?style=flat-square"></a>
-  <a href="#agents"><img src="https://img.shields.io/badge/多%20Agent-协作-1E88E5?style=flat-square"></a>
   <a href="#architecture"><img src="https://img.shields.io/badge/架构-轻量-607D8B?style=flat-square"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-2196F3?style=flat-square"></a>
   <img src="https://img.shields.io/badge/Language-JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black" alt="JavaScript">
   <img src="https://img.shields.io/badge/Runtime-Node.js-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js">
 </p>
+
+<details>
+<summary>🎬 终端演示（可点开看动图 / 静态图）</summary>
+
+<p align="center">
+  <a href="#features" title="点击查看特性">
+    <picture>
+      <source media="(prefers-reduced-motion: reduce)" srcset="PREVIEW.png">
+      <img src="assets/demo.svg" alt="Uinxed Agent 终端演示" width="900">
+    </picture>
+  </a>
+</p>
+
+![PREVIEW](PREVIEW.png)
+
+</details>
 
 <details>
 <summary>📑 目录</summary>
