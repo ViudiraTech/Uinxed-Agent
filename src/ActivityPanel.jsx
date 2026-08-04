@@ -32,16 +32,17 @@ import {
 import { stringWidth } from "./mdlines.js";
 
 /* 与 App.jsx 保持一致的动画行数预算(用于动态布局预留)。
- * 折叠 1 个问题:面板高度恒定为 AC inLayoutFix,忙碌时不再随行数跳变,
- * 消息区高度稳定,动画位置不抖动。 */
+ * 行数按实际渲染内容计算:主状态行 1 + 子 agent ≤4 + 待办头 1 + 待办 ≤5,
+ * 避免预留过多空行导致消息区吃不满。 */
 export const MAX_SUB_ROWS = 4;
 export const MAX_TODO_ROWS = 5;
-/* 面板固定高度:主状态行 1 + 子 agent 最多 4 + 待办头 1 + 待办 3 → 常量 6 */
-export const ACTIVITY_HEIGHT = 6;
 
 export function activityRowCount({ busy, subs, todos, showTodos }) {
-  const hasAny = busy || subs.length || (showTodos && todos.length > 0);
-  return hasAny ? ACTIVITY_HEIGHT : 0;
+  let n = 0;
+  if (busy) n += 1;
+  n += Math.min((subs || []).length, MAX_SUB_ROWS);
+  if (showTodos && (todos || []).length > 0) n += 1 + Math.min(todos.length, MAX_TODO_ROWS);
+  return n;
 }
 
 /* 两个 hex 颜色按 f∈[0,1] 插值(thinking glimmer) */

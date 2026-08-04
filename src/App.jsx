@@ -40,7 +40,11 @@ import {
   upsertProvider,
   removeProvider,
   setThinking,
+  CONFIG_DIR,
+  CONFIG_FILE,
 } from "./config.js";
+import { initDb, closeDb, dbReady, dbLoadSessions, dbSaveSession, dbDeleteSession, dbSessionCount, DB_FILE } from "./db.js";
+import fs from "node:fs";
 import path from "node:path";
 
 const fmtTime = (ts) => {
@@ -66,6 +70,7 @@ const COMMANDS = [
   { cmd: "/new", desc: "新建会话（/new <名字>）" },
   { cmd: "/sessions", desc: "会话列表与切换（↑↓ 选择 · Enter 切换）" },
   { cmd: "/delete", desc: "删除会话（/delete <编号或名称>）" },
+  { cmd: "/storage", desc: "存储方案互转（/storage db 迁入数据库 · /storage config 写回 config.json）" },
   { cmd: "/diff", desc: "代码改动审阅（git diff · +绿/-红）" },
   { cmd: "/skills", desc: "技能系统（/skills <名称> 加载指令）" },
   { cmd: "/clear", desc: "清空当前会话历史" },
@@ -237,11 +242,15 @@ export default function App() {
   /* 命令面板:匹配时 ↑/↓ 切换高亮,Enter 选中 */
   const [paletteIndex, setPaletteIndex] = useState(0);
 
-  /* ===== 多会话管理:每个会话独立 history/conversation/agent/cwd ===== */
+  /* ===== 多会话管理:每个会话独立 history/conversation/agent/cwd =====
+   * 存储:storageRef.current === "db" → SQLite(ux-agent.db);否则兼容 config.json */
   const [sessions, setSessions] = useState(cfg.sessions || []);
   const [activeSessionId, setActiveSessionId] = useState(cfg.activeSessionId || null);
   const [showSessionList, setShowSessionList] = useState(false); // /sessions 拾取器
   const [sessionIndex, setSessionIndex] = useState(0);
+  const storageRef = useRef(cfg.storage === "db" && dbReady());
+  const pendingLegacyRef = useRef(null); // 待迁移的旧 config.json 会话数据
+  const [migrateInput, setMigrateInput] = useState("");
   const sessionsRef = useRef(cfg.sessions || []);
   const activeSessionIdRef = useRef(cfg.activeSessionId || null);
   const messagesRef = useRef([]);
@@ -297,7 +306,7 @@ export default function App() {
   /* 动态布局:状态栏1 + 外框border2 + 输入区2 + 快捷键1 = 6 固定,
    * 再叠加命令面板/弹窗/活动动画面板的精确行数,消息区吃掉剩余空间。 */
   const subList = Object.values(subSessions);
-  const modalLines = mode === "connect" ? 8 : mode === "login" ? 5 : mode === "model" ? 7 : 0;
+  const modalLines = mode === "connect" ? 8 : mode === "login" ? 6 : mode === "model" ? 7 : mode === "migrate" ? 6 : 0;
   const showPalette = showCommands && input.startsWith("/") && mode === "chat";
   const paletteLines = showPalette
     ? Math.min(COMMANDS.filter((c) => c.cmd.includes(input.slice(1).toLowerCase())).length, 6)
@@ -336,7 +345,32 @@ export default function App() {
     toastTimer.current = setTimeout(() => setStatus("就绪"), 3000);
   }, []);
 
-  /* 持久化:写入当前活动会话 + 兼容顶层 history/conversation 字段 */
+  /* 按存储模式落盘会话列表：
+   * db = 会话写 SQLite,config.json 只留 activeSessionId(瘦身);
+   * config = 兼容模式,继续写 history/conversation/sessions 到 config.json。
+   * changedId 指定仅重写该会话(热路径),否则写全量列表。 */
+  const persistSessionList = useCallback((list, activeSid, changedId) => {
+    if (storageRef.current === "db") {
+      if (changedId) {
+        const s = list.find((x) => x.id === changedId);
+        if (s) dbSaveSession(s);
+      } else {
+        for (const s of list) dbSaveSession(s);
+      }
+      saveConfig({ activeSessionId: activeSid || null });
+    } else {
+      const active = list.find((s) => s.id === activeSid) || list[0] || null;
+      saveConfig({
+        history: active?.history || [],
+        conversation: active?.conversation || [],
+        sessions: list,
+        activeSessionId: activeSid || null,
+        storage: "config",
+      });
+    }
+  }, []);
+
+  /* 持久化:写入当前活动会话(两侧存储一致) */
   const persist = useCallback((msgs, conv) => {
     const history = msgs
       .filter((m) => m.role === "user" || m.role === "assistant")
@@ -348,8 +382,8 @@ export default function App() {
       ? sessionsRef.current.map((s) => (s.id === sid ? { ...s, history, conversation, agentId, cwd, updatedAt: Date.now() } : s))
       : sessionsRef.current;
     setSessions(updated);
-    saveConfig({ history, conversation, sessions: updated, activeSessionId: sid || null });
-  }, [agentId, cwd]);
+    persistSessionList(updated, sid, sid);
+  }, [agentId, cwd, persistSessionList]);
 
   /* 切换到指定会话(先落盘当前会话,再载入目标会话) */
   const switchSession = useCallback((sid, saveCur = true) => {
@@ -388,27 +422,23 @@ export default function App() {
     activeSessionIdRef.current = sid;
     setShowSessionList(false);
     setSessionIndex(0);
-    saveConfig({
-      history: target.history, conversation: target.conversation || [],
-      sessions: next, activeSessionId: sid,
-    });
+    persistSessionList(next, sid);
     setStatus(`已切换到会话: ${target.name}`);
-  }, [busy, toast, clearScreen, agentId, cwd]);
+  }, [busy, toast, clearScreen, agentId, cwd, persistSessionList]);
 
   const refreshProfile = useCallback(async () => {
     try { return await getProfile(); } catch { return null; }
   }, []);
 
-  useEffect(() => {
-    clearScreen();
-    const cfg = loadConfig();
-    const sessList = cfg.sessions || [];
-    const active = sessList.find((s) => s.id === cfg.activeSessionId) || sessList[0] || null;
-    const hist = active ? active.history : cfg.history;
+  /* 从 cfg/数据库恢复会话与上下文(dbMode=true 走 SQLite,否则兼容 config.json) */
+  const restoreApp = useCallback((cfg, dbMode) => {
+    const sessList = dbMode ? dbLoadSessions() : cfg.sessions || [];
     setSessions(sessList);
     sessionsRef.current = sessList;
+    const active = sessList.find((s) => s.id === cfg.activeSessionId) || sessList[0] || null;
     setActiveSessionId(active?.id || null);
     activeSessionIdRef.current = active?.id || null;
+    const hist = active ? active.history : cfg.history || [];
     if (hist.length) {
       setMessages(hist.map((m) => ({ ...m, time: m.time || Date.now() })));
     } else {
@@ -433,7 +463,92 @@ export default function App() {
     } else {
       setStatus(`${p.name} 未设置 Key · 提供商 ${p.name}（${p.baseUrl}）`);
     }
-  }, [refreshProfile, clearScreen]);
+  }, [refreshProfile]);
+
+  /* 存储方案互转:config ←→ 数据库。返回切换布尔结果 */
+  const changeStorage = useCallback((target) => {
+    const cur = storageRef.current ? "db" : "config";
+    if (target === cur) { setStatus(target === "db" ? "已是 SQLite 数据库模式" : "已是 config.json 模式"); return; }
+    try {
+      const cfg = loadConfig();
+      if (target === "db") {
+        /* config → 数据库:会话写入 SQLite,config.json 瘦身 */
+        const list = sessionsRef.current;
+        for (const s of list) {
+          dbSaveSession({
+            id: s.id, name: s.name || s.id, agentId: s.agentId || "build",
+            cwd: s.cwd || null, updatedAt: s.updatedAt || Date.now(),
+            history: s.history || [], conversation: s.conversation || [],
+          });
+        }
+        const clean = { ...cfg };
+        delete clean.history; delete clean.conversation; delete clean.sessions;
+        clean.storage = "db";
+        clean.activeSessionId = cfg.activeSessionId || list[0]?.id || null;
+        fs.mkdirSync(CONFIG_DIR, { recursive: true });
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(clean, null, 2), "utf8");
+        storageRef.current = true;
+        setStatus(`已迁移 ${list.length} 个会话到 SQLite 数据库（config.json 已瘦身）`);
+      } else {
+        /* 数据库 → config:会话写回 config.json,删除旧数据库 */
+        const list = dbLoadSessions();
+        if (!list.length) { setStatus("数据库没有会话，无需切回 config.json"); return; }
+        const activeId = cfg.activeSessionId || list[0]?.id || null;
+        const active = list.find((s) => s.id === activeId) || list[0] || null;
+        const clean = {
+          ...cfg, storage: "config", sessions: list, activeSessionId: activeId,
+          history: active?.history || [], conversation: active?.conversation || [],
+        };
+        fs.mkdirSync(CONFIG_DIR, { recursive: true });
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(clean, null, 2), "utf8");
+        closeDb();
+        for (const f of [DB_FILE, DB_FILE + "-wal", DB_FILE + "-shm"]) {
+          try { fs.rmSync(f, { force: true }); } catch {}
+        }
+        storageRef.current = false;
+        setSessions(list); sessionsRef.current = list;
+        setStatus(`已切换为 config.json 存储（${list.length} 个会话；旧数据库已删除）`);
+      }
+    } catch (e) {
+      setStatus(`存储切换失败: ${e.message}`);
+    }
+  }, []);
+
+  /* 迁移选择:y/Enter = 迁移到 SQLite;n = 继续用 config.json */
+  const onMigrateSubmit = useCallback((v) => {
+    const ans = String(v || "").trim().toLowerCase();
+    if (ans === "n") {
+      saveConfig({ storage: "config", migratePrompted: true });
+      setMode("chat");
+      restoreApp(loadConfig(), false);
+      setStatus("已选择继续使用 config.json（可随时用 /storage 迁入数据库）");
+      return;
+    }
+    changeStorage("db");
+    const ok = storageRef.current === true;
+    setMode("chat");
+    restoreApp(loadConfig(), ok);
+    setStatus(ok ? "已迁移到数据库（可随时用 /storage config 切回）" : "迁移失败，继续使用 config.json");
+  }, [restoreApp, changeStorage]);
+
+  useEffect(() => {
+    clearScreen();
+    initDb();
+    const cfg = loadConfig();
+    const legacyCount = (cfg.sessions || []).length;
+    if (cfg.storage === "db") {
+      restoreApp(cfg, true);
+      return;
+    }
+    if (legacyCount && !cfg.migratePrompted) {
+      /* 检测到旧 config.json 会话数据 → 启动时提示迁移(仅一次) */
+      pendingLegacyRef.current = cfg;
+      setStatus(`检测到 config.json 中的 ${legacyCount} 个旧会话，是否迁移到数据库？`);
+      setMode("migrate");
+      return;
+    }
+    restoreApp(cfg, false);
+  }, [restoreApp, clearScreen]);
 
   /* ============ 多子 Agent 会话(供 delegate/@name 使用) ============ */
   const updateSub = useCallback((sid, patch) => {
@@ -1038,7 +1153,7 @@ export default function App() {
         setHistoryUsed(0);
         setSubSessions({}); setSubView(false);
         setScrollOffset(0);
-        saveConfig({ history: [], conversation: [], sessions: all, activeSessionId: sid });
+        persistSessionList(all, sid);
         setStatus(`新会话: ${name}，共 ${all.length} 个会话（/sessions 切换）`);
         break;
       }
@@ -1072,18 +1187,45 @@ export default function App() {
         const remaining = list.filter((s) => s.id !== target.id) || [];
         setSessions(remaining);
         sessionsRef.current = remaining;
-        saveConfig({ sessions: remaining });
+        if (storageRef.current === "db") dbDeleteSession(target.id);
         if (!remaining.length) {
           if (target.id === activeSessionIdRef.current) {
             setMessages([{ role: "assistant", content: "会话已清空。输入 /new 开始新会话。", time: Date.now() }]);
             setConversation([]); conversationRef.current = []; setHistoryUsed(0);
             activeSessionIdRef.current = null; setActiveSessionId(null);
-            saveConfig({ history: [], conversation: [], sessions: [], activeSessionId: null });
+            persistSessionList([], null);
           }
         } else if (target.id === activeSessionIdRef.current) {
           switchSession(remaining[0].id, false);
+        } else {
+          persistSessionList(remaining, activeSessionIdRef.current);
         }
         setStatus(`已删除会话: ${target.name}`);
+        break;
+      }
+      case "/storage":
+      case "/migrate": {
+        /* 存储方案互转:推荐数据库;config.json 仅兼容场景使用 */
+        if (arg) {
+          const target = arg === "db" ? "db" : arg === "config" ? "config" : null;
+          if (!target) { toast("/storage db|config（推荐 db，config.json 会过大）"); break; }
+          changeStorage(target);
+          break;
+        }
+        const dbCount = dbSessionCount();
+        const cfgCount = sessionsRef.current.length;
+        pushToolBlock({
+          tool: "/storage",
+          status: "ok",
+          output: [
+            `当前存储: ${storageRef.current ? "SQLite 数据库（推荐）" : "config.json（兼容模式）"}`,
+            `SQLite 会话: ${dbCount} · config.json 会话: ${cfgCount}`,
+            "",
+            `互转: /storage db      将 config.json 会话迁入数据库（config.json 自动瘦身）`,
+            `      /storage config  将数据库会话写回 config.json（旧数据库自动删除）`,
+            "优先推荐数据库:单文件、读写快、config.json 只留配置；config.json 仅在无 SQLite 环境等特殊场景使用。",
+          ].join("\n"),
+        });
         break;
       }
       case "/diff": {
@@ -1139,7 +1281,7 @@ export default function App() {
       default:
         setStatus(`未知命令: ${name}（/help）`);
     }
-  }, [cwd, exit, refreshProfile, clearScreen, toast, compressConversation, conversation, todos, pushToolBlock, persist, switchSession]);
+  }, [cwd, exit, refreshProfile, clearScreen, toast, compressConversation, conversation, todos, pushToolBlock, persist, switchSession, persistSessionList, changeStorage]);
 
   /* ============ 输入 ============ */
    const onSubmit = (value) => {
@@ -1263,7 +1405,11 @@ export default function App() {
         clearScreen();
         return;
       }
-      if (mode !== "chat") { setMode("chat"); setConnectProvider(null); return; }
+      if (mode !== "chat") {
+        /* 迁移弹窗 Esc = 暂不迁移(等价 n) */
+        if (mode === "migrate") { onMigrateSubmit("n"); return; }
+        setMode("chat"); setConnectProvider(null); return;
+      }
     }
     /* 子聊天区:独立滚动上下文 + ⇄ 切换子会话 */
     if (subView) {
@@ -1574,12 +1720,23 @@ export default function App() {
         <ConnectModal provider={connectProvider} onSubmit={onConnectSubmit} onCancel={() => setMode("chat")} />
       )}
       {mode === "login" && (
-        <Box borderStyle="round" borderColor="yellow" paddingX={2} paddingY={1} marginBottom={1} height={5}>
+        <Box borderStyle="round" borderColor="yellow" paddingX={2} height={6}>
           <Box flexDirection="column">
             <Text bold color="yellow">为 {provider.name} 输入 API Key:</Text>
             <TextInput value={loginInput} onChange={setLoginInput} onSubmit={onLoginSubmit} />
             {loginErr && <Text color="red">{loginErr}</Text>}
             <Text dimColor>Enter 保存 · Esc 取消</Text>
+          </Box>
+        </Box>
+      )}
+
+      {/* 迁移确认弹窗(启动时检测到旧 config.json 会话数据) */}
+      {mode === "migrate" && (
+        <Box borderStyle="round" borderColor="cyan" paddingX={1} height={6}>
+          <Box flexDirection="column">
+            <Text bold color="cyan" wrap="wrap">检测到旧版 config.json 会话数据（{pendingLegacyRef.current?.sessions?.length || 1} 个），是否迁移到 SQLite？</Text>
+            <TextInput value={migrateInput} onChange={setMigrateInput} onSubmit={onMigrateSubmit} placeholder="y 迁入数据库（推荐） · n 继续用 config.json" />
+            <Text dimColor wrap="wrap">迁移后 config.json 只保留配置（不再膨胀）；Esc = 暂不迁移</Text>
           </Box>
         </Box>
       )}

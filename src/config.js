@@ -18,8 +18,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const CONFIG_DIR = path.join(os.homedir(), ".config", "ux-agent");
-const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+export const CONFIG_DIR = path.join(os.homedir(), ".config", "ux-agent");
+export const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 
 export const DEFAULT_BASE_URL = "http://localhost:8080/v1";
 export const DEFAULT_MODEL = "glm-4-flash";
@@ -52,8 +52,9 @@ export function loadConfig() {
     const raw = fs.readFileSync(CONFIG_FILE, "utf8");
     const cfg = JSON.parse(raw);
     const providers = ensureProviders(cfg.providers);
+    /* 兼容读取:旧版数据仍在 config.json 时,构造内存 session 供展示/迁移。
+     * 不再自动写回 config.json(会话数据应迁往 SQLite,见 db.js / App 迁移提示)。 */
     const sessions = Array.isArray(cfg.sessions) ? cfg.sessions : [];
-    /* 旧版单会话数据迁移成 sessions */
     if (!sessions.length && (Array.isArray(cfg.history) && cfg.history.length || Array.isArray(cfg.conversation) && cfg.conversation.length)) {
       sessions.push({
         id: "s-default",
@@ -64,11 +65,6 @@ export function loadConfig() {
         cwd: cfg.cwd || null,
         updatedAt: Date.now(),
       });
-      /* 一次性落盘,下次直接读 sessions 不再迁移 */
-      try {
-        fs.mkdirSync(CONFIG_DIR, { recursive: true });
-        fs.writeFileSync(CONFIG_FILE, JSON.stringify({ ...cfg, sessions, activeSessionId: "s-default" }, null, 2), "utf8");
-      } catch {}
     }
     return {
       apiKey: null, // 废弃:全部走 provider.apiKey
@@ -78,6 +74,8 @@ export function loadConfig() {
       conversation: Array.isArray(cfg.conversation) ? cfg.conversation : [],
       sessions,
       activeSessionId: cfg.activeSessionId || sessions[0]?.id || null,
+      /* 存储模式:db = SQLite;config = 兼容旧 config.json */
+      storage: cfg.storage === "db" ? "db" : "config",
       providers,
       activeProvider: cfg.activeProvider || providers[0]?.id || "ux-gateway",
       thinking: cfg.thinking !== false,
@@ -88,6 +86,7 @@ export function loadConfig() {
     return {
       apiKey: null, baseUrl: DEFAULT_BASE_URL, model: DEFAULT_MODEL,
       history: [], conversation: [], sessions: [], activeSessionId: null,
+      storage: "config",
       providers, activeProvider: providers[0].id, thinking: true, cwd: null,
     };
   }
