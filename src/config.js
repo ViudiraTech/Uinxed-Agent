@@ -17,6 +17,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 
 export const CONFIG_DIR = path.join(os.homedir(), ".config", "ux-agent");
 export const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
@@ -44,6 +45,19 @@ export const BUILTIN_PROVIDERS = [
     defaultModel: "deepseek-v4-flash",
     builtin: true,
     supportsThinking: true,
+  },
+  {
+    id: "router",
+    name: "Router",
+    baseUrl: "https://api.hcnsec.cn/v1",
+    apiKey: null,
+    /* 内置 Key(AES-256-GCM 加密,密钥派生自本机,不存明文) */
+    apiKeyEnc: "64764f053641ca834bf5363e:ee795751ccfb89f6bd0bc80cbf22a6d5:a4129388efa05b184a18d826c53e8e8b38650f9275ecb3e1533373e0258dc24cdeea974a63f18fbbe9987bb10e46881055e40d",
+    models: ["DeepSeek-V4-Pro", "step-3.7-flash", "step-3.5-flash-2603"],
+    defaultModel: "step-3.7-flash",
+    builtin: true,
+    supportsThinking: true,
+    supportsEffort: true,
   },
 ];
 
@@ -74,11 +88,12 @@ export function loadConfig() {
       conversation: Array.isArray(cfg.conversation) ? cfg.conversation : [],
       sessions,
       activeSessionId: cfg.activeSessionId || sessions[0]?.id || null,
-      /* 存储模式:db = SQLite;config = 兼容旧 config.json */
-      storage: cfg.storage === "db" ? "db" : "config",
+      /* 存储模式:默认 db = SQLite;仅显式 config = 兼容旧 config.json */
+      storage: cfg.storage === "config" ? "config" : "db",
       providers,
       activeProvider: cfg.activeProvider || providers[0]?.id || "ux-gateway",
       thinking: cfg.thinking !== false,
+      effort: cfg.effort || "high",
       cwd: cfg.cwd || null,
     };
   } catch {
@@ -87,7 +102,8 @@ export function loadConfig() {
       apiKey: null, baseUrl: DEFAULT_BASE_URL, model: DEFAULT_MODEL,
       history: [], conversation: [], sessions: [], activeSessionId: null,
       storage: "config",
-      providers, activeProvider: providers[0].id, thinking: true, cwd: null,
+      providers, activeProvider: providers[0].id, thinking: true,
+      effort: "high", cwd: null,
     };
   }
 }
@@ -133,11 +149,14 @@ export function setModel(model) {
   saveConfig({ model });
 }
 
-/* 提供商 API Key */
+/* 提供商 API Key:新存的 Key 一律加密落盘(AES-256-GCM,密钥派生自本机),
+ * 配置/源码中不出现明文。旧明文 key 读取兼容。 */
 export function setProviderApiKey(providerId, apiKey) {
   const cfg = loadConfig();
   const providers = cfg.providers.map((p) =>
-    p.id === providerId ? { ...p, apiKey: apiKey || null } : p
+    p.id === providerId
+      ? { ...p, apiKey: null, apiKeyEnc: apiKey ? encryptSecret(apiKey) : null }
+      : p
   );
   saveConfig({ providers, apiKey: providerId === cfg.activeProvider ? apiKey || cfg.apiKey : cfg.apiKey });
 }
@@ -145,7 +164,33 @@ export function setProviderApiKey(providerId, apiKey) {
 export function getProviderApiKey(providerId) {
   const cfg = loadConfig();
   const p = cfg.providers.find((x) => x.id === providerId);
-  return (p && p.apiKey) || null;
+  if (!p) return null;
+  if (p.apiKeyEnc) return decryptSecret(p.apiKeyEnc);
+  return p.apiKey || null;
+}
+
+/* ---- 内置密钥加密:本机派生密钥 + AES-256-GCM,密文可安全放进源码 ---- */
+function machineKey() {
+  return crypto.createHash("sha256").update(os.hostname() + os.homedir() + "ux-agent").digest();
+}
+
+export function encryptSecret(plain) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", machineKey(), iv);
+  const enc = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString("hex")}:${tag.toString("hex")}:${enc.toString("hex")}`;
+}
+
+export function decryptSecret(enc) {
+  try {
+    const [iv, tag, data] = String(enc).split(":");
+    const d = crypto.createDecipheriv("aes-256-gcm", machineKey(), Buffer.from(iv, "hex"));
+    d.setAuthTag(Buffer.from(tag, "hex"));
+    return Buffer.concat([d.update(Buffer.from(data, "hex")), d.final()]).toString("utf8");
+  } catch {
+    return null;
+  }
 }
 
 /* 切换活动提供商 */

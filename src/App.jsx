@@ -19,13 +19,13 @@ import { Box, Text, useApp, useInput, useStdout } from "ink";
 import TextInput from "./SafeTextInput.jsx";
 import Markdown from "./Markdown.jsx";
 import { LineRow } from "./Markdown.jsx";
-import { markdownLines, wrapPlain, diffLines } from "./mdlines.js";
+import { markdownLines, wrapPlain, diffLines, stringWidth } from "./mdlines.js";
 import { chatStream, chat, listModels, getProfile, checkApiKey, ApiError } from "./provider.js";
 import { TOOL_DEFS, executeTool, executeToolAsync } from "./tools.js";
 import { AGENTS, getAgent, primaryAgents, subAgents, filterTools, agentSystem } from "./agents.js";
 import { listSkills, skillPromptBlock } from "./skills.js";
 import ActivityPanel, { activityRowCount } from "./ActivityPanel.jsx";
-import { fmtDuration } from "./anim.js";
+import { fmtDuration, useAnimationTime } from "./anim.js";
 import { execSync } from "node:child_process";
 import {
   getContextWindow, compactThreshold, requestHistoryBudget, COMPACT_RATIO,
@@ -35,6 +35,7 @@ import {
   loadConfig,
   saveConfig,
   getActiveProvider,
+  getProviderApiKey,
   setProviderApiKey,
   setActiveProvider,
   upsertProvider,
@@ -53,6 +54,60 @@ const fmtTime = (ts) => {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 };
 
+/* reasoning effort 滑块级别(索引即强度,high 及以上标签带动画,max 蓝色波纹) */
+const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
+
+/* HSL → hex(滑块/横幅渐变动画共用) */
+function hslToHex(h, s, l) {
+  h = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const to = (v) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+  return `#${to(r)}${to(g)}${to(b)}`;
+}
+
+/* 两个 hex 颜色按 f∈[0,1] 插值(波纹衰减/呼吸共用) */
+function hexInterp(a, b, f) {
+  const pa = parseInt(a.slice(1), 16);
+  const pb = parseInt(b.slice(1), 16);
+  const mix = (x, y) => Math.round(x + (y - x) * f);
+  const r = mix((pa >> 16) & 255, (pb >> 16) & 255);
+  const g = mix((pa >> 8) & 255, (pb >> 8) & 255);
+  const bl = mix(pa & 255, pb & 255);
+  return `#${((r << 16) | (g << 8) | bl).toString(16).padStart(6, "0")}`;
+}
+
+/* max effort 蓝色波纹(panel 全域背景):从 max 标签文字中心发出,波峰缓慢扩散,
+ * 先快后慢、阻尼衰减渐隐,填满整个 effort 面板。返回强度 0..1。 */
+function rippleBgAt(x, y, t, w, cx, cy) {
+  const d = Math.hypot(x - cx, (y - cy) * 1.8);
+  const maxR = Math.hypot(Math.max(cx, w - cx) + 4, 8 * 1.8);
+  const N = 5;
+  const PERIOD = 3600;
+  const STEP = PERIOD / N;
+  let best = 0;
+  for (let k = 0; k < N; k++) {
+    const age = ((t - k * STEP) % PERIOD + PERIOD) % PERIOD;
+    const p = age / PERIOD;
+    const r = maxR * Math.pow(p, 0.8);
+    const ringW = 3.0 + p * 4.5;
+    const diff = Math.abs(d - r);
+    if (diff < ringW) {
+      const a = (1 - diff / ringW) * 0.8 * Math.exp(-2.4 * p);
+      if (a > best) best = a;
+    }
+  }
+  return best;
+}
+
 const COMMANDS = [
   { cmd: "/help", desc: "显示所有命令" },
   { cmd: "/connect", desc: "接入提供商（自定义 API 服务）" },
@@ -60,6 +115,7 @@ const COMMANDS = [
   { cmd: "/key", desc: "设置当前提供商 API Key（/key <sk-xxx>）" },
   { cmd: "/model", desc: "切换模型（/model <id>）" },
   { cmd: "/thinking", desc: "开启/关闭 thinking 展示" },
+  { cmd: "/effort", desc: "调整推理 effort（low/medium/high/xhigh/max）" },
   { cmd: "/agent", desc: "列出/切换 agent（Tab 也切换）" },
   { cmd: "/quota", desc: "查询本地网关余额（仅本地提供商）" },
   { cmd: "/context", desc: "查看上下文占用与压缩阈值" },
@@ -224,6 +280,9 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [profile, setProfile] = useState(null);
   const [status, setStatus] = useState("就绪");
+  const [showBanner, setShowBanner] = useState(false); // 启动/新会话横幅(opencode 风格)
+  const [effort, setEffort] = useState(() => loadConfig().effort || "high"); // reasoning effort
+  const [effortIdx, setEffortIdx] = useState(2); // effort 滑块当前位置
   const [agentId, setAgentId] = useState("build");
   const [cwd, setCwd] = useState(() => process.cwd());
   const [mode, setMode] = useState("chat"); // chat | login | connect | model
@@ -293,6 +352,7 @@ export default function App() {
   const aborter = useRef(null);
   const cancelRequestedRef = useRef(false);
   const toastTimer = useRef(null);
+  const maxSinceRef = useRef(0); // 最近一次切入 max 档的时刻(波纹淡入用)
 
   /* 终端动态尺寸:resize 时自动重算,布局吃满终端 */
   const [termSize, setTermSize] = useState(() => [stdout.columns || 100, stdout.rows || 30]);
@@ -307,7 +367,7 @@ export default function App() {
   /* 动态布局:状态栏2 + 外框border2 + 输入区3 + 快捷键1 = 8 固定,
    * 再叠加命令面板/弹窗/活动动画面板的精确行数,消息区吃掉剩余空间。 */
   const subList = Object.values(subSessions);
-  const modalLines = mode === "connect" ? 8 : mode === "login" ? 6 : mode === "model" ? 7 : mode === "migrate" ? 6 : 0;
+  const modalLines = mode === "connect" ? 8 : mode === "login" ? 6 : mode === "model" ? 7 : mode === "migrate" ? 6 : mode === "effort" ? 6 : 0;
   const showPalette = showCommands && input.startsWith("/") && mode === "chat";
   const paletteLines = showPalette
     ? Math.min(COMMANDS.filter((c) => c.cmd.includes(input.slice(1).toLowerCase())).length, 6)
@@ -440,6 +500,7 @@ export default function App() {
     setActiveSessionId(active?.id || null);
     activeSessionIdRef.current = active?.id || null;
     const hist = active ? active.history : cfg.history || [];
+    setShowBanner(!hist.length);
     if (hist.length) {
       setMessages(hist.map((m) => ({ ...m, time: m.time || Date.now() })));
     } else {
@@ -457,7 +518,7 @@ export default function App() {
     if (conv.length) setHistoryUsed(estimateMessagesTokens(conv));
     if (active?.cwd) setCwd(active.cwd);
     const p = getActiveProvider();
-    if (p?.apiKey) {
+    if (getProviderApiKey(p.id)) {
       refreshProfile().then((u) => {
         setStatus(u ? `已登录 ${u.username}${u.unlimited ? "（无限额度）" : `，余额 ¥${(u.quota || 0).toFixed(2)}`}` : `已连接 ${p.name}`);
       });
@@ -548,6 +609,7 @@ export default function App() {
     setActiveSessionId(null);
     activeSessionIdRef.current = null;
     setMessages([{ role: "assistant", content: "已恢复出厂设置，所有数据已清除。", time: Date.now() }]);
+    setShowBanner(true);
     setConversation([]);
     conversationRef.current = [];
     setHistoryUsed(0);
@@ -560,15 +622,15 @@ export default function App() {
     initDb();
     const cfg = loadConfig();
     const legacyCount = (cfg.sessions || []).length;
-    if (cfg.storage === "db") {
-      restoreApp(cfg, true);
-      return;
-    }
     if (legacyCount && !cfg.migratePrompted) {
       /* 检测到旧 config.json 会话数据 → 启动时提示迁移(仅一次) */
       pendingLegacyRef.current = cfg;
       setStatus(`检测到 config.json 中的 ${legacyCount} 个旧会话，是否迁移到数据库？`);
       setMode("migrate");
+      return;
+    }
+    if (cfg.storage === "db") {
+      restoreApp(cfg, true);
       return;
     }
     restoreApp(cfg, false);
@@ -817,7 +879,7 @@ export default function App() {
       const active = isSub ? getAgent(targetAgent) : agent;
       const toolDefs = filterTools(TOOL_DEFS, active);
       const currentProvider = getActiveProvider();
-      if (!currentProvider.apiKey) {
+      if (!getProviderApiKey(currentProvider.id) && currentProvider.requiresAuth !== false) {
         setMode("login");
         setStatus(`请为 ${currentProvider.name} 输入 API Key`);
         setBusy(false);
@@ -1018,10 +1080,13 @@ export default function App() {
           const next = conversationAdded
             ? [...conv, apiFinal]
             : [...conv, { role: "user", content: userText }, apiFinal];
-          persist([...messages, finalMsg], next);
+          setMessages((m) => {
+            const updated = [...m, finalMsg];
+            persist(updated, next);
+            return updated;
+          });
           return next;
         });
-        setMessages((m) => [...m, finalMsg]);
         setStreaming(null);
         const u = finalRes?.usage || {};
         setStatus(`${active.name} 完成 · ${u.prompt_tokens || 0}/${u.completion_tokens || 0} tokens${isSub ? "（子任务）" : ""}`);
@@ -1065,7 +1130,7 @@ export default function App() {
             if (next) {
               setCfg(next);
               setStatus(`已切换提供商: ${target.name}（${next.model}）`);
-              if (!target.apiKey) setMode("login");
+              if (!getProviderApiKey(target.id) && target.requiresAuth !== false) setMode("login");
             }
           } else {
             setStatus(`没有提供商: ${arg}（/connect 接入）`);
@@ -1087,7 +1152,7 @@ export default function App() {
           } else setStatus("Key 无效");
         } else {
           const p = getActiveProvider();
-          const key = p.apiKey;
+          const key = getProviderApiKey(p.id);
           setStatus(key ? `${p.name} Key: ${key.slice(0, 10)}…（/key <新Key>）` : `${p.name} 未设置 Key`);
         }
         break;
@@ -1100,6 +1165,14 @@ export default function App() {
           setStatus(`thinking 显示: ${!cur ? "开" : "关"}`);
         }
         break;
+      case "/effort": {
+        const cur = loadConfig().effort || "high";
+        const idx = EFFORT_LEVELS.indexOf(cur);
+        setEffortIdx(idx >= 0 ? idx : 2);
+        setMode("effort");
+        setStatus("Reasoning effort · ←→ 调节 · Enter 确认 · Esc 取消");
+        break;
+      }
       case "/context": {
         const model = loadConfig().model;
         const window = getContextWindow(model);
@@ -1202,6 +1275,7 @@ export default function App() {
         setShowSessionList(false);
         clearScreen();
         setMessages([{ role: "assistant", content: `新会话「${name}」已开始。`, time: Date.now() }]);
+        setShowBanner(true);
         setConversation([]);
         conversationRef.current = [];
         setHistoryUsed(0);
@@ -1214,6 +1288,7 @@ export default function App() {
       case "/clear":
         clearScreen();
         setMessages([{ role: "assistant", content: "当前会话历史已清空。", time: Date.now() }]);
+        setShowBanner(true);
         setConversation([]);
         conversationRef.current = [];
         setHistoryUsed(0);
@@ -1351,8 +1426,21 @@ export default function App() {
      }
      setHistoryIndex(-1);
      if (text.startsWith("/")) { runCommand(text); setInput(""); return; }
+    setShowBanner(false);
+    /* 无活动会话时自动创建（默认 SQLite 落盘，会话可 /sessions 恢复） */
+    if (!activeSessionIdRef.current) {
+      const name = `会话 ${sessionsRef.current.length + 1}`;
+      const sid = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+      const all = [...sessionsRef.current, { id: sid, name, history: [], conversation: [], agentId, cwd, updatedAt: Date.now() }];
+      sessionsRef.current = all;
+      setSessions(all);
+      activeSessionIdRef.current = sid;
+      setActiveSessionId(sid);
+      persistSessionList(all, sid);
+      setStatus(`已自动创建会话: ${name}`);
+    }
     const p = getActiveProvider();
-    if (!p.apiKey) { setMode("login"); setStatus(`请为 ${p.name} 输入 API Key`); return; }
+    if (!getProviderApiKey(p.id) && p.requiresAuth !== false) { setMode("login"); setStatus(`请为 ${p.name} 输入 API Key`); return; }
     const sub = subAgents().find((a) => text.startsWith(`@${a.name}`));
     if (sub) {
       const rest = text.replace(new RegExp(`^@${sub.name}\\s*`), "");
@@ -1469,6 +1557,22 @@ export default function App() {
         if (mode === "restore") { onRestoreSubmit("n"); return; }
         setMode("chat"); setConnectProvider(null); return;
       }
+    }
+    /* effort 滑块:←→ 调节强度,Enter 确认,Esc 取消 */
+    if (mode === "effort") {
+      if (key.leftArrow) { setEffortIdx((i) => Math.max(i - 1, 0)); return; }
+      if (key.rightArrow) { setEffortIdx((i) => { const n = Math.min(i + 1, EFFORT_LEVELS.length - 1); if (n === EFFORT_LEVELS.length - 1) maxSinceRef.current = Date.now(); return n; }); return; }
+      if (key.return) {
+        const lv = EFFORT_LEVELS[effortIdx];
+        saveConfig({ effort: lv });
+        setEffort(lv);
+        setMode("chat");
+        const storm = lv === "high" || lv === "xhigh" || lv === "max";
+        setStatus(`reasoning effort → ${lv}${storm ? " ⚡ 雷霆模式" : ""}`);
+        return;
+      }
+      if (key.escape) { setMode("chat"); setStatus("就绪"); return; }
+      return;
     }
     /* 子聊天区:独立滚动上下文 + ⇄ 切换子会话 */
     if (subView) {
@@ -1647,15 +1751,49 @@ export default function App() {
     return rows;
   };
 
+  /* opencode 风格启动横幅:ASCII art logo + 弱化标签信息,固定行数不破坏行模型。
+   * 颜色随时间做 HSL 色相旋转(8s 一圈),启动页不单调;发消息后 showBanner=false,动画自动停止。 */
+  const bannerAnim = useAnimationTime(80, showBanner);
+  /* effort 滑块动画:滑块打开期间驱动雷霆指针(⚡ 呼吸闪烁) */
+  const effortAnim = useAnimationTime(80, mode === "effort");
+  const bannerRows = useMemo(() => {
+    const logo = [
+      "   __  _______   ___  __ __________ ",
+      "  / / / /  _/ | / / |/ // ____/ __ \\",
+      " / / / // //  |/ /|   // __/ / / / /",
+      "/ /_/ // // /|  //   |/ /___/ /_/ / ",
+      "\\____/___/_/ |_//_/|_/_____/_____/",
+    ];
+    /* 色相旋转:每 80ms 移 3.6°,约 8s 一圈;5 行均分 90° 范围,形成流动渐变 */
+    const baseHue = (bannerAnim * 3.6) % 360;
+    const sessName = sessions.find((s) => s.id === activeSessionIdRef.current)?.name || (sessions.length ? sessions[0].name : "新会话");
+    const st = `${storageRef.current ? "SQLite" : "config.json"}`;
+    const rows = logo.map((l, i) => ({
+      kind: "banner", m: null, text: l,
+      color: hslToHex(baseHue + i * 18, 0.85, 0.62), bold: true,
+    }));
+    rows.push({ kind: "banner", m: null, text: " ", color: "gray", dim: true });
+    rows.push({
+      kind: "banner", m: null, text: `  Session   ${sessName}`,
+      color: "gray", dim: true, bold: false,
+    });
+    rows.push({
+      kind: "banner", m: null, text: `  Storage   ${st} · /help 命令 · /new 会话 · /sessions 切换`,
+      color: "gray", dim: true,
+    });
+    return rows;
+  }, [rowWidth, sessions, bannerAnim]);
+
   /* 全部可见行（含流式中的消息；思考/子agent活动动画改由 ActivityPanel 呈现）。
    * useMemo:避免每次渲染重复 wrap 所有工具输出(展开时 O(n)→O(n²))。 */
   const allRows = useMemo(() => {
     let rows = [];
+    if (showBanner) rows = rows.concat(bannerRows);
     for (const m of messages) rows = rows.concat(messageToRows(m, false));
     if (streaming) rows = rows.concat(messageToRows(streaming, true));
     if (busy && !streaming && !rows.length) rows.push({ kind: "md", m: null, text: "…", color: "gray" });
     return rows;
-  }, [messages, streaming, showToolDetails, rowWidth, busy, expandedThinking]);
+  }, [messages, streaming, showToolDetails, rowWidth, busy, expandedThinking, showBanner, bannerRows]);
 
   const maxScroll = Math.max(0, allRows.length - MSG_HEIGHT);
   const safeOffset = Math.min(scrollOffset, maxScroll);
@@ -1783,7 +1921,7 @@ export default function App() {
       <Box flexDirection="row" flexShrink={0} paddingX={1}>
         <Text bold color="cyan" wrap="truncate" width={Math.max(WIDTH - 2, 10)}>
           ◆ {agent.name} · {provider.name} · {loadConfig().model}
-          {profile ? ` · ${profile.username}` : provider.apiKey ? " · 已连接" : ""}
+          {profile ? ` · ${profile.username}` : getProviderApiKey(provider.id) ? " · 已连接" : ""}
           {historyUsed > 0 ? <Text color={ctxColor}> · ctx {ctxPct}%</Text> : null}
           <Text dimColor> · {status}</Text>
         </Text>
@@ -1862,6 +2000,7 @@ export default function App() {
           showTodos={showTodos}
           width={rowWidth}
           color={agentColor}
+          effort={effort}
         />
       </Box>
 
@@ -1891,6 +2030,113 @@ export default function App() {
             <TextInput value={modelPick} onChange={setModelPick} onSubmit={onModelSubmit} />
           </Box>
         )}
+        {mode === "effort" && (() => {
+          /* Claude Code /effort 滑块:两端 Faster/Smarter,刻度线上指针,级别名按刻度中心对齐。
+           * 指针随档位递进:low ○ 灰 · medium ◐ 青 · high ◑ 金 · xhigh ◉ 橙 · max ◆ 蓝。
+           * 仅选中项标签带动画(xhigh 橙呼吸 / max 蓝呼吸),未选中保持静态;
+           * max 时蓝色波纹从 max 标签位置发出,平滑扩散渐隐,填满整个面板。 */
+          const pad = 4;
+          const barLen = Math.max(24, Math.min(46, rowWidth - 14));
+          const panelW = pad + barLen;
+          const posOf = (i) => Math.round((i * (barLen - 1)) / (EFFORT_LEVELS.length - 1));
+          const marks = ["○", "◐", "◑", "◉", "◆"];
+          const markCols = ["gray", "cyan", "#FFE066", "#FFB347", "#38BDF8"];
+          const mark = marks[effortIdx];
+          let markColor = markCols[effortIdx];
+          if (effortIdx === 4) {
+            markColor = hslToHex(205 + 10 * Math.sin(effortAnim * 0.12), 0.92, 0.52 + 0.2 * Math.sin(effortAnim * 0.16));
+          } else if (effortIdx >= 2) {
+            markColor = hslToHex(38, 0.95, 0.5 + 0.22 * Math.sin(effortAnim * 0.3));
+          }
+          let ruler = "";
+          for (let i = 0; i < barLen; i++) ruler += i === posOf(effortIdx) ? mark : "─";
+          const seg = barLen / (EFFORT_LEVELS.length - 1);
+          /* 标签行:仅 active 动画,xhigh/max 未选中时静态灰 */
+          const labelColor = (i, active) => {
+            if (!active) return "gray";
+            if (i === 4) return hslToHex(205 + 10 * Math.sin(effortAnim * 0.12), 0.92, 0.55 + 0.25 * Math.sin(effortAnim * 0.35));
+            if (i === 3) return hslToHex(30, 0.95, 0.55 + 0.22 * Math.sin(effortAnim * 0.3));
+            return markCols[i];
+          };
+          /* 波纹:从 "max" 标签文字中心发出,多环连续扩散渐隐,填满整个面板;
+           * 全域背景:每字符按坐标查环强度(中心在标签行构造后更新) */
+          let maxLabelX = pad + posOf(4);
+          let cx = Math.min(maxLabelX, rowWidth - 1);
+          const cy = 3;
+          const bgFor = (x, y) => {
+            if (effortIdx !== 4) return null;
+            const fadeIn = Math.min(1, (Date.now() - maxSinceRef.current) / 700);
+            if (fadeIn <= 0.02) return null;
+            const a = rippleBgAt(x, y, effortAnim, rowWidth, cx, cy) * fadeIn;
+            return a > 0.04 ? hexInterp("#0A1E33", "#4FC3F7", a) : null;
+          };
+          const rrow = (y, cells) => (
+            <Text>
+              {Array.from({ length: rowWidth }, (_, x) => {
+                const c = cells[x] || { ch: " " };
+                return (
+                  <Text key={x} color={c.color} bold={c.bold} backgroundColor={bgFor(x, y)}>{c.ch}</Text>
+                );
+              })}
+            </Text>
+          );
+          const cellsOf = (y, s, color, bold) => {
+            const cells = {};
+            s.split("").forEach((ch, x) => { cells[x] = { ch, color, bold }; });
+            return cells;
+          };
+          /* 构造各行的逐字符内容 */
+          const rowCells = [];
+          rowCells[0] = cellsOf(0, "Effort", "cyan", true);
+          const fastLine = " ".repeat(pad) + "Faster" + " ".repeat(Math.max(6, barLen - 13)) + "Smarter";
+          rowCells[1] = cellsOf(1, fastLine, "gray", false);
+          const rulerLine = " ".repeat(pad) + ruler;
+          rowCells[2] = (() => {
+            const cells = {};
+            rulerLine.split("").forEach((ch, x) => {
+              cells[x] = ch === mark && x >= pad ? { ch, color: markColor, bold: true } : { ch, color: "gray", bold: false };
+            });
+            return cells;
+          })();
+          const labelLine = [];
+          let lineSoFar = 0;
+          for (let i = 0; i < EFFORT_LEVELS.length; i++) {
+            const lv = EFFORT_LEVELS[i];
+            const c = Math.round(i * seg) - Math.floor(stringWidth(lv) / 2);
+            const gap = Math.max(1, c - lineSoFar);
+            labelLine.push(" ".repeat(gap));
+            lineSoFar += gap;
+            labelLine.push({ lv, active: i === effortIdx, i });
+            lineSoFar += stringWidth(lv);
+          }
+          rowCells[3] = (() => {
+            const cells = {};
+            let x = pad;
+            for (const part of labelLine) {
+              if (typeof part === "string") {
+                part.split("").forEach((ch, k) => { cells[x + k] = { ch, color: "gray", bold: false }; });
+                x += part.length;
+              } else {
+                const { lv, active, i: li } = part;
+                lv.split("").forEach((ch, k) => {
+                  cells[x + k] = { ch, color: labelColor(li, active), bold: active };
+                });
+                if (li === 4) { maxLabelX = x + Math.floor(stringWidth(lv) / 2); cx = Math.min(maxLabelX, rowWidth - 1); } // "max" 文字中心
+                x += stringWidth(lv);
+              }
+            }
+            return cells;
+          })();
+          const hintLine = "←/→ adjust · Enter confirm · Esc cancel";
+          rowCells[4] = cellsOf(4, hintLine, "gray", false);
+          /* 第 6 行留空,让波纹铺满整个面板高度 */
+          rowCells[5] = {};
+          return (
+            <Box flexDirection="column" height={6}>
+              {[0, 1, 2, 3, 4, 5].map((y) => rrow(y, rowCells[y]))}
+            </Box>
+          );
+        })()}
       </Box>
 
       <Box flexShrink={0} paddingX={1}>

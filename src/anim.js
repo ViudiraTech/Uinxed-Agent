@@ -30,12 +30,17 @@ export const THINKING_VERBS = [
   "Thinking", "Reasoning", "Analyzing", "Composing", "Formulating",
   "Pondering", "Deliberating", "Synthesizing", "Evaluating", "Planning",
   "Mapping", "Outlining", "Verifying", "Tracing", "Weighing", "Concluding",
+  "Conceptualizing", "Structuring", "Probing", "Reconsidering",
+  "Reorganizing", "Drafting", "Inferring", "Decomposing",
 ];
 
-/* 工具执行动词 */
+/* 工具执行动词(参考 Claude Code 的 TOOL_VERBS 映射:Reading/Writing/Editing/Running/Searching/Fetching) */
 export const TOOL_VERBS = [
   "Running", "Executing", "Processing", "Calling", "Scanning", "Reading",
   "Writing", "Editing", "Searching", "Computing", "Fetching", "Generating",
+  "Reading", "Writing", "Editing", "Running", "Searching", "Fetching",
+  "Compiling", "Parsing", "Inspecting", "Matching", "Globbing", "Querying",
+  "Rendering", "Serializing", "Validating", "Linting", "Building", "Bundling",
 ];
 
 /* 子 agent 工作动词 */
@@ -43,7 +48,31 @@ export const SUBAGENT_VERBS = [
   "Exploring", "Researching", "Investigating", "Combing", "Locating",
   "Scanning", "Comparing", "Studying", "Reasoning", "Executing",
   "Implementing", "Advancing", "Verifying", "Reporting",
+  "Auditing", "Benchmarking", "Profiling", "Instrumenting",
+  "Reconnoitering", "Mining", "Triangulating", "Cross-referencing",
+  "Backtracking", "Chasing", "Narrowing", "Harvesting",
 ];
+
+/* 工具名 → 动词映射(参考 Claude Code 的 TOOL_VERBS:
+ * Read→Reading / Write→Writing / Edit→Editing / Bash→Running /
+ * Glob/Grep→Searching / WebFetch→Fetching / WebSearch→Searching) */
+export const TOOL_VERB_MAP = {
+  read_file: "Reading",
+  write_file: "Writing",
+  edit_file: "Editing",
+  bash: "Running",
+  list_dir: "Listing",
+  grep: "Searching",
+  glob: "Searching",
+  fetch_url: "Fetching",
+  web_search: "Searching",
+  delegate: "Delegating",
+  todo_write: "Planning",
+  todo_update: "Tracking",
+  use_skill: "Loading skill",
+  get_current_time: "Checking",
+  calc: "Computing",
+};
 
 export const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
@@ -136,4 +165,15 @@ function widthOf(ch) {
 /* 思考 glimmer:正弦波透明度,返回 0..1 (仿 Claude "thinking shimmer") */
 export function glimmer(time, period = 2600) {
   return (Math.sin((time / period) * Math.PI * 2 - Math.PI / 2) + 1) / 2;
+}
+
+/* 逐字扫光(Claude Code "sweep highlight" 效果):
+ * 一道高光带沿文本从左向右循环扫过,每个字符按(位置 - 时间)距离计算强度 f∈[0,1]。
+ * 光带扫到文本末尾后自动从头开始,形成连续扫过动画。 */
+export function sweepAt(time, i, len, opts = {}) {
+  const { speed = 70, width = 6 } = opts; // 每 speed ms 移动 1 字符;光带覆盖 width 字符
+  const cycle = len + width + 2;
+  const d = ((i - time / speed) % cycle + cycle) % cycle;
+  if (d > width) return 0;
+  return 1 - d / width;
 }
