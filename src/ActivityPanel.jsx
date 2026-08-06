@@ -75,15 +75,16 @@ function hslToHex(h, s, l) {
   return `#${to(r)}${to(g)}${to(b)}`;
 }
 
-/* effort 档位(low/medium/high/xhigh/max):每级独立配色与动效,递进"发热",
- * max 转为蓝色波纹呼吸(参照 Claude Code thinking levels) */
-const EFFORT_INDEX = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 };
+/* effort 档位(low/medium/high/xhigh/max/supercode):每级独立配色与动效,递进"发热",
+ * max 转为蓝色波纹呼吸,supercode 为紫色最快扫光(参照 Claude Code thinking levels) */
+const EFFORT_INDEX = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4, supercode: 5 };
 const EFFORT_TIERS = [
   { base: "#3E5C4C", shimmer: null, sweep: 150, spin: 170, blue: false }, // low: 暗灰绿,无扫光,慢速
   { base: "#1B8A5A", shimmer: "#8CF0B6", sweep: 70, spin: 90, blue: false }, // medium: 绿色 shimmer
   { base: "#1B8A5A", shimmer: "#FFE066", sweep: 55, spin: 80, blue: false }, // high: 金色扫光带
   { base: "#B45309", shimmer: "#FFC46B", sweep: 38, spin: 70, blue: false }, // xhigh: 暖橙,扫光更快
   { base: "#0E4A78", shimmer: "#38BDF8", sweep: 38, spin: 70, blue: true },  // max: 蓝色波纹呼吸
+  { base: "#4C1D95", shimmer: "#C084FC", sweep: 24, spin: 52, purple: true }, // supercode: 紫罗兰,扫光最快
 ];
 const effortTier = (effort) => EFFORT_TIERS[EFFORT_INDEX[effort] ?? 1] || EFFORT_TIERS[1];
 
@@ -92,6 +93,13 @@ function blueColor(t, i, f, fade = 0) {
   const hue = 205 + 10 * Math.sin(t * 0.1 + i * 1.1);
   const l = Math.max(0.25, 0.52 + 0.2 * Math.sin(t * 0.15 + i * 0.8) + f * 0.25 - fade * 0.25);
   return hslToHex(hue, 0.92, l);
+}
+
+/* 紫色呼吸(supercode):色相 261~275° 微流动,明度更高、扫光更强 */
+function purpleColor(t, i, f, fade = 0) {
+  const hue = 268 + 7 * Math.sin(t * 0.11 + i * 1.1);
+  const l = Math.max(0.28, 0.55 + 0.22 * Math.sin(t * 0.16 + i * 0.8) + f * 0.28 - fade * 0.25);
+  return hslToHex(hue, 0.9, l);
 }
 
 /* 单个 spinner 字符,可错相位/调速 */
@@ -107,7 +115,7 @@ function SpinnerChar({ t, offset = 0, color, speed = 90 }) {
  * 光带扫过的字符在 scanBase(静止)↔ scanShimmer(高光)之间瞬时提亮。
  * blue(max effort)时:字符呈蓝色波纹呼吸,扫光经过提亮。
  * fade∈[0,1] 为停滞褪色:活动超时无新输出时颜色向 fadeColor 渐暗,扫光同步减弱。 */
-function Reveal({ text, t, color, dimColor, t0 = 0, scanBase, scanShimmer, fade = 0, fadeColor = "#0B3B26", blue = false, sweepSpeed = 70 }) {
+function Reveal({ text, t, color, dimColor, t0 = 0, scanBase, scanShimmer, fade = 0, fadeColor = "#0B3B26", blue = false, purple = false, sweepSpeed = 70 }) {
   const textRef = useRef(text);
   const startRef = useRef(null);
   if (textRef.current !== text) {
@@ -120,6 +128,10 @@ function Reveal({ text, t, color, dimColor, t0 = 0, scanBase, scanShimmer, fade 
     <Text>
       {chars.map((c, i) => {
         if (!c.done) return <Text key={i} dimColor>{c.ch}</Text>;
+        if (purple) {
+          const f = sweepAt(t, i, chars.length, { speed: sweepSpeed }) * (1 - fade);
+          return <Text key={i} color={purpleColor(t, i, f, fade)}>{c.ch}</Text>;
+        }
         if (blue) {
           const f = sweepAt(t, i, chars.length, { speed: sweepSpeed }) * (1 - fade);
           return <Text key={i} color={blueColor(t, i, f, fade)}>{c.ch}</Text>;
@@ -156,13 +168,15 @@ function MainLine({ activity, t, color, since, tokens, width, effort }) {
   const idleMs = Math.max(0, Date.now() - (since || Date.now()));
   const fade = idleMs > 15000 ? Math.min(1, (idleMs - 15000) / 30000) : 0;
   /* 停滞褪色:活动超过 15s 无新输出 → 颜色渐暗、扫光渐隐(15s~45s 线性淡出) */
-  const spinnerColor = tier.blue
-    ? blueColor(t, 0, glow, fade)
-    : tier.shimmer
-      ? fade > 0
-        ? hexInterp(hexInterp(tier.base, "#0B3B26", fade), tier.shimmer, glow)
-        : hexInterp(tier.base, tier.shimmer, glow)
-      : fade > 0 ? hexInterp(tier.base, "#0B3B26", fade) : tier.base;
+  const spinnerColor = tier.purple
+    ? purpleColor(t, 0, glow, fade)
+    : tier.blue
+      ? blueColor(t, 0, glow, fade)
+      : tier.shimmer
+        ? fade > 0
+          ? hexInterp(hexInterp(tier.base, "#0B3B26", fade), tier.shimmer, glow)
+          : hexInterp(tier.base, tier.shimmer, glow)
+        : fade > 0 ? hexInterp(tier.base, "#0B3B26", fade) : tier.base;
   const elapsed = fmtDuration(Date.now() - (since || Date.now()));
   const counter = useSmoothCounter(tokens || 0);
 
@@ -174,7 +188,7 @@ function MainLine({ activity, t, color, since, tokens, width, effort }) {
         text={text} t={t}
         scanBase={tier.base} scanShimmer={tier.shimmer}
         fade={fade} t0={3}
-        blue={tier.blue} sweepSpeed={tier.sweep}
+        blue={tier.blue} purple={tier.purple} sweepSpeed={tier.sweep}
       />
       <Text dimColor>… </Text>
       <Text dimColor>· {elapsed}</Text>
@@ -206,13 +220,15 @@ function SubRow({ sub, t, offset, width, color, effort }) {
   /* 子 agent 同样适用停滞褪色:超过 15s 无输出渐暗、扫光渐隐 */
   const idleMs = Math.max(0, Date.now() - (sub.startedAt || Date.now()));
   const fade = idleMs > 15000 ? Math.min(1, (idleMs - 15000) / 30000) : 0;
-  const spinnerColor = tier.blue
-    ? blueColor(t, offset * 6, glow, fade)
-    : tier.shimmer
-      ? fade > 0
-        ? hexInterp(hexInterp(tier.base, "#0B3B26", fade), tier.shimmer, glow)
-        : hexInterp(tier.base, tier.shimmer, glow)
-      : fade > 0 ? hexInterp(tier.base, "#0B3B26", fade) : tier.base;
+  const spinnerColor = tier.purple
+    ? purpleColor(t, offset * 6, glow, fade)
+    : tier.blue
+      ? blueColor(t, offset * 6, glow, fade)
+      : tier.shimmer
+        ? fade > 0
+          ? hexInterp(hexInterp(tier.base, "#0B3B26", fade), tier.shimmer, glow)
+          : hexInterp(tier.base, tier.shimmer, glow)
+        : fade > 0 ? hexInterp(tier.base, "#0B3B26", fade) : tier.base;
   return (
     <Text wrap="truncate" width={width}>
       <SpinnerChar t={t} offset={offset} color={spinnerColor} speed={tier.spin} />
@@ -221,7 +237,7 @@ function SubRow({ sub, t, offset, width, color, effort }) {
       <Reveal
         text={task ? ` ${task}` : "…"} t={t} t0={offset + 2}
         scanBase={tier.base} scanShimmer={tier.shimmer} fade={fade}
-        blue={tier.blue} sweepSpeed={tier.sweep}
+        blue={tier.blue} purple={tier.purple} sweepSpeed={tier.sweep}
       />
       <Text dimColor> · {elapsed}</Text>
       {counter > 0 && <Text dimColor> · {fmtTokens(counter)} tok</Text>}

@@ -163,9 +163,10 @@ export async function* chatStream(messages, { model, tools, signal, stream = tru
   if (provider.id === "deepseek") {
     body.thinking = { type: "enabled" };
   }
-  /* 支持 effort 的提供商:透传全局 reasoning effort(low/medium/high/xhigh/max) */
+  /* 支持 effort 的提供商:透传全局 reasoning effort(low/medium/high/xhigh/max)。
+   * supercode 为客户端编排模式,API 层映射为 max */
   if (provider.supportsEffort && cfg.effort) {
-    body.reasoning_effort = cfg.effort;
+    body.reasoning_effort = cfg.effort === "supercode" ? "max" : cfg.effort;
   }
 
   const res = await fetch(`${provider.baseUrl}/chat/completions`, {
@@ -275,7 +276,7 @@ async function* responsesStream(messages, { model, tools, signal, stream = true 
     store: false,
   };
   if (tools && tools.length) body.tools = tools;
-  if (cfg.effort) body.reasoning = { effort: cfg.effort };
+  if (cfg.effort) body.reasoning = { effort: cfg.effort === "supercode" ? "max" : cfg.effort };
   else if (provider.reasoningEffort) body.reasoning = { effort: provider.reasoningEffort };
   if (apiKey) body.auth = { type: "bearer", key: apiKey };
 

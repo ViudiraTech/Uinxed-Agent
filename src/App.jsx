@@ -56,6 +56,10 @@ const fmtTime = (ts) => {
 
 /* reasoning effort 滑块级别(索引即强度,high 及以上标签带动画,max 蓝色波纹) */
 const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
+/* Claude Code ultracode 式独立 Mode:不在 5 档刻度上,分隔线右侧另占一档。
+ * supercode = max 推理 + 多子 agent 并发编排(模型自主 delegate 拆解) */
+const SUPERCODE = "supercode";
+const SUPERCODE_PROMPT = `\n\n## Supercode 模式\n你正处于 supercode 模式:推理 effort=max,并开启多子 agent 并发编排。\n对每个实质任务,先自主规划:把任务拆分为可并行的独立工作流(理解→实施→验证),在同一轮回复中多次并发调用 delegate 子 agent(explorer/general/coding)执行;全部返回后汇总评估、修正补做,直到任务彻底完成才结束回合。`;
 
 /* HSL → hex(滑块/横幅渐变动画共用) */
 function hslToHex(h, s, l) {
@@ -85,27 +89,32 @@ function hexInterp(a, b, f) {
   return `#${((r << 16) | (g << 8) | bl).toString(16).padStart(6, "0")}`;
 }
 
-/* max effort 蓝色波纹(panel 全域背景):从 max 标签文字中心发出,波峰缓慢扩散,
- * 先快后慢、阻尼衰减渐隐,填满整个 effort 面板。返回强度 0..1。 */
-function rippleBgAt(x, y, t, w, cx, cy) {
+/* 波纹预设:max 蓝色(稀疏平缓),supercode 紫色(更多环/更强/波峰更宽,填满整个面板) */
+const RIPPLE_PRESETS = {
+  max:       { N: 5, PERIOD: 3600, amp: 0.8, w0: 3.0, wg: 4.5, decay: 2.4, from: "#0A1E33", to: "#4FC3F7" },
+  supercode: { N: 8, PERIOD: 3200, amp: 1.0, w0: 4.5, wg: 6.0, decay: 1.9, from: "#170A33", to: "#C084FC" },
+};
+
+/* 波纹(panel 全域背景):从标签文字中心发出,波峰缓慢扩散,先快后慢、阻尼衰减渐隐,
+ * 填满整个面板。返回颜色 hex 或 null;fade∈[0,1] 为切入淡入系数。 */
+function rippleBgAt(x, y, t, w, cx, cy, pr, fade = 1) {
   const d = Math.hypot(x - cx, (y - cy) * 1.8);
   const maxR = Math.hypot(Math.max(cx, w - cx) + 4, 8 * 1.8);
-  const N = 5;
-  const PERIOD = 3600;
+  const { N, PERIOD, amp, w0, wg, decay, from, to } = pr;
   const STEP = PERIOD / N;
   let best = 0;
   for (let k = 0; k < N; k++) {
     const age = ((t - k * STEP) % PERIOD + PERIOD) % PERIOD;
     const p = age / PERIOD;
     const r = maxR * Math.pow(p, 0.8);
-    const ringW = 3.0 + p * 4.5;
+    const ringW = w0 + p * wg;
     const diff = Math.abs(d - r);
     if (diff < ringW) {
-      const a = (1 - diff / ringW) * 0.8 * Math.exp(-2.4 * p);
+      const a = (1 - diff / ringW) * amp * Math.exp(-decay * p) * fade;
       if (a > best) best = a;
     }
   }
-  return best;
+  return best > 0.04 ? hexInterp(from, to, best) : null;
 }
 
 const COMMANDS = [
@@ -353,6 +362,7 @@ export default function App() {
   const cancelRequestedRef = useRef(false);
   const toastTimer = useRef(null);
   const maxSinceRef = useRef(0); // 最近一次切入 max 档的时刻(波纹淡入用)
+  const superSinceRef = useRef(0); // 最近一次切入 supercode 的时刻(紫色波纹淡入用)
 
   /* 终端动态尺寸:resize 时自动重算,布局吃满终端 */
   const [termSize, setTermSize] = useState(() => [stdout.columns || 100, stdout.rows || 30]);
@@ -889,7 +899,9 @@ export default function App() {
       /* 按模型上下文窗口预算裁剪历史(deepseek 1M / glm 128k) */
       const hist = fitConversation(conversation, requestHistoryBudget(loadConfig().model));
       const msgs = [
-        { role: "system", content: agentSystem(active, loadConfig().model) + skillPromptBlock(cwd) },
+        { role: "system", content: agentSystem(active, loadConfig().model)
+          + (!isSub && loadConfig().effort === SUPERCODE ? SUPERCODE_PROMPT : "")
+          + skillPromptBlock(cwd) },
         ...hist,
         { role: "user", content: userText },
       ];
@@ -1168,7 +1180,7 @@ export default function App() {
       case "/effort": {
         const cur = loadConfig().effort || "high";
         const idx = EFFORT_LEVELS.indexOf(cur);
-        setEffortIdx(idx >= 0 ? idx : 2);
+        setEffortIdx(cur === SUPERCODE ? EFFORT_LEVELS.length : idx >= 0 ? idx : 2);
         setMode("effort");
         setStatus("Reasoning effort · ←→ 调节 · Enter 确认 · Esc 取消");
         break;
@@ -1558,17 +1570,26 @@ export default function App() {
         setMode("chat"); setConnectProvider(null); return;
       }
     }
-    /* effort 滑块:←→ 调节强度,Enter 确认,Esc 取消 */
+    /* effort 滑块:←→ 调节(5 档 + 分隔线右侧 supercode Mode),Enter 确认,Esc 取消 */
     if (mode === "effort") {
       if (key.leftArrow) { setEffortIdx((i) => Math.max(i - 1, 0)); return; }
-      if (key.rightArrow) { setEffortIdx((i) => { const n = Math.min(i + 1, EFFORT_LEVELS.length - 1); if (n === EFFORT_LEVELS.length - 1) maxSinceRef.current = Date.now(); return n; }); return; }
+      if (key.rightArrow) {
+        setEffortIdx((i) => {
+          const n = Math.min(i + 1, EFFORT_LEVELS.length);
+          if (n === 4) maxSinceRef.current = Date.now();
+          else if (n === EFFORT_LEVELS.length) superSinceRef.current = Date.now();
+          return n;
+        });
+        return;
+      }
       if (key.return) {
-        const lv = EFFORT_LEVELS[effortIdx];
+        const lv = effortIdx >= EFFORT_LEVELS.length ? SUPERCODE : EFFORT_LEVELS[effortIdx];
         saveConfig({ effort: lv });
         setEffort(lv);
         setMode("chat");
-        const storm = lv === "high" || lv === "xhigh" || lv === "max";
-        setStatus(`reasoning effort → ${lv}${storm ? " ⚡ 雷霆模式" : ""}`);
+        setStatus(lv === SUPERCODE
+          ? "supercode 模式: max 推理 + 多子 agent 并发编排"
+          : `reasoning effort → ${lv}`);
         return;
       }
       if (key.escape) { setMode("chat"); setStatus("就绪"); return; }
@@ -2032,50 +2053,68 @@ export default function App() {
         )}
         {mode === "effort" && (() => {
           /* Claude Code /effort 滑块:两端 Faster/Smarter,刻度线上指针,级别名按刻度中心对齐。
-           * 指针随档位递进:low ○ 灰 · medium ◐ 青 · high ◑ 金 · xhigh ◉ 橙 · max ◆ 蓝。
-           * 仅选中项标签带动画(xhigh 橙呼吸 / max 蓝呼吸),未选中保持静态;
-           * max 时蓝色波纹从 max 标签位置发出,平滑扩散渐隐,填满整个面板。 */
+           * 指针随档位递进:low ○ 灰 · medium ◐ 青 · high ◑ 金 · xhigh ◉ 橙 · max ◆ 蓝;
+           * supercode 为分隔线 ┊ 右侧的独立 Mode(参照 ultracode):
+           * 5 档刻度仍为 low…max,右侧轨道上紫色 ◆,标签紫色(未选中静态紫、选中紫呼吸),
+           * 副注释行标注 "max + 多子 agent 并发"。
+           * 波纹:max 蓝色 / supercode 紫色,从对应标签中心发出,平滑扩散渐隐,填满整个面板。 */
           const pad = 4;
-          const barLen = Math.max(24, Math.min(46, rowWidth - 14));
-          const panelW = pad + barLen;
+          const barLen = Math.max(20, Math.min(40, rowWidth - 38));
           const posOf = (i) => Math.round((i * (barLen - 1)) / (EFFORT_LEVELS.length - 1));
           const marks = ["○", "◐", "◑", "◉", "◆"];
           const markCols = ["gray", "cyan", "#FFE066", "#FFB347", "#38BDF8"];
-          const mark = marks[effortIdx];
-          let markColor = markCols[effortIdx];
-          if (effortIdx === 4) {
-            markColor = hslToHex(205 + 10 * Math.sin(effortAnim * 0.12), 0.92, 0.52 + 0.2 * Math.sin(effortAnim * 0.16));
-          } else if (effortIdx >= 2) {
-            markColor = hslToHex(38, 0.95, 0.5 + 0.22 * Math.sin(effortAnim * 0.3));
-          }
-          let ruler = "";
-          for (let i = 0; i < barLen; i++) ruler += i === posOf(effortIdx) ? mark : "─";
           const seg = barLen / (EFFORT_LEVELS.length - 1);
-          /* 标签行:仅 active 动画,xhigh/max 未选中时静态灰 */
+          /* supercode 区域坐标(分隔线右侧独立 Mode) */
+          const divX = pad + barLen + 2;
+          const superLabelX = divX + 2 + 3;
+          const superTrack = 14;
+          const superMarkIdx = 5;
+          const superCx = superLabelX + Math.floor(SUPERCODE.length / 2);
+          const superColor = effortIdx === 5
+            ? hslToHex(268 + 8 * Math.sin(effortAnim * 0.12), 0.9, 0.62 + 0.2 * Math.sin(effortAnim * 0.35))
+            : "#A78BFA";
+          const superMark = "◆";
+          const effName = effortIdx >= EFFORT_LEVELS.length ? SUPERCODE : EFFORT_LEVELS[effortIdx];
+          /* 当前档位呼吸色:high 金 / xhigh 橙 / max 蓝 / supercode 紫 */
+          const liveColor = (() => {
+            if (effortIdx === 5) return superColor;
+            if (effortIdx === 4) return hslToHex(205 + 10 * Math.sin(effortAnim * 0.12), 0.92, 0.52 + 0.2 * Math.sin(effortAnim * 0.16));
+            if (effortIdx >= 2) return hslToHex(38, 0.95, 0.5 + 0.22 * Math.sin(effortAnim * 0.3));
+            return markCols[effortIdx];
+          })();
+          const ruler = (() => {
+            let s = "";
+            for (let i = 0; i < barLen; i++) s += effortIdx <= 4 && i === posOf(effortIdx) ? marks[effortIdx] : "─";
+            s += "  ┊  ";
+            for (let i = 0; i < superTrack; i++) s += effortIdx === 5 && i === superMarkIdx ? superMark : "─";
+            return s;
+          })();
+          /* 标签行:仅 active 动画,xhigh/max 未选中时静态灰,supercode 未选中静态紫 */
           const labelColor = (i, active) => {
             if (!active) return "gray";
             if (i === 4) return hslToHex(205 + 10 * Math.sin(effortAnim * 0.12), 0.92, 0.55 + 0.25 * Math.sin(effortAnim * 0.35));
             if (i === 3) return hslToHex(30, 0.95, 0.55 + 0.22 * Math.sin(effortAnim * 0.3));
             return markCols[i];
           };
-          /* 波纹:从 "max" 标签文字中心发出,多环连续扩散渐隐,填满整个面板;
-           * 全域背景:每字符按坐标查环强度(中心在标签行构造后更新) */
-          let maxLabelX = pad + posOf(4);
-          let cx = Math.min(maxLabelX, rowWidth - 1);
+          /* 波纹:max 蓝 / supercode 紫,从对应标签文字中心发出,多环连续扩散渐隐,填满整个面板 */
+          let cx = Math.min(pad + posOf(4), rowWidth - 1);
           const cy = 3;
           const bgFor = (x, y) => {
-            if (effortIdx !== 4) return null;
-            const fadeIn = Math.min(1, (Date.now() - maxSinceRef.current) / 700);
+            let pr = null, since = 0, ox = cx;
+            if (effortIdx === 4) { pr = RIPPLE_PRESETS.max; since = maxSinceRef.current; }
+            else if (effortIdx === 5) { pr = RIPPLE_PRESETS.supercode; since = superSinceRef.current; ox = superCx; }
+            if (!pr) return null;
+            const fadeIn = Math.min(1, (Date.now() - since) / 700);
             if (fadeIn <= 0.02) return null;
-            const a = rippleBgAt(x, y, effortAnim, rowWidth, cx, cy) * fadeIn;
-            return a > 0.04 ? hexInterp("#0A1E33", "#4FC3F7", a) : null;
+            return rippleBgAt(x, y, effortAnim, rowWidth, ox, cy, pr, fadeIn);
           };
           const rrow = (y, cells) => (
             <Text>
               {Array.from({ length: rowWidth }, (_, x) => {
                 const c = cells[x] || { ch: " " };
+                const col = typeof c.color === "function" ? c.color(x, y) : c.color;
                 return (
-                  <Text key={x} color={c.color} bold={c.bold} backgroundColor={bgFor(x, y)}>{c.ch}</Text>
+                  <Text key={x} color={col} bold={c.bold} backgroundColor={bgFor(x, y)}>{c.ch}</Text>
                 );
               })}
             </Text>
@@ -2087,14 +2126,29 @@ export default function App() {
           };
           /* 构造各行的逐字符内容 */
           const rowCells = [];
-          rowCells[0] = cellsOf(0, "Effort", "cyan", true);
+          /* 标题行:Effort — 当前档位名(supercode 紫色) */
+          rowCells[0] = (() => {
+            const cells = {};
+            "Effort".split("").forEach((ch, x) => { cells[x] = { ch, color: "cyan", bold: true }; });
+            ` — ${effName}`.split("").forEach((ch, x) => {
+              cells[6 + x] = { ch, color: effName === SUPERCODE ? superColor : liveColor, bold: true };
+            });
+            return cells;
+          })();
           const fastLine = " ".repeat(pad) + "Faster" + " ".repeat(Math.max(6, barLen - 13)) + "Smarter";
           rowCells[1] = cellsOf(1, fastLine, "gray", false);
           const rulerLine = " ".repeat(pad) + ruler;
           rowCells[2] = (() => {
             const cells = {};
             rulerLine.split("").forEach((ch, x) => {
-              cells[x] = ch === mark && x >= pad ? { ch, color: markColor, bold: true } : { ch, color: "gray", bold: false };
+              if (x < pad) { cells[x] = { ch, color: "gray", bold: false }; return; }
+              if (x >= divX + 2 && x < divX + 2 + superTrack) {
+                cells[x] = ch === "◆" ? { ch, color: superColor, bold: true } : { ch, color: "#7C5CFF", bold: false };
+              } else if (ch === "┊") {
+                cells[x] = { ch, color: "#7C5CFF", bold: false };
+              } else {
+                cells[x] = ch === "◆" ? { ch, color: liveColor, bold: true } : { ch, color: "gray", bold: false };
+              }
             });
             return cells;
           })();
@@ -2121,16 +2175,23 @@ export default function App() {
                 lv.split("").forEach((ch, k) => {
                   cells[x + k] = { ch, color: labelColor(li, active), bold: active };
                 });
-                if (li === 4) { maxLabelX = x + Math.floor(stringWidth(lv) / 2); cx = Math.min(maxLabelX, rowWidth - 1); } // "max" 文字中心
+                if (li === 4) cx = Math.min(x + Math.floor(stringWidth(lv) / 2), rowWidth - 1); // "max" 文字中心
                 x += stringWidth(lv);
               }
             }
+            /* 分隔线 + supercode 标签(参照 ultracode 独立 Mode) */
+            "  ┊  ".split("").forEach((ch, k) => { cells[x + k] = { ch, color: "#7C5CFF", bold: false }; });
+            x += 5;
+            SUPERCODE.split("").forEach((ch, k) => {
+              cells[x + k] = { ch, color: superColor, bold: effortIdx === 5 };
+            });
             return cells;
           })();
+          /* 副注释行:不再显示文字(曾影响波纹观感),整行留空让波纹完整铺满;
+           * supercode 说明由标题行 "Effort — supercode" 与 Enter 确认的 status 承担 */
+          rowCells[4] = {};
           const hintLine = "←/→ adjust · Enter confirm · Esc cancel";
-          rowCells[4] = cellsOf(4, hintLine, "gray", false);
-          /* 第 6 行留空,让波纹铺满整个面板高度 */
-          rowCells[5] = {};
+          rowCells[5] = cellsOf(5, hintLine, "gray", false);
           return (
             <Box flexDirection="column" height={6}>
               {[0, 1, 2, 3, 4, 5].map((y) => rrow(y, rowCells[y]))}
