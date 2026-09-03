@@ -36,20 +36,36 @@ func (d *DiffView) Render(width, height int, t Theme) ([]string, []Region) {
 	}
 	var lines []string
 	var regs []Region
-	if width >= 100 {
-		left := min(32, width/3)
-		right := width - left - 2
+	borderStyle := lipgloss.NewStyle().Foreground(t.Border)
+
+	if width >= 90 {
+		left := min(36, width/3)
+		right := width - left - 3
 		fileLines := make([]string, 0, height)
-		fileLines = append(fileLines, lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render("Changed Files"))
+		fileTitle := lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render(fmt.Sprintf("Changed Files (%d)", len(d.Snapshot.Files)))
+		fileLines = append(fileLines, fitLine(fileTitle, left))
+		fileLines = append(fileLines, fitLine(borderStyle.Render(strings.Repeat("─", left)), left))
+
 		for i, f := range d.Snapshot.Files {
-			prefix := "  "
-			if i == d.Selected {
-				prefix = "› "
+			isSel := i == d.Selected
+			mark := "  "
+			if isSel {
+				mark = "▸ "
 			}
-			s := fmt.Sprintf("%s%-2s %s  +%d -%d", prefix, f.Status, f.Path, f.Added, f.Deleted)
-			fileLines = append(fileLines, truncWidth(s, left))
-			regs = append(regs, Region{Rect: Rect{0, i + 1, left, 1}, Kind: ActionDiffFile, Value: f.Path})
+			fName := f.Path
+			statStyled := lipgloss.NewStyle().Foreground(t.Success).Render(fmt.Sprintf("+%d", f.Added)) + " " + lipgloss.NewStyle().Foreground(t.Error).Render(fmt.Sprintf("-%d", f.Deleted))
+			fStyle := lipgloss.NewStyle().Foreground(t.Text)
+			if isSel {
+				fStyle = lipgloss.NewStyle().Bold(true).Foreground(t.Primary)
+			}
+			row := padBetween(fStyle.Render(mark+truncWidth(fName, max(6, left-10))), statStyled, left)
+			fileLines = append(fileLines, row)
+			regs = append(regs, Region{Rect: Rect{0, i + 2, left, 1}, Kind: ActionDiffFile, Value: f.Path})
 		}
+		for len(fileLines) < height {
+			fileLines = append(fileLines, "")
+		}
+
 		diff := d.renderDiff(right, height, t)
 		for i := 0; i < height; i++ {
 			a, b := "", ""
@@ -59,7 +75,7 @@ func (d *DiffView) Render(width, height int, t Theme) ([]string, []Region) {
 			if i < len(diff) {
 				b = diff[i]
 			}
-			lines = append(lines, lipgloss.NewStyle().Width(left).Render(a)+" │ "+b)
+			lines = append(lines, fitLine(a, left)+borderStyle.Render(" │ ")+fitLine(b, right))
 		}
 	} else {
 		head := "Diff"

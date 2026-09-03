@@ -62,7 +62,7 @@ Regression coverage includes:
 - SQLite import/migration code paths compiled; SQL schema and LIKE-escape contract separately executed with SQLite 3.46.1; real modernc driver round-trip remains a CI-only check in this environment;
 - path/symlink escape protection and atomic file operations;
 - terminal ANSI/OSC-52/bidi-control sanitization;
-- streaming coalescing/backpressure;
+- immediate content/reasoning streaming plus tool-output coalescing/backpressure;
 - Markdown cache and repository file-index behavior.
 
 The production SQLite schema string was also extracted from `internal/storage/sqlite.go` and executed using the environment's SQLite 3.46.1 implementation. Creation of `sessions`, `messages`, `todos`, `tool_activities` and `schema_migrations` succeeded, and the exact `LIKE ... ESCAPE '\'` search contract was exercised with literal `%`, `_` and backslash characters. This validates SQL syntax/escaping only; it is not presented as a substitute for the real `modernc.org/sqlite` driver tests.

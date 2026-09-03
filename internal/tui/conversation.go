@@ -183,7 +183,8 @@ func (c *Conversation) reasoningHeight(id, streamReasoning string) int {
 	if strings.TrimSpace(reasoning) == "" {
 		return 0
 	}
-	return len(wrapPlain(reasoning, max(1, c.width-2)))
+	innerW := max(14, c.width-4)
+	return len(wrapPlain(reasoning, max(8, innerW-4))) + 1
 }
 
 func (c *Conversation) adjustReasoningEstimate(id string, delta int, open bool) {
@@ -297,74 +298,129 @@ func (c *Conversation) Render(height int, t Theme, streamContent, streamReasonin
 
 func (c *Conversation) renderBlock(b convBlock, t Theme, acts map[string]domain.ToolActivity, hover string) []renderLine {
 	var out []renderLine
-	label := "USER"
-	color := t.User
-	if b.Role == domain.RoleAssistant {
-		label = "ASSISTANT"
-		color = t.Assistant
+	width := c.width
+	if width < 20 {
+		width = 20
 	}
-	out = append(out, renderLine{Text: lipgloss.NewStyle().Bold(true).Foreground(color).Render(label)})
+	borderStyle := lipgloss.NewStyle().Foreground(t.Border)
+
+	// 1. Role Card Header
+	roleTitle := " You"
+	roleColor := t.User
+	if b.Role == domain.RoleAssistant {
+		roleTitle = "󰚩 Assistant"
+		roleColor = t.Primary
+	}
+	titlePill := lipgloss.NewStyle().Bold(true).Foreground(roleColor).Render(roleTitle)
+	pillLen := lipgloss.Width(titlePill)
+	topDashCount := max(1, width-pillLen-5)
+	headerLine := borderStyle.Render("╭─ ") + titlePill + " " + borderStyle.Render(strings.Repeat("─", topDashCount)+"╮")
+	out = append(out, renderLine{Text: headerLine})
+
+	// 2. Reasoning (if any)
 	b.Reasoning = terminalutil.SanitizeText(b.Reasoning)
 	if b.Reasoning != "" {
+		innerW := max(14, width-4)
 		if c.expandedThinking[b.ID] {
-			out = append(out, renderLine{Text: lipgloss.NewStyle().Foreground(t.Muted).Bold(hover == "thinking:"+b.ID).Render("◇ Reasoning"), Action: ActionThinking, Value: "thinking:" + b.ID})
-			for _, l := range wrapPlain(b.Reasoning, c.width-2) {
-				out = append(out, renderLine{Text: lipgloss.NewStyle().Foreground(t.Muted).Render("  " + l)})
+			headText := lipgloss.NewStyle().Foreground(t.Secondary).Bold(hover == "thinking:"+b.ID).Render("💭 Thought Process · Enter/Click to collapse")
+			hLen := lipgloss.Width(headText)
+			rDash := max(1, innerW-hLen-5)
+			rHead := borderStyle.Render("│ ╭─ ") + headText + " " + borderStyle.Render(strings.Repeat("─", rDash)+"╮")
+			out = append(out, renderLine{Text: rHead, Action: ActionThinking, Value: "thinking:" + b.ID})
+			for _, l := range wrapPlain(b.Reasoning, max(8, innerW-4)) {
+				out = append(out, renderLine{Text: borderStyle.Render("│ │ ") + lipgloss.NewStyle().Foreground(t.Muted).Render(l)})
 			}
+			out = append(out, renderLine{Text: borderStyle.Render("│ ╰" + strings.Repeat("─", max(1, innerW-2)) + "╯")})
 		} else {
-			out = append(out, renderLine{Text: lipgloss.NewStyle().Foreground(t.Muted).Bold(hover == "thinking:"+b.ID).Render("◇ Reasoning · Enter/Click to expand"), Action: ActionThinking, Value: "thinking:" + b.ID})
+			headText := lipgloss.NewStyle().Foreground(t.Muted).Bold(hover == "thinking:"+b.ID).Render("💭 Thought Process · Enter/Click to expand")
+			hLen := lipgloss.Width(headText)
+			rDash := max(1, innerW-hLen-5)
+			rHead := borderStyle.Render("│ ╭─ ") + headText + " " + borderStyle.Render(strings.Repeat("─", rDash)+"╮")
+			out = append(out, renderLine{Text: rHead, Action: ActionThinking, Value: "thinking:" + b.ID})
 		}
 	}
+
+	// 3. Content
 	if strings.TrimSpace(b.Content) != "" {
-		rendered, err := c.cache.Render(b.ID, b.Version, c.width, c.theme, b.Content)
-		if err != nil {
-			rendered = md.PlainFallback(b.Content, c.width)
+		var rendered string
+		contentW := max(16, width-4)
+		if b.ID == "__stream__" {
+			rendered = md.PlainFallback(b.Content, contentW)
+		} else {
+			var err error
+			rendered, err = c.cache.Render(b.ID, b.Version, contentW, c.theme, b.Content)
+			if err != nil {
+				rendered = md.PlainFallback(b.Content, contentW)
+			}
 		}
 		for _, l := range strings.Split(rendered, "\n") {
-			out = append(out, renderLine{Text: l})
+			out = append(out, renderLine{Text: borderStyle.Render("│ ") + l})
 		}
 	}
+
+	// 4. Tool Calls
 	for _, tc := range b.ToolCalls {
 		a := acts[tc.ID]
-		state := "○"
+		icon := "○"
+		stateText := "ready"
 		fg := t.Muted
 		switch a.State {
 		case "running":
-			state = "◉"
+			icon = "◓"
+			stateText = "running"
 			fg = t.Warning
 		case "success":
-			state = "●"
+			icon = "✓"
+			stateText = "completed"
 			fg = t.Success
 		case "failed":
-			state = "×"
+			icon = "✗"
+			stateText = "failed"
 			fg = t.Error
 		}
 		name := terminalutil.SanitizeText(tc.Function.Name)
 		summary := toolSummary(name, terminalutil.SanitizeText(tc.Function.Arguments))
-		line := fmt.Sprintf("%s %-9s %s", state, name, summary)
-		style := lipgloss.NewStyle().Foreground(fg)
-		if hover == tc.ID {
-			style = style.Bold(true)
-		}
-		out = append(out, renderLine{Text: style.Render(line), Action: ActionTool, Value: tc.ID})
+		innerW := max(14, width-4)
+		toolTitle := fmt.Sprintf("⚡ %s", name)
+		statusBadge := lipgloss.NewStyle().Foreground(fg).Bold(true).Render(fmt.Sprintf("[%s %s]", icon, stateText))
+		tLen := lipgloss.Width(toolTitle) + lipgloss.Width(statusBadge)
+		tDash := max(1, innerW-tLen-6)
+		toolHead := borderStyle.Render("│ ╭─ ") + lipgloss.NewStyle().Foreground(t.Tool).Bold(hover == tc.ID).Render(toolTitle) + " " + statusBadge + " " + borderStyle.Render(strings.Repeat("─", tDash)+"╮")
+		out = append(out, renderLine{Text: toolHead, Action: ActionTool, Value: tc.ID})
+
 		if c.expandedTools[tc.ID] {
 			if tc.Function.Arguments != "" {
-				for _, l := range wrapPlain("args: "+tc.Function.Arguments, c.width-4) {
-					out = append(out, renderLine{Text: lipgloss.NewStyle().Foreground(t.Muted).Render("  " + l)})
+				out = append(out, renderLine{Text: borderStyle.Render("│ │ ") + lipgloss.NewStyle().Bold(true).Foreground(t.Muted).Render("Arguments:")})
+				for _, l := range wrapPlain(tc.Function.Arguments, max(8, innerW-6)) {
+					out = append(out, renderLine{Text: borderStyle.Render("│ │   ") + lipgloss.NewStyle().Foreground(t.Muted).Render(l)})
 				}
 			}
 			if a.Output != "" {
-				for _, l := range wrapPlain(terminalutil.SanitizeText(a.Output), c.width-4) {
-					out = append(out, renderLine{Text: "  " + l})
+				out = append(out, renderLine{Text: borderStyle.Render("│ │ ") + lipgloss.NewStyle().Bold(true).Foreground(t.Success).Render("Output:")})
+				for _, l := range wrapPlain(terminalutil.SanitizeText(a.Output), max(8, innerW-6)) {
+					out = append(out, renderLine{Text: borderStyle.Render("│ │   ") + l})
 				}
 			}
 			if a.Error != "" {
-				for _, l := range wrapPlain(terminalutil.SanitizeText(a.Error), c.width-4) {
-					out = append(out, renderLine{Text: lipgloss.NewStyle().Foreground(t.Error).Render("  " + l)})
+				out = append(out, renderLine{Text: borderStyle.Render("│ │ ") + lipgloss.NewStyle().Bold(true).Foreground(t.Error).Render("Error:")})
+				for _, l := range wrapPlain(terminalutil.SanitizeText(a.Error), max(8, innerW-6)) {
+					out = append(out, renderLine{Text: borderStyle.Render("│ │   ") + lipgloss.NewStyle().Foreground(t.Error).Render(l)})
 				}
+			}
+			out = append(out, renderLine{Text: borderStyle.Render("│ ╰" + strings.Repeat("─", max(1, innerW-2)) + "╯")})
+		} else {
+			if summary != "" {
+				out = append(out, renderLine{Text: borderStyle.Render("│ │ ") + lipgloss.NewStyle().Foreground(t.Muted).Render(truncWidth(summary, max(6, innerW-6)))})
+				out = append(out, renderLine{Text: borderStyle.Render("│ ╰" + strings.Repeat("─", max(1, innerW-2)) + "╯")})
+			} else {
+				out = append(out, renderLine{Text: borderStyle.Render("│ ╰" + strings.Repeat("─", max(1, innerW-2)) + "╯")})
 			}
 		}
 	}
+
+	// 5. Card Footer
+	bottomLine := borderStyle.Render("╰" + strings.Repeat("─", max(1, width-2)) + "╯")
+	out = append(out, renderLine{Text: bottomLine})
 	out = append(out, renderLine{})
 	return out
 }
@@ -376,6 +432,7 @@ func (c *Conversation) totalEstimate() int {
 	}
 	return n
 }
+
 func estimateBlockWithReasoning(content, reasoning string, width, tools int, expanded bool) int {
 	n := estimateBlock(content, width, tools)
 	reasoning = terminalutil.SanitizeText(reasoning)
@@ -384,7 +441,8 @@ func estimateBlockWithReasoning(content, reasoning string, width, tools int, exp
 	}
 	n++ // reasoning header
 	if expanded {
-		n += len(wrapPlain(reasoning, max(1, width-2)))
+		innerW := max(14, width-4)
+		n += len(wrapPlain(reasoning, max(8, innerW-4))) + 1
 	}
 	return n
 }
@@ -393,18 +451,21 @@ func estimateBlock(content string, width, tools int) int {
 	if width < 20 {
 		width = 20
 	}
-	lines := 2 + tools
+	lines := 3 + tools*3 // header (1), footer (1), separator (1) + tools cards
+	contentW := max(16, width-4)
 	for _, l := range strings.Split(content, "\n") {
-		lines += max(1, int(math.Ceil(float64(max(1, len([]rune(l))))/float64(width))))
+		lines += max(1, int(math.Ceil(float64(max(1, len([]rune(l))))/float64(contentW))))
 	}
 	return lines
 }
+
 func boolInt(v bool) int {
 	if v {
 		return 1
 	}
 	return 0
 }
+
 func wrapPlain(s string, width int) []string {
 	if width < 8 {
 		width = 8
@@ -424,6 +485,7 @@ func wrapPlain(s string, width int) []string {
 	}
 	return out
 }
+
 func toolSummary(name, args string) string {
 	args = strings.ReplaceAll(strings.TrimSpace(args), "\n", " ")
 	if len([]rune(args)) > 70 {
@@ -434,3 +496,4 @@ func toolSummary(name, args string) string {
 	}
 	return args
 }
+

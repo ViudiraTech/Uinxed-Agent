@@ -35,7 +35,7 @@ Rules enforced by package dependencies:
 
 ## Runtime event model
 
-`internal/domain/events.go` defines stream delta, reasoning delta, tool lifecycle, Agent lifecycle, Todo, session, usage, compaction and error events. Runtime event channels are bounded. `internal/app/stream.go` coalesces consecutive text/reasoning deltas on a configurable interval (minimum 8 ms) before the TUI consumes them.
+`internal/domain/events.go` defines stream delta, reasoning delta, tool lifecycle, Agent lifecycle, Todo, session, usage, compaction and error events. Runtime event channels are bounded. `internal/app/stream.go` forwards model content/reasoning deltas immediately so provider SSE remains visibly live. Only cumulative `ToolOutput` snapshots are coalesced on the configurable render interval (minimum 8 ms).
 
 This protects input latency when a fast model emits many tiny SSE chunks.
 

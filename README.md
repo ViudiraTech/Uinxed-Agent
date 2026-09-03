@@ -35,7 +35,7 @@ The result is a smaller deployment surface, native terminal interaction, explici
 
 - **Responsive terminal UI** with large, medium and small layouts.
 - **Keyboard + mouse interaction** with semantic hit regions, wheel routing and optional mouse capture.
-- **Streaming conversations** with coalesced token updates instead of full-history redraws per token.
+- **True live SSE conversations**: content/reasoning deltas reach the TUI immediately; only cumulative tool stdout snapshots are coalesced to avoid redundant redraws.
 - **Provider reasoning display** with collapsible reasoning content and effort controls.
 - **Multi-agent runtime** with `build`, `coding`, `plan`, plus isolated `explorer`, `coding` and `general` subagents.
 - **Concurrent delegation** through a bounded tool scheduler and cancellable child sessions.
@@ -222,7 +222,9 @@ If you discover a security issue, avoid posting credentials or exploit details i
 
 The rendering path is designed to avoid doing expensive work for every provider token:
 
-- streaming deltas are coalesced before reaching the UI;
+- model content and reasoning deltas are forwarded to the UI immediately;
+- only cumulative high-frequency tool-output snapshots are coalesced;
+- partial assistant Markdown uses a lightweight streaming renderer, then switches to full Markdown after completion;
 - completed Markdown is cached by message/version/width/theme;
 - the conversation view materializes only the visible range plus overscan;
 - file search prefers `rg` when available and falls back to Go;

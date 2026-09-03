@@ -279,6 +279,10 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 		return nil, false
 	}
 	switch key {
+	case "ctrl+b":
+		return m.toggleSidebar(), true
+	case "ctrl+d":
+		return m.executeCommand("/diff"), true
 	case "ctrl+p":
 		m.openCommandPalette()
 		return nil, true
@@ -568,13 +572,14 @@ func (m *Model) handleOp(x opMsg) tea.Cmd {
 
 func (m *Model) resize() {
 	chatW := m.width
-	if m.width >= 120 && m.cfg.Sidebar != "off" {
-		chatW -= 30
+	if m.width >= 96 && m.cfg.Sidebar != "off" {
+		sidebarW := min(32, max(24, m.width/4))
+		chatW -= (sidebarW + 1)
 	}
 	if chatW < 30 {
 		chatW = max(20, m.width)
 	}
-	m.prompt.SetWidth(max(10, chatW-2))
+	m.prompt.SetWidth(max(10, chatW-4))
 	m.conv.SetWidth(max(20, chatW-2))
 }
 func (m *Model) fetchModels() tea.Cmd {

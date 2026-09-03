@@ -20,7 +20,8 @@ type commandDef struct {
 }
 
 var commandDefs = []commandDef{
-	{"/help", "显示命令与快捷键", ""},
+	{"/help", "显示命令与快捷键", "?"},
+	{"/sidebar", "切换左侧边栏显示/隐藏", "Ctrl+B"},
 	{"/connect", "接入 OpenAI-compatible Provider", ""},
 	{"/provider", "查看/切换 Provider", ""},
 	{"/key", "设置当前 Provider API Key", ""},
@@ -41,10 +42,10 @@ var commandDefs = []commandDef{
 	{"/delete", "删除 Session", ""},
 	{"/storage", "SQLite/config.json 存储互转", ""},
 	{"/migrate", "等价 /storage", ""},
-	{"/diff", "打开 Git Diff Viewer", ""},
+	{"/diff", "打开 Git Diff 审阅器", "Ctrl+D"},
 	{"/skills", "查看/加载 Agent Skill", ""},
 	{"/mouse", "开关鼠标捕获", ""},
-	{"/theme", "切换主题 uinxed/dark/light", ""},
+	{"/theme", "切换主题 (uinxed/tokyonight/catppuccin/dark/light)", ""},
 	{"/clear", "清空当前 Session", ""},
 	{"/restore", "恢复出厂设置", ""},
 	{"/exit", "退出", "Ctrl+C"},
@@ -237,14 +238,16 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 		return asyncOp("mouse", func() (any, error) {
 			return v, m.ctrl.Config.Update(func(c *config.Config) error { c.Mouse = v; return nil })
 		})
+	case "/sidebar":
+		return m.toggleSidebar()
 	case "/theme":
 		v := strings.ToLower(strings.TrimSpace(arg))
 		if v == "" {
 			m.openThemePicker()
 			return nil
 		}
-		if v != "uinxed" && v != "dark" && v != "light" {
-			m.showError(fmt.Errorf("theme must be uinxed, dark or light"))
+		if v != "uinxed" && v != "dark" && v != "light" && v != "tokyonight" && v != "catppuccin" {
+			m.showError(fmt.Errorf("theme must be uinxed, tokyonight, catppuccin, dark, or light"))
 			return nil
 		}
 		return asyncOp("theme", func() (any, error) {
@@ -275,9 +278,21 @@ func validEffort(v string) bool {
 
 func (m *Model) openCommandPalette() {
 	items := []PickerItem{
-		{"new", "New Session", "创建新会话", ""}, {"sessions", "Switch Session", "切换会话", ""}, {"rename", "Rename Session", "用 /rename <name> 重命名当前会话", ""}, {"agent", "Change Agent", "切换 Agent", "Tab"},
-		{"model", "Change Model", "切换模型", ""}, {"provider", "Change Provider", "切换 Provider", ""}, {"compact", "Compact Context", "压缩上下文", ""},
-		{"todos", "Show Todos", "查看任务", "Ctrl+O"}, {"diff", "Open Diff", "审阅改动", ""}, {"theme", "Change Theme", "切换主题", ""}, {"mouse", "Toggle Mouse", "鼠标捕获开关", ""}, {"quit", "Quit", "退出", "Ctrl+C"},
+		{"new", "New Session", "创建新会话", ""},
+		{"sessions", "Switch Session", "切换会话", ""},
+		{"sidebar", "Toggle Sidebar", "切换左侧边栏", "Ctrl+B"},
+		{"agent", "Change Agent", "切换 Agent", "Tab"},
+		{"model", "Change Model", "切换模型", ""},
+		{"provider", "Change Provider", "切换 Provider", ""},
+		{"thinking", "Toggle Thinking", "切换思考过程显示", "Ctrl+T"},
+		{"tools", "Toggle Tool Details", "切换工具调用详情", "Ctrl+E"},
+		{"compact", "Compact Context", "压缩当前上下文", ""},
+		{"todos", "Show Todos", "查看待办任务", "Ctrl+O"},
+		{"diff", "Open Diff", "审阅代码改动", "Ctrl+D"},
+		{"theme", "Change Theme", "切换界面颜色主题", ""},
+		{"rename", "Rename Session", "重命名当前会话", ""},
+		{"mouse", "Toggle Mouse", "鼠标捕获开关", ""},
+		{"quit", "Quit", "退出", "Ctrl+C"},
 	}
 	if m.session.ParentID != "" {
 		items = append(items, PickerItem{"parent", "Return to Parent", "返回父 Agent Session", "Esc/command"})
@@ -376,12 +391,20 @@ func (m *Model) openSkillPicker() {
 	m.setFocus(FocusPicker)
 }
 func (m *Model) openThemePicker() {
-	vals := []string{"uinxed", "dark", "light"}
-	var items []PickerItem
-	for _, x := range vals {
-		items = append(items, PickerItem{x, x, "", ""})
+	opts := []struct {
+		id, label, desc string
+	}{
+		{"uinxed", "Uinxed Cyberpunk", "赛博朋克紫青霓虹 (默认)"},
+		{"tokyonight", "Tokyo Night", "东京之夜深蓝冷调"},
+		{"catppuccin", "Catppuccin Mocha", "柔和舒适马卡龙调色"},
+		{"dark", "Dark Slate", "沉稳灰阶高对比暗黑"},
+		{"light", "Light Clean", "明亮清爽浅色纸张"},
 	}
-	m.picker.Reset("Theme", ActionButton, items)
+	var items []PickerItem
+	for _, x := range opts {
+		items = append(items, PickerItem{ID: x.id, Label: x.label, Description: x.desc})
+	}
+	m.picker.Reset("Select Theme", ActionButton, items)
 	m.pickerPurpose = "theme"
 	m.overlay = overlayPicker
 	m.setFocus(FocusPicker)
@@ -467,6 +490,16 @@ func (m *Model) runPaletteAction(id string) tea.Cmd {
 		m.openProviderPicker()
 	case "compact":
 		return m.executeCommand("/compact")
+	case "sidebar":
+		return m.toggleSidebar()
+	case "thinking":
+		m.conv.ToggleAllThinking(m.streamReasoning)
+		m.closeOverlay()
+		return nil
+	case "tools":
+		m.conv.ToggleAllTools()
+		m.closeOverlay()
+		return nil
 	case "todos":
 		m.overlay = overlayTodos
 		m.overlayScroll = 0
@@ -673,4 +706,19 @@ func (m *Model) resolveSession(v string) *domain.Session {
 		}
 	}
 	return nil
+}
+
+func (m *Model) toggleSidebar() tea.Cmd {
+	next := "off"
+	if m.cfg.Sidebar == "off" {
+		next = "on"
+	}
+	m.cfg.Sidebar = next
+	m.resize()
+	return asyncOp("sidebar", func() (any, error) {
+		return next, m.ctrl.Config.Update(func(c *config.Config) error {
+			c.Sidebar = next
+			return nil
+		})
+	})
 }

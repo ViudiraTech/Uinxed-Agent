@@ -251,3 +251,77 @@ func TestReasoningRawMouseClickTogglesExactlyOnce(t *testing.T) {
 		t.Fatal("one physical/raw click should leave reasoning expanded")
 	}
 }
+
+func TestStreamingAssistantUsesLightweightPlainRenderer(t *testing.T) {
+	c := NewConversation()
+	c.SetTheme("dark")
+	c.SetSession(domain.Session{ID: "s1"}, 80)
+	lines := c.Render(8, ThemeByName("dark"), "**hello**", "", nil)
+	var b strings.Builder
+	for _, line := range lines {
+		b.WriteString(stripANSI(line.Text))
+		b.WriteByte('\n')
+	}
+	if !strings.Contains(b.String(), "**hello**") {
+		t.Fatalf("streaming content should use the lightweight plain renderer until completion:\n%s", b.String())
+	}
+}
+
+func TestModernThemes(t *testing.T) {
+	for _, name := range []string{"uinxed", "tokyonight", "catppuccin", "dark", "light"} {
+		th := ThemeByName(name)
+		if th.Name != name {
+			t.Fatalf("theme name mismatch: got %s, want %s", th.Name, name)
+		}
+		if th.Primary == nil || th.Secondary == nil || th.Border == nil {
+			t.Fatalf("theme %s has nil color components", name)
+		}
+	}
+}
+
+func TestModernRenderBaseCards(t *testing.T) {
+	m := newMouseTestModel(t)
+	m.width, m.height = 100, 30
+	v := m.renderBase(ThemeByName("uinxed"))
+	if !strings.Contains(v, "UINXED AGENT") {
+		t.Fatal("expected UINXED AGENT brand in header")
+	}
+	if !strings.Contains(v, "Prompt") {
+		t.Fatal("expected Prompt container in view")
+	}
+	if !strings.Contains(v, "╭─") || !strings.Contains(v, "╰─") {
+		t.Fatal("expected card rounded borders in view")
+	}
+}
+
+func TestToggleSidebar(t *testing.T) {
+	m := newMouseTestModel(t)
+	m.cfg.Sidebar = "on"
+	m.toggleSidebar()
+	if m.cfg.Sidebar != "off" {
+		t.Fatalf("expected sidebar to be off, got %s", m.cfg.Sidebar)
+	}
+	m.toggleSidebar()
+	if m.cfg.Sidebar != "on" {
+		t.Fatalf("expected sidebar to be on, got %s", m.cfg.Sidebar)
+	}
+}
+
+func TestModernPickerRender(t *testing.T) {
+	var p Picker
+	p.Reset("Commands", ActionCommand, []PickerItem{
+		{ID: "sidebar", Label: "Toggle Sidebar", Description: "开关边栏", Shortcut: "Ctrl+B"},
+	})
+	lines, regs := p.Render(80, 20, ThemeByName("uinxed"), "")
+	if len(lines) == 0 || len(regs) == 0 {
+		t.Fatal("expected picker lines and regions")
+	}
+	var b strings.Builder
+	for _, l := range lines {
+		b.WriteString(stripANSI(l))
+		b.WriteByte('\n')
+	}
+	if !strings.Contains(b.String(), "Commands") || !strings.Contains(b.String(), "Toggle Sidebar") {
+		t.Fatalf("missing picker content:\n%s", b.String())
+	}
+}

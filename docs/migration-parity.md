@@ -38,11 +38,11 @@ This matrix is based on the previous master implementation, not README claims al
 | `web_search` | `tools.js` | provider-independent network tool | tool implementation |
 | `todo_write` / `todo_update` | tools/App | runtime callbacks + persisted Todo | runtime/storage paths |
 | `use_skill` | tools | skills loader tool | implementation |
-| `get_current_time` | tools | typed tool | implementation |
+| `get_current_time` | removed | current date/time is injected into every system prompt from the host clock | no tool call required |
 | `calc` | tools | safe expression parser | runtime tool test |
 | Git diff | `/diff` | `internal/git` + responsive Diff UI | implementation |
 | Markdown/code blocks | `Markdown.jsx` | Glamour + render cache | Markdown tests |
-| Streaming Markdown | React stream state | coalesced current message | app/TUI tests |
+| Streaming Markdown | React stream state | immediate SSE deltas + lightweight partial renderer; full Markdown on completion | app/TUI tests |
 | Command palette | slash UI | `Ctrl+P` fuzzy picker | picker tests |
 | Slash completion | `App.jsx` | inline command suggestions | TUI implementation |
 | `@agent` | `App.jsx` | direct child Agent turn | runtime/TUI paths |

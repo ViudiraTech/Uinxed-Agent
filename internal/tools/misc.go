@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/ViudiraTech/Uinxed-Agent/internal/skills"
@@ -38,32 +37,6 @@ func (*SkillTool) Execute(ctx context.Context, raw json.RawMessage, env Executio
 		return Result{}, fmt.Errorf("skill %q not found", a.Skill)
 	}
 	return Result{Content: s.Body, Metadata: map[string]any{"name": s.Name, "description": s.Description, "dir": s.Dir}}, nil
-}
-
-type CurrentTimeTool struct{}
-
-func (*CurrentTimeTool) Name() string        { return "get_current_time" }
-func (*CurrentTimeTool) Description() string { return "获取当前系统时间和日期。" }
-func (*CurrentTimeTool) Category() Category  { return CategoryState }
-func (*CurrentTimeTool) Schema() map[string]any {
-	return obj(map[string]any{"format": map[string]any{"type": "string", "enum": []string{"iso", "date", "time", "full"}}})
-}
-func (*CurrentTimeTool) Execute(ctx context.Context, raw json.RawMessage, env ExecutionContext) (Result, error) {
-	var a struct {
-		Format string `json:"format"`
-	}
-	_ = decode(raw, &a)
-	n := time.Now()
-	v := n.Format("2006-01-02 15:04:05 MST")
-	switch a.Format {
-	case "iso":
-		v = n.Format(time.RFC3339)
-	case "date":
-		v = n.Format("2006-01-02")
-	case "time":
-		v = n.Format("15:04:05")
-	}
-	return Result{Content: v}, nil
 }
 
 type CalcTool struct{}

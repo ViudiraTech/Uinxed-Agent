@@ -7,15 +7,15 @@ import (
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
 )
 
-type deltaKey struct {
-	kind              domain.EventKind
-	session, run, msg string
-}
-type pendingDelta struct {
-	event domain.Event
-	text  string
-}
-
+// CoalesceEvents keeps conversational deltas truly live while rate-limiting
+// only noisy cumulative tool-output snapshots.
+//
+// Provider content/reasoning events are forwarded immediately. They are the
+// latency-sensitive path users actually watch while a model is answering, so
+// batching them here makes fast models look chunked even though the upstream
+// connection is SSE. Tool output is different: ToolEvent.Output is a
+// cumulative snapshot, so retaining only the newest snapshot in a short
+// interval removes redundant redraws without hiding any bytes from the user.
 func CoalesceEvents(ctx context.Context, in <-chan domain.Event, interval time.Duration) <-chan domain.Event {
 	if interval < 8*time.Millisecond {
 		interval = 8 * time.Millisecond
@@ -23,28 +23,20 @@ func CoalesceEvents(ctx context.Context, in <-chan domain.Event, interval time.D
 	out := make(chan domain.Event, 64)
 	go func() {
 		defer close(out)
-		pending := map[deltaKey]*pendingDelta{}
-		order := make([]deltaKey, 0, 16)
+
+		pending := make(map[string]domain.Event)
+		order := make([]string, 0, 8)
 		timer := time.NewTimer(interval)
 		if !timer.Stop() {
 			<-timer.C
 		}
 		active := false
-		flush := func() bool {
-			for _, k := range order {
-				p := pending[k]
-				if p == nil {
+
+		flushTools := func() bool {
+			for _, key := range order {
+				e, ok := pending[key]
+				if !ok {
 					continue
-				}
-				e := p.event
-				if e.Kind == domain.EventStreamDelta {
-					d := e.Data.(domain.StreamDelta)
-					d.Text = p.text
-					e.Data = d
-				} else if e.Kind == domain.EventReasoningDelta {
-					d := e.Data.(domain.ReasoningDelta)
-					d.Text = p.text
-					e.Data = d
 				}
 				select {
 				case out <- e:
@@ -57,74 +49,71 @@ func CoalesceEvents(ctx context.Context, in <-chan domain.Event, interval time.D
 			active = false
 			return true
 		}
+
+		forward := func(e domain.Event) bool {
+			select {
+			case out <- e:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case e, ok := <-in:
 				if !ok {
-					flush()
+					flushTools()
 					return
 				}
-				var k deltaKey
-				merge := false
-				switch d := e.Data.(type) {
-				case domain.StreamDelta:
-					if e.Kind == domain.EventStreamDelta {
-						k = deltaKey{e.Kind, e.SessionID, e.RunID, d.MessageID}
-						merge = true
+
+				// Content and reasoning are never coalesced. Forward each provider
+				// delta immediately so time-to-first-visible-token is not tied to a
+				// UI batching interval.
+				if e.Kind == domain.EventStreamDelta || e.Kind == domain.EventReasoningDelta {
+					// Keep global event order if a tool snapshot arrived just before
+					// this delta. Flushing one cumulative snapshot does not introduce
+					// a timer wait; the conversational delta is still forwarded in the
+					// same receive iteration.
+					if len(order) > 0 && !flushTools() {
+						return
 					}
-				case domain.ReasoningDelta:
-					if e.Kind == domain.EventReasoningDelta {
-						k = deltaKey{e.Kind, e.SessionID, e.RunID, d.MessageID}
-						merge = true
-					}
-				case domain.ToolEvent:
-					if e.Kind == domain.EventToolOutput {
-						k = deltaKey{e.Kind, e.SessionID, e.RunID, d.Activity.ID}
-						merge = true
-					}
-				}
-				if merge {
-					text := ""
-					appendText := false
-					if d, ok := e.Data.(domain.StreamDelta); ok {
-						text = d.Text
-						appendText = true
-					}
-					if d, ok := e.Data.(domain.ReasoningDelta); ok {
-						text = d.Text
-						appendText = true
-					}
-					if p := pending[k]; p != nil {
-						if appendText {
-							p.text += text
-						} else {
-							// Tool output events carry cumulative snapshots; keeping only the
-							// newest one coalesces noisy stdout without losing content.
-							p.event = e
-						}
-						p.event.At = e.At
-					} else {
-						pending[k] = &pendingDelta{event: e, text: text}
-						order = append(order, k)
-					}
-					if !active {
-						timer.Reset(interval)
-						active = true
+					if !forward(e) {
+						return
 					}
 					continue
 				}
-				if len(order) > 0 && !flush() {
+
+				// Tool output snapshots can be extremely noisy (for example compiler
+				// output). They are cumulative, so only the newest snapshot per
+				// activity is needed inside the small render interval.
+				if e.Kind == domain.EventToolOutput {
+					if d, ok := e.Data.(domain.ToolEvent); ok {
+						key := e.SessionID + "\x00" + e.RunID + "\x00" + d.Activity.ID
+						if _, exists := pending[key]; !exists {
+							order = append(order, key)
+						}
+						pending[key] = e
+						if !active {
+							timer.Reset(interval)
+							active = true
+						}
+						continue
+					}
+				}
+
+				// Preserve event ordering around tool lifecycle boundaries: flush a
+				// pending snapshot before forwarding a non-coalesced event.
+				if len(order) > 0 && !flushTools() {
 					return
 				}
-				select {
-				case out <- e:
-				case <-ctx.Done():
+				if !forward(e) {
 					return
 				}
 			case <-timer.C:
-				if !flush() {
+				if !flushTools() {
 					return
 				}
 			}

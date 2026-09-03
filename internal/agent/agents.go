@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
 )
@@ -75,7 +76,28 @@ func filter(fn func(domain.AgentDefinition) bool) []domain.AgentDefinition {
 }
 
 func SystemPrompt(a domain.AgentDefinition, model, skillBlock, effort string) string {
+	return systemPromptAt(a, model, skillBlock, effort, time.Now())
+}
+
+func systemPromptAt(a domain.AgentDefinition, model, skillBlock, effort string, now time.Time) string {
 	p := a.Prompt
+	zone, offset := now.Zone()
+	offsetSign := "+"
+	if offset < 0 {
+		offsetSign = "-"
+		offset = -offset
+	}
+	offsetHours := offset / 3600
+	offsetMinutes := (offset % 3600) / 60
+	p += fmt.Sprintf(`
+
+## 当前日期与时间（高优先级运行时事实）
+Current date: %s
+Current year: %d
+Current local time: %s
+Timezone: %s (UTC%s%02d:%02d)
+以上时间由 Uinxed-Agent 宿主系统在本轮请求时动态注入，是当前日期/时间的权威事实。涉及“今天”“今年”“当前”“现在”等相对时间时必须以这里为准；不得因为模型训练时间、知识截止时间或先验记忆而声称其他年份。无需调用任何时间工具。`,
+		now.Format("2006-01-02"), now.Year(), now.Format("15:04:05"), zone, offsetSign, offsetHours, offsetMinutes)
 	if strings.TrimSpace(model) != "" {
 		p += fmt.Sprintf("\n\n## 运行时\n你当前运行的模型是: %s。回答与代码风格应适配该模型的能力。", model)
 	}

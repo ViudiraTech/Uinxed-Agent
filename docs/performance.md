@@ -6,7 +6,7 @@ Performance claims for Uinxed-Agent 2.0 are evidence-driven. This document delib
 
 The Go rewrite removes several hot-path patterns from the previous React/Ink design:
 
-- SSE deltas are accumulated and coalesced on a small refresh window instead of forcing a UI update for every provider chunk.
+- Model content/reasoning SSE deltas are delivered immediately to minimize visible latency. Partial assistant text uses a lightweight streaming renderer; only cumulative tool-output snapshots are coalesced on a small refresh window.
 - Completed Markdown is cached by `(message ID, content version, width, theme)`.
 - Conversation rendering materializes only the visible range plus overscan rather than re-rendering every historical message.
 - Repository file completion uses a cached index and fsnotify invalidation instead of a synchronous full tree walk per keystroke.

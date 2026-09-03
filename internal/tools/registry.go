@@ -27,7 +27,7 @@ func DefaultRegistry() *Registry {
 	r := NewRegistry(nil)
 	for _, t := range []Tool{
 		&BashTool{}, &ReadFileTool{}, &WriteFileTool{}, &EditFileTool{}, &ListDirTool{}, &GrepTool{}, &GlobTool{},
-		&FetchURLTool{}, &WebSearchTool{}, &SkillTool{}, &CurrentTimeTool{}, &CalcTool{},
+		&FetchURLTool{}, &WebSearchTool{}, &SkillTool{}, &CalcTool{},
 		&DelegateTool{}, &TodoWriteTool{}, &TodoUpdateTool{},
 	} {
 		r.Register(t)

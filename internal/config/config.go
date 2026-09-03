@@ -490,7 +490,7 @@ func validate(c *Config) error {
 		c.Effort = "high"
 	}
 	switch c.Theme {
-	case "uinxed", "dark", "light":
+	case "uinxed", "dark", "light", "tokyonight", "catppuccin":
 	default:
 		c.Theme = "uinxed"
 	}

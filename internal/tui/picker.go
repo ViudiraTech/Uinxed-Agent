@@ -74,25 +74,42 @@ func (p *Picker) Render(width, height int, t Theme, hover string) ([]string, []R
 	}
 	var lines []string
 	var regions []Region
-	title := lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render(terminalutil.SanitizeText(p.Title))
-	lines = append(lines, title, lipgloss.NewStyle().Foreground(t.Muted).Render("> "+terminalutil.SanitizeText(p.Query)))
+	title := lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render("󰍉 " + terminalutil.SanitizeText(p.Title))
+	search := lipgloss.NewStyle().Foreground(t.Secondary).Render("🔍 ") + lipgloss.NewStyle().Foreground(t.Text).Bold(true).Render(terminalutil.SanitizeText(p.Query)) + lipgloss.NewStyle().Foreground(t.Muted).Render("▏")
+	lines = append(lines, title, search)
 	end := min(len(p.Filtered), p.Scroll+visible)
 	for row, j := range p.Filtered[p.Scroll:end] {
 		it := p.Items[j]
 		sel := p.Scroll+row == p.Index || hover == it.ID
-		prefix := "  "
+		label := terminalutil.SanitizeText(it.Label)
+		desc := terminalutil.SanitizeText(it.Description)
+		shortcut := terminalutil.SanitizeText(it.Shortcut)
+
 		if sel {
-			prefix = "› "
+			left := " ▸ " + label
+			if desc != "" {
+				left += "  " + desc
+			}
+			right := ""
+			if shortcut != "" {
+				right = "[" + shortcut + "]"
+			}
+			rowLine := padBetween(left, right, width)
+			styled := lipgloss.NewStyle().Bold(true).Background(t.SelectionBg).Foreground(t.SelectionFg).Render(truncWidth(rowLine, width))
+			lines = append(lines, styled)
+		} else {
+			left := "   " + label
+			if desc != "" {
+				left += "  " + lipgloss.NewStyle().Foreground(t.Muted).Render(desc)
+			}
+			right := ""
+			if shortcut != "" {
+				right = lipgloss.NewStyle().Foreground(t.Muted).Render("[" + shortcut + "]")
+			}
+			rowLine := padBetween(left, right, width)
+			styled := lipgloss.NewStyle().Foreground(t.Text).Render(truncWidth(rowLine, width))
+			lines = append(lines, styled)
 		}
-		style := lipgloss.NewStyle().Foreground(t.Text)
-		if sel {
-			style = style.Bold(true).Foreground(t.Primary)
-		}
-		left := prefix + terminalutil.SanitizeText(it.Label)
-		if it.Description != "" {
-			left += "  " + lipgloss.NewStyle().Foreground(t.Muted).Render(terminalutil.SanitizeText(it.Description))
-		}
-		lines = append(lines, style.Render(truncWidth(left, width)))
 		regions = append(regions, Region{Rect: Rect{0, row + 2, width, 1}, Kind: ActionPicker, Value: it.ID})
 	}
 	return lines, regions
