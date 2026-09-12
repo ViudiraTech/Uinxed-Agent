@@ -56,33 +56,12 @@ Fast Bubble Tea v2 TUI • Autonomous Multi-Agent Delegation • Streaming Reaso
 
 ## 🖥️ Terminal Preview
 
-```text
-┌─ Uinxed-Agent 2.0 ────────────────────────────────────────────────────────────────────┐
-│                                                                                       │
-│  ❯ user                                                                               │
-│    Implement an atomic file writer in Go with tests and verify with go test.          │
-│                                                                                       │
-│  ⏺ assistant                                                                          │
-│    ✻ Thinking (1.4s) · Ctrl+T to toggle ────────────────────────────────────────────  │
-│                                                                                       │
-│    I will create the file writer with atomic temp-file rename semantics, then run     │
-│    the test suite to verify behavior.                                                 │
-│                                                                                       │
-│    ⏺ Running bash "go test -v ./internal/tools"                                       │
-│      ⎿ === RUN   TestAtomicFileWriter                                                 │
-│        --- PASS: TestAtomicFileWriter (0.02s)                                         │
-│        PASS                                                                           │
-│                                                                                       │
-│    All tests passed! The implementation guarantees atomic file replacement.           │
-│                                                                                       │
-├───────────────────────────────────────────────────────────────────────────────────────┤
-│ ❯ Ask anything…   ( / commands · @ files · ? shortcuts )                              │
-├───────────────────────────────────────────────────────────────────────────────────────┤
-│ 󰘧 step-3.7-flash · 📁 ~/workspace · 💾 db · ⚡ supercode · 🤖 build · 󰄴 Ready          │
-└───────────────────────────────────────────────────────────────────────────────────────┘
-```
+<div align="center">
+  <img src="assets/terminal-preview.svg" alt="Uinxed-Agent Terminal Preview" width="100%" />
+</div>
 
 ---
+
 
 ## ✨ Key Features
 
