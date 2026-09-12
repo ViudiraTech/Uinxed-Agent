@@ -69,7 +69,7 @@ Fast Bubble Tea v2 TUI • Autonomous Multi-Agent Delegation • Streaming Reaso
 
 | 🚀 **Pure Go & Single Binary** | ⚡ **Real-Time Streaming** | 🤖 **Autonomous Multi-Agent** |
 |---|---|---|
-| Zero dependencies. Instant sub-millisecond cold start. Pure-Go SQLite WAL storage. | Live SSE streaming for content and deep reasoning (`thinking_content`) with collapsible view. | Primary agents (`build`, `coding`, `plan`) + isolated parallel subagents (`explorer`, `coding`, `general`). |
+| Zero dependencies. Instant cold start. Built-in free Router provider for zero-friction trial. Pure-Go SQLite WAL. | Live SSE streaming for content and deep reasoning (`thinking_content`) with collapsible view. | Primary agents (`build`, `coding`, `plan`) + isolated parallel subagents (`explorer`, `coding`, `general`). |
 
 | 🛠️ **Full Developer Toolchain** | 🖱️ **Modern Bubble Tea v2 TUI** | 🔒 **Local-First Security** |
 |---|---|---|
@@ -113,11 +113,27 @@ go build -trimpath -o ux-agent.exe .\cmd\ux-agent
 
 ---
 
-### 2. Configure Providers
+### 2. Connect a Model Provider
 
-Uinxed-Agent works with any **OpenAI-compatible** endpoint (DeepSeek, StepFun, OpenAI, Claude proxies, Ollama, vLLM, etc.).
+Uinxed-Agent works out-of-the-box with built-in free trial endpoints and supports any **OpenAI-compatible** API (DeepSeek, StepFun, OpenAI, Claude gateways, Ollama, vLLM, etc.).
 
-#### Method A: Built-in Interactive Wizard (Fastest)
+#### 🎁 Built-in Free Trial: Router Provider (Zero Configuration)
+
+Uinxed-Agent comes pre-configured with the **Router** provider (`https://api.hcnsec.cn/v1`) so you can start interacting immediately **without entering any API key**:
+
+```text
+/provider      # Select "Router"
+/model         # Select "step-3.7-flash" or "DeepSeek-V4-Pro"
+```
+
+> [!WARNING]
+> **Free Tier & Quantization Notice**:
+> - The built-in Router endpoint is a free community gateway. The provided **DeepSeek model is a quantized version (量化裁剪版)** rather than the full-precision official checkpoint.
+> - Free endpoints are subject to community traffic, latency fluctuations, or rate limits during peak hours.
+> - **Recommended usage**: Great for initial installation verification, learning keyboard shortcuts, exploring TUI features, and small code queries.
+> - **For serious production coding**: For large refactors, architectural planning, and autonomous multi-agent coding (`/effort supercode`), we strongly recommend configuring official unquantized API keys (e.g. DeepSeek official, StepFun official, OpenAI, or Claude proxies) via `/connect` or `/key`.
+
+#### Method A: Built-in Interactive Wizard (Connect Your Own Provider)
 Launch `ux-agent` and run:
 ```text
 /connect

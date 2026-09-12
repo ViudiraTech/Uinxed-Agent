@@ -69,7 +69,7 @@
 
 | 🚀 **纯 Go & 单一二进制** | ⚡ **实时流式与深度思考** | 🤖 **自主多智能体分工** |
 |---|---|---|
-| 零外部依赖，毫秒级极速冷启动，内置纯 Go SQLite WAL 高性能事务存储。 | 实时 SSE 流式输出，支持深度思考（`thinking_content`）流式展示与折叠切换。 | 主智能体（`build`、`coding`、`plan`）与沙盒化并行子智能体（`explorer`、`coding`、`general`）。 |
+| 零外部依赖，毫秒级极速冷启动，内置免费 Router 提供商开箱即测，内置纯 Go SQLite WAL 存储。 | 实时 SSE 流式输出，支持深度思考（`thinking_content`）流式展示与折叠切换。 | 主智能体（`build`、`coding`、`plan`）与沙盒化并行子智能体（`explorer`、`coding`、`general`）。 |
 
 | 🛠️ **专业级开发者工具链** | 🖱️ **现代化 Bubble Tea v2 TUI** | 🔒 **本地优先安全模型** |
 |---|---|---|
@@ -115,9 +115,25 @@ go build -trimpath -o ux-agent.exe .\cmd\ux-agent
 
 ### 2. 配置模型与服务商
 
-Uinxed-Agent 原生兼容任何 **OpenAI 兼容协议** 接口（包括 DeepSeek、阶跃星辰 StepFun、OpenAI、Claude 代理网关、Ollama、vLLM 本地部署等）。
+Uinxed-Agent 开箱支持内置免费体验节点，同时原生兼容任何 **OpenAI 兼容协议** 接口（包括 DeepSeek 官方、阶跃星辰 StepFun、OpenAI、Claude 代理网关、Ollama、vLLM 本地模型等）。
 
-#### 方式 A：内置交互式配置向导（最推荐、最便捷）
+#### 🎁 内置免费体验：Router 提供商（免配置，开箱即测）
+
+Uinxed-Agent 原生内置了免费社区体验接入点 **Router**（`https://api.hcnsec.cn/v1`），首次使用**无需填写或购买任何 API Key**，即可在终端直接体验 AI 结对编程：
+
+```text
+/provider      # 选择 "Router"
+/model         # 选择 "step-3.7-flash" 或 "DeepSeek-V4-Pro"
+```
+
+> [!WARNING]
+> **免费体验与量化模型客观说明**：
+> - 内置 Router 为公共免费体验通道，旨在让用户在**零门槛、零配置成本**下快速上手并体验 Uinxed-Agent 的终端操作、流式思考链与快捷键。
+> - 其中 **DeepSeek 模型为量化裁剪版本（Quantized）**，并非官方满血全精度大模型。在处理极其复杂的代码逻辑或深层推理时，代码生成质量和泛化能力与官方全量模型存在一定差距。
+> - 公共免费通道在高峰期可能会受到网络并发排队或频率限制影响。
+> - **生产级严肃开发建议**：进行大型代码库重构、高复杂度多智能体自主开发（`/effort supercode`）时，强烈建议通过 `/connect` 或 `/key` 接入官方直连 API Key（如 DeepSeek 官方 `api.deepseek.com`、StepFun 官方、OpenAI、Claude 代理等），以享受满血全精度的代码生成与深层推理体验。
+
+#### 方式 A：内置交互式配置向导（配置您自己的商业级 API）
 启动 `ux-agent` 后输入：
 ```text
 /connect
