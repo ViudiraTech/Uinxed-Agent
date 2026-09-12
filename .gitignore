@@ -43,6 +43,8 @@
 *.swp
 *.swo
 *~
+step-3.7-flash-intro/
+*-intro/
 
 # Editors / IDEs
 .vscode/
