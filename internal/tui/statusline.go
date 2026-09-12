@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/ViudiraTech/Uinxed-Agent/internal/approval"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/config"
 	ctxutil "github.com/ViudiraTech/Uinxed-Agent/internal/context"
 	terminalutil "github.com/ViudiraTech/Uinxed-Agent/internal/terminal"
@@ -24,7 +25,8 @@ type statusSegment struct {
 
 // dropOrder lists segments by how readily they may be discarded when the
 // terminal is narrow. Later entries survive longer; "model" is never dropped.
-var statusDropOrder = []string{"session", "storage", "provider", "effort", "agent", "cwd", "context", "model"}
+// "mode" is dropped first: it is the most recoverable via Shift+Tab.
+var statusDropOrder = []string{"mode", "session", "storage", "provider", "effort", "agent", "cwd", "context", "model"}
 
 func dropRank(id string) int {
 	for i, x := range statusDropOrder {
@@ -164,6 +166,19 @@ func (m *Model) statusSegment(t Theme, id string) (statusSegment, bool) {
 
 	case "storage":
 		st := muted.Render(m.cfg.Storage)
+		return statusSegment{id: id, text: st, width: lipgloss.Width(st)}, true
+
+	case "mode":
+		mode := approval.Normalize(m.currentMode())
+		// plan gets a distinct pause glyph; the other modes share the
+		// fast-forward mark so the ring position reads at a glance.
+		text := "⏵⏵ " + string(mode)
+		style := muted
+		if mode == approval.ModePlan {
+			text = "⏸ plan"
+			style = lipgloss.NewStyle().Foreground(t.Warning)
+		}
+		st := style.Render(text)
 		return statusSegment{id: id, text: st, width: lipgloss.Width(st)}, true
 
 	case "session":

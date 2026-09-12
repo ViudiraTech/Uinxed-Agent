@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ViudiraTech/Uinxed-Agent/internal/agent"
+	"github.com/ViudiraTech/Uinxed-Agent/internal/approval"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/config"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
 	gitutil "github.com/ViudiraTech/Uinxed-Agent/internal/git"
@@ -76,6 +77,7 @@ func New(ctx context.Context, cfg *config.Store, log *slog.Logger) (*Controller,
 	reg := tools.DefaultRegistry()
 	c.Runtime = agent.NewRuntime(hybrid, reg, c.resolveProvider)
 	c.Runtime.SetLogger(log)
+	c.Runtime.SetApprovalFallback(approval.Normalize(cfg.Snapshot().ApprovalMode))
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 	c.cancel = streamCancel
 	interval := time.Duration(cfg.Snapshot().StreamRenderIntervalMS) * time.Millisecond
@@ -184,6 +186,9 @@ func (c *Controller) DeleteSession(ctx context.Context, id string) error {
 	if err := c.Store.DeleteSession(ctx, id); err != nil {
 		return err
 	}
+	// Drop any session-scoped approval grants. Reusing an ID later must not
+	// inherit authority the user granted to a deleted conversation.
+	c.Runtime.Broker().DropSession(id)
 	cfg := c.Config.Snapshot()
 	if cfg.ActiveSessionID == id {
 		list, _ := c.Store.ListSessions(ctx)
@@ -200,6 +205,45 @@ func (c *Controller) Submit(ctx context.Context, sessionID, text string) (string
 	return c.Runtime.StartTurn(ctx, sessionID, text)
 }
 func (c *Controller) Cancel(sessionID string) bool { return c.Runtime.Cancel(sessionID) }
+
+// ResolveApproval answers a pending tool-approval prompt.
+//
+// This is a direct method call rather than an event on purpose: the event
+// stream is one-way and CoalesceEvents batches and reorders it, so it cannot
+// carry a response without risking a lost or duplicated answer.
+func (c *Controller) ResolveApproval(runID, reqID string, d agent.Decision) bool {
+	return c.Runtime.ResolveApproval(runID, reqID, d)
+}
+
+// SetApprovalMode switches the mode for one session. The value is stored in
+// session metadata so it persists with the conversation and is inherited by
+// delegate children (delegate copies metadata into the child session).
+func (c *Controller) SetApprovalMode(ctx context.Context, sessionID, mode string) error {
+	m := approval.Normalize(mode)
+	s, err := c.Store.LoadSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if s.Metadata == nil {
+		s.Metadata = map[string]any{}
+	}
+	s.Metadata["mode"] = string(m)
+	s.UpdatedAt = time.Now()
+	return c.Store.SaveSession(ctx, s)
+}
+
+// ApprovalMode reports the effective mode for a session, falling back to the
+// configured default when the session carries none.
+func (c *Controller) ApprovalMode(ctx context.Context, sessionID string) string {
+	s, err := c.Store.LoadSession(ctx, sessionID)
+	if err != nil {
+		return c.Config.Snapshot().ApprovalMode
+	}
+	if v, ok := s.Metadata["mode"].(string); ok && v != "" {
+		return string(approval.Normalize(v))
+	}
+	return string(approval.Normalize(c.Config.Snapshot().ApprovalMode))
+}
 
 func (c *Controller) SetAgent(ctx context.Context, sessionID, id string) error {
 	def := agent.Get(id)
@@ -329,6 +373,9 @@ func (c *Controller) Reset(ctx context.Context) error {
 }
 func (c *Controller) Log() *slog.Logger { return c.log }
 
+// ClearSession empties a conversation. The approval grants for that session are
+// dropped with it: "always allow" is scoped to the session's lifetime, and a
+// cleared session is a fresh start.
 func (c *Controller) ClearSession(ctx context.Context, id string) error {
 	s, err := c.Store.LoadSession(ctx, id)
 	if err != nil {
@@ -338,7 +385,11 @@ func (c *Controller) ClearSession(ctx context.Context, id string) error {
 	s.Todos = nil
 	s.ToolActivities = nil
 	s.UpdatedAt = time.Now()
-	return c.Store.SaveSession(ctx, s)
+	if err := c.Store.SaveSession(ctx, s); err != nil {
+		return err
+	}
+	c.Runtime.Broker().DropSession(id)
+	return nil
 }
 
 func (c *Controller) RenameSession(ctx context.Context, id, name string) error {

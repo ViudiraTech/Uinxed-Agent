@@ -42,6 +42,26 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	t, ok := r.tools[name]
 	return t, ok
 }
+
+// CategoryOf reports the scheduler category of a registered tool. The approval
+// policy needs a tool's category without holding a Tool value, and deriving it
+// from the registry keeps a single source of truth: a new tool cannot be
+// registered with one category and evaluated against another.
+func (r *Registry) CategoryOf(name string) (Category, bool) {
+	t, ok := r.Get(name)
+	if !ok {
+		return "", false
+	}
+	return t.Category(), true
+}
+
+// CategoryOf consults a fresh DefaultRegistry. Callers that hold their own
+// registry (a test, or a future restricted registry) should use the method so
+// they observe their own tool set instead of the built-in one.
+func CategoryOf(name string) (Category, bool) { return defaultCategoryRegistry().CategoryOf(name) }
+
+var defaultCategoryRegistry = sync.OnceValue(DefaultRegistry)
+
 func (r *Registry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ViudiraTech/Uinxed-Agent/internal/approval"
 	contextmgr "github.com/ViudiraTech/Uinxed-Agent/internal/context"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/provider"
@@ -23,17 +24,21 @@ import (
 type ProviderResolver func(providerID string) (provider.Provider, error)
 
 type Runtime struct {
-	store         storage.Store
-	registry      *tools.Registry
-	resolve       ProviderResolver
-	events        chan domain.Event
-	mu            sync.Mutex
-	runs          map[string]*runHandle
-	seq           atomic.Uint64
-	maxToolRounds int
-	wg            sync.WaitGroup
-	closed        bool
-	log           *slog.Logger
+	store    storage.Store
+	registry *tools.Registry
+	resolve  ProviderResolver
+	events   chan domain.Event
+	broker   *Broker
+	// approvalFallback is the mode applied to sessions without an explicit
+	// metadata mode. Guarded by mu.
+	approvalFallback approval.Mode
+	mu               sync.Mutex
+	runs             map[string]*runHandle
+	seq              atomic.Uint64
+	maxToolRounds    int
+	wg               sync.WaitGroup
+	closed           bool
+	log              *slog.Logger
 }
 
 type runHandle struct {
@@ -45,10 +50,16 @@ func NewRuntime(store storage.Store, registry *tools.Registry, resolver Provider
 	if registry == nil {
 		registry = tools.DefaultRegistry()
 	}
-	return &Runtime{store: store, registry: registry, resolve: resolver, events: make(chan domain.Event, 256), runs: map[string]*runHandle{}, maxToolRounds: 32}
+	r := &Runtime{store: store, registry: registry, resolve: resolver, events: make(chan domain.Event, 256), runs: map[string]*runHandle{}, maxToolRounds: 32, approvalFallback: approval.DefaultMode}
+	r.broker = NewBroker(func(e domain.Event) { r.emitTerminal(e) })
+	return r
 }
 func (r *Runtime) Events() <-chan domain.Event { return r.events }
 func (r *Runtime) SetLogger(log *slog.Logger)  { r.mu.Lock(); r.log = log; r.mu.Unlock() }
+
+// Broker exposes the approval broker so the UI can query or revoke session
+// grants without going through the runtime's turn machinery.
+func (r *Runtime) Broker() *Broker { return r.broker }
 func (r *Runtime) Close() {
 	r.mu.Lock()
 	if r.closed {
@@ -236,7 +247,8 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 		sess := st.s.Clone()
 		st.mu.Unlock()
 		adef := Get(sess.AgentID)
-		sys := SystemPrompt(adef, sess.Model, skills.PromptBlock(sess.CWD), effortFromMetadata(sess.Metadata))
+		mode := modeFromMetadata(sess.Metadata, r.approvalMode())
+		sys := SystemPromptMode(adef, sess.Model, skills.PromptBlock(sess.CWD), effortFromMetadata(sess.Metadata), string(mode))
 		history := contextmgr.FitMessages(sess.Messages, contextmgr.HistoryBudget(sess.Model))
 		msgs := make([]domain.Message, 0, len(history)+1)
 		msgs = append(msgs, domain.Message{Role: domain.RoleSystem, Content: sys})
@@ -398,6 +410,65 @@ func (r *Runtime) executeCalls(ctx context.Context, st *turnState, runID string,
 		act domain.ToolActivity
 	}
 	results := make([]outcome, len(calls))
+
+	// Resolve the session's mode and existing grants once for the whole round.
+	st.mu.Lock()
+	sessionID := st.s.ID
+	mode := modeFromMetadata(st.s.Metadata, r.approvalMode())
+	st.mu.Unlock()
+	rootID := r.rootSessionID(ctx, sessionID)
+	grants := r.broker.GrantsFor(rootID)
+
+	// Decide the verdict for every call before any of them starts, and register
+	// the ones that need approval *here*, on this goroutine, in call order.
+	//
+	// This ordering is the reason the loop below is not folded into the
+	// errgroup: goroutine start order follows the scheduler, so registering
+	// inside the worker would present simultaneous prompts in a random order.
+	// Registering up front makes the queue match the model's call order exactly.
+	type plan struct {
+		req *request
+		// denyReason is non-empty when the policy refused the call outright.
+		denyReason string
+	}
+	plans := make([]plan, len(calls))
+	for i, call := range calls {
+		if !adef.ToolAllowed(call.Function.Name) {
+			continue
+		}
+		cat, ok := r.registry.CategoryOf(call.Function.Name)
+		if !ok {
+			continue
+		}
+		verdict, reason := approval.Evaluate(mode, call.Function.Name, cat, grants)
+		if verdict == approval.Allow {
+			continue
+		}
+		args := json.RawMessage(call.Function.Arguments)
+		if len(args) == 0 {
+			args = []byte("{}")
+		}
+		req := &request{
+			ID:        r.id("approval"),
+			SessionID: sessionID,
+			RunID:     runID,
+			CallID:    call.ID,
+			Tool:      call.Function.Name,
+			Args:      append([]byte(nil), args...),
+			Category:  cat,
+			Summary:   summarizeApproval(call.Function.Name, args),
+			resp:      make(chan Decision, 1),
+		}
+		// Deny never reaches the broker: in plan mode there is no approval
+		// escape hatch, so nothing is queued and no prompt is ever shown.
+		if verdict == approval.Ask {
+			plans[i].req = req
+			r.broker.register(req)
+		} else {
+			plans[i].denyReason = reason
+		}
+	}
+
 	g, gctx := errgroup.WithContext(ctx)
 	for i, call := range calls {
 		i, call := i, call
@@ -410,6 +481,48 @@ func (r *Runtime) executeCalls(ctx context.Context, st *turnState, runID string,
 			if len(args) == 0 {
 				args = []byte("{}")
 			}
+
+			// Approval is resolved here, strictly before registry.Execute, and
+			// therefore before Scheduler.Do takes any semaphore or the fs write
+			// lock. Holding the write lock while a human reads a prompt would
+			// serialise the whole tool layer behind the UI.
+			//
+			// Cost accepted: DelegateTool.Execute holds a delegate semaphore
+			// slot (limit 4) for the whole child turn, so approvals raised by a
+			// subagent occupy a delegate slot while the user decides. That is
+			// not the write or shell lock, so it cannot deadlock the approval
+			// path against itself.
+			if reason := plans[i].denyReason; reason != "" {
+				// A denied call still gets a failed activity card so the
+				// transcript shows why nothing happened for this call.
+				now := time.Now()
+				denied := domain.ToolActivity{ID: r.id("tool"), CallID: call.ID, Name: call.Function.Name, Arguments: append([]byte(nil), args...), State: "failed", Error: "not permitted: " + reason, StartedAt: now, EndedAt: now}
+				results[i].act = denied
+				results[i].err = fmt.Errorf("not permitted: %s", reason)
+				r.emitTerminal(domain.Event{Kind: domain.EventToolStarted, SessionID: st.s.ID, RunID: runID, At: now, Data: domain.ToolEvent{Activity: denied}})
+				r.emitTerminal(domain.Event{Kind: domain.EventToolFinished, SessionID: st.s.ID, RunID: runID, At: now, Data: domain.ToolEvent{Activity: denied}})
+				return nil
+			}
+			if req := plans[i].req; req != nil {
+				// forget is idempotent and runs on every exit path, including
+				// cancellation, so a cancelled request cannot stay queued and
+				// block the prompts behind it forever.
+				defer r.broker.forget(req.ID)
+				d, decided := r.broker.wait(gctx, req)
+				if !decided {
+					results[i].err = gctx.Err()
+					return nil
+				}
+				if !d.Allow {
+					reason := strings.TrimSpace(d.Reason)
+					if reason == "" {
+						reason = "the user declined this action"
+					}
+					results[i].err = fmt.Errorf("user denied: %s", reason)
+					return nil
+				}
+			}
+
 			act := domain.ToolActivity{ID: r.id("tool"), CallID: call.ID, Name: call.Function.Name, Arguments: append([]byte(nil), args...), State: "running", StartedAt: time.Now()}
 			results[i].act = act
 			r.emit(gctx, domain.Event{Kind: domain.EventToolStarted, SessionID: st.s.ID, RunID: runID, At: time.Now(), Data: domain.ToolEvent{Activity: act}})
@@ -708,6 +821,31 @@ func effortFromMetadata(m map[string]any) string {
 		return v
 	}
 	return "high"
+}
+
+// modeFromMetadata reads the session's approval mode, falling back to the
+// configured default. The session value wins so a mode change mid-conversation
+// survives for that conversation only, while the config value seeds new
+// sessions.
+func modeFromMetadata(m map[string]any, fallback approval.Mode) approval.Mode {
+	if v, ok := m["mode"].(string); ok && v != "" {
+		return approval.Normalize(v)
+	}
+	return approval.Normalize(string(fallback))
+}
+
+// SetApprovalFallback sets the mode used for sessions that carry no explicit
+// mode in their metadata. The controller calls it from the current config.
+func (r *Runtime) SetApprovalFallback(m approval.Mode) {
+	r.mu.Lock()
+	r.approvalFallback = approval.Normalize(string(m))
+	r.mu.Unlock()
+}
+
+func (r *Runtime) approvalMode() approval.Mode {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.approvalFallback
 }
 func thinkingFromMetadata(m map[string]any) bool {
 	if v, ok := m["thinking"].(bool); ok {

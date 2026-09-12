@@ -29,6 +29,7 @@ const (
 	overlayConnect
 	overlayConfirmRestore
 	overlayConfirmDelete
+	overlayApproval
 )
 
 type layoutState struct {
@@ -80,6 +81,16 @@ type Model struct {
 	overlayScroll       int
 	activityFrame       int
 	statusCmdText       string
+	// approval is the currently presented prompt, if any. It lives outside the
+	// overlay queue: an approval raised by a delegate child must be visible
+	// regardless of which session the user is browsing.
+	approval *domain.ApprovalRequest
+	// approvalChoice is the highlighted option (0 allow-once, 1 always,
+	// 2 deny-with-feedback); approvalFeedback switches the overlay into its
+	// reason-entry mode.
+	approvalChoice   int
+	approvalFeedback bool
+	approvalInput    string
 }
 
 // subagentProgress tracks live activity inside a delegate child so the sidebar

@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/agent"
+	"github.com/ViudiraTech/Uinxed-Agent/internal/approval"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
 )
 
@@ -139,6 +140,28 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 	switch e.Kind {
+	// Approval events deliberately bypass the per-session filter below: they
+	// can be raised by a delegate child while the user is browsing the parent,
+	// and a filtered prompt would hang that child's whole tool round forever.
+	case domain.EventApprovalRequested:
+		if req, ok := e.Data.(domain.ApprovalRequest); ok {
+			req.SessionID = e.SessionID
+			req.RunID = e.RunID
+			m.approval = &req
+			m.approvalChoice = 0
+			m.approvalFeedback = false
+			m.approvalInput = ""
+			m.overlay = overlayApproval
+			m.setFocus(FocusOverlay)
+		}
+	case domain.EventApprovalResolved:
+		if d, ok := e.Data.(domain.ApprovalResolved); ok && m.approval != nil && m.approval.ID == d.ID {
+			m.approval = nil
+			if m.overlay == overlayApproval {
+				m.overlay = overlayNone
+				m.setFocus(FocusPrompt)
+			}
+		}
 	case domain.EventAgentStarted:
 		if a, ok := e.Data.(domain.AgentEvent); ok {
 			if a.Run.SessionID == m.session.ID {
@@ -411,6 +434,12 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 	// clicks, resizes, or async UI updates from leaving the textarea stranded.
 	m.ensurePromptFocus()
 	key := k.String()
+	// Approval prompts must be intercepted before the ctrl+c/esc branches
+	// below: the generic esc handler closes any overlay, which here would
+	// dismiss the prompt visually while the tool goroutine stays blocked on it.
+	if m.overlay == overlayApproval {
+		return m.handleApprovalKey(k)
+	}
 	if key == "ctrl+c" {
 		if m.overlay != overlayNone {
 			m.closeOverlay()
@@ -511,6 +540,10 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 			return m.acceptCommandSuggestion(), true
 		}
 		return m.cycleAgent(), true
+	case "shift+tab":
+		// Mode ring: plan → read-only → auto-edit → full-auto. Distinct from
+		// plain tab, which handles completions and agent cycling.
+		return m.cycleApprovalMode(), true
 	case "enter":
 		return m.submitPrompt(), true
 	case "?":
@@ -537,6 +570,123 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 		return nil, true
 	}
 	return nil, false
+}
+
+// handleApprovalKey runs the approval overlay's key handling. It is installed
+// ahead of every global binding so esc means "deny this operation" rather than
+// "close the overlay" — the waiter behind the prompt must always receive an
+// explicit decision or a cancelled context, never a silent dismissal.
+func (m *Model) handleApprovalKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
+	key := k.String()
+	if m.approval == nil {
+		m.overlay = overlayNone
+		m.setFocus(FocusPrompt)
+		return nil, true
+	}
+	// Feedback entry mode: option 3 collects a message for the model.
+	if m.approvalFeedback {
+		switch key {
+		case "esc":
+			m.approvalFeedback = false
+			m.approvalInput = ""
+			return nil, true
+		case "enter":
+			reason := strings.TrimSpace(m.approvalInput)
+			if reason == "" {
+				reason = "the user declined this action"
+			}
+			return m.resolveApproval(false, false, reason), true
+		case "backspace":
+			m.approvalInput = removeLastRune(m.approvalInput)
+			return nil, true
+		default:
+			if k.Text != "" {
+				m.approvalInput += k.Text
+			}
+			return nil, true
+		}
+	}
+	switch key {
+	case "1":
+		return m.resolveApproval(true, false, ""), true
+	case "2":
+		return m.resolveApproval(true, true, ""), true
+	case "3":
+		m.approvalFeedback = true
+		m.approvalInput = ""
+		return nil, true
+	case "up", "k":
+		m.approvalChoice = max(0, m.approvalChoice-1)
+		return nil, true
+	case "down", "j":
+		m.approvalChoice = min(2, m.approvalChoice+1)
+		return nil, true
+	case "enter":
+		switch m.approvalChoice {
+		case 0:
+			return m.resolveApproval(true, false, ""), true
+		case 1:
+			return m.resolveApproval(true, true, ""), true
+		default:
+			m.approvalFeedback = true
+			m.approvalInput = ""
+			return nil, true
+		}
+	case "esc":
+		// Deny this operation only; the turn keeps running so the model can
+		// propose a different approach.
+		return m.resolveApproval(false, false, "the user declined this action"), true
+	case "ctrl+c":
+		// Quitting with a prompt pending must not strand the waiter: deny the
+		// request, then fall through to the normal interrupt path.
+		m.resolveApproval(false, false, "the user interrupted the session")
+		if m.busy && m.ctrl.Cancel(m.session.ID) {
+			m.showToast("cancelling…")
+			return nil, true
+		}
+		return tea.Quit, true
+	}
+	return nil, false
+}
+
+// resolveApproval hands the decision to the runtime and clears the prompt. The
+// response travels by direct method call, never as an event: the event stream
+// is batched and reordered, and a lost answer would hang the tool round.
+func (m *Model) resolveApproval(allow, always bool, reason string) tea.Cmd {
+	a := m.approval
+	if a == nil {
+		return nil
+	}
+	m.approval = nil
+	m.approvalFeedback = false
+	m.approvalInput = ""
+	m.overlay = overlayNone
+	m.setFocus(FocusPrompt)
+	d := agent.Decision{Allow: allow, Always: always, Reason: reason}
+	reqID := a.ID
+	return func() tea.Msg {
+		if !m.ctrl.ResolveApproval(a.RunID, reqID, d) {
+			return toastMsg("approval already settled")
+		}
+		return nil
+	}
+}
+
+// cycleApprovalMode moves the session to the next mode in the ring and
+// persists it in the session metadata, where the runtime reads it each round.
+func (m *Model) cycleApprovalMode() tea.Cmd {
+	next := string(approval.Next(approval.Normalize(m.currentMode())))
+	sid := m.session.ID
+	return asyncOp("set_mode", func() (any, error) {
+		return next, m.ctrl.SetApprovalMode(m.ctx, sid, next)
+	})
+}
+
+func (m *Model) currentMode() string {
+	if v, ok := m.session.Metadata["mode"].(string); ok && v != "" {
+		return v
+	}
+	return m.cfg.ApprovalMode
 }
 
 func (m *Model) submitPrompt() tea.Cmd {
@@ -795,6 +945,12 @@ func (m *Model) handleOp(x opMsg) tea.Cmd {
 		}
 		if x.op == "connect" {
 			m.closeOverlay()
+		}
+		return m.reloadSession()
+	case "set_mode":
+		mode, _ := x.value.(string)
+		if mode != "" {
+			m.showToast("mode: " + mode)
 		}
 		return m.reloadSession()
 	case "profile":

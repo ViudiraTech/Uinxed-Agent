@@ -477,6 +477,8 @@ func (m *Model) renderOverlay(t Theme) string {
 			"",
 			"Press y/Enter to confirm · n/Esc to cancel",
 		}
+	case overlayApproval:
+		lines, regs = m.renderApproval(t, w)
 	default:
 		title := m.infoTitle
 		if title == "" {
@@ -535,6 +537,47 @@ func (m *Model) renderOverlay(t Theme) string {
 		m.regions = append(m.regions, r)
 	}
 	return strings.Join(out, "\n")
+}
+
+// renderApproval draws the approval prompt: tool identity, a one-line argument
+// preview, the numbered choices, and the inline esc hint. The overlay frame is
+// drawn by renderOverlay; only the inner content lives here.
+func (m *Model) renderApproval(t Theme, w int) ([]string, []Region) {
+	a := m.approval
+	if a == nil {
+		return []string{"No pending approval."}, nil
+	}
+	inner := max(10, w-4)
+	title := lipgloss.NewStyle().Bold(true).Foreground(t.Warning).Render("Approval required")
+	tool := lipgloss.NewStyle().Bold(true).Foreground(t.Tool).Render("⚡ " + terminalutil.SanitizeText(a.ToolName))
+	lines := []string{title, "", tool}
+	if s := terminalutil.SanitizeText(a.Summary); s != "" {
+		lines = append(lines, truncWidth(s, inner))
+	} else if len(a.Arguments) > 0 {
+		lines = append(lines, truncWidth(terminalutil.SanitizeText(string(a.Arguments)), inner))
+	}
+	if a.SessionID != m.session.ID && a.SessionID != "" {
+		lines = append(lines, "", lipgloss.NewStyle().Foreground(t.Muted).Render("from a subagent session"))
+	}
+	lines = append(lines, "")
+	options := []string{"Allow once", "Always allow " + a.ToolName + " this session", "Deny, and tell the model what to do"}
+	if m.approvalFeedback {
+		lines = append(lines,
+			lipgloss.NewStyle().Bold(true).Foreground(t.Text).Render("Reason for the model:"),
+			lipgloss.NewStyle().Foreground(t.Primary).Render("> "+terminalutil.SanitizeText(m.approvalInput))+t.Glyphs.Cursor,
+			"",
+			lipgloss.NewStyle().Foreground(t.Muted).Render("enter to deny with this reason · esc to go back"))
+		return lines, nil
+	}
+	for i, o := range options {
+		marker, style := "  ", lipgloss.NewStyle().Foreground(t.Text)
+		if i == m.approvalChoice {
+			marker, style = t.Glyphs.Bullet+" ", lipgloss.NewStyle().Bold(true).Foreground(t.Primary)
+		}
+		lines = append(lines, style.Render(fmt.Sprintf("%s%d. %s", marker, i+1, o)))
+	}
+	lines = append(lines, "", lipgloss.NewStyle().Foreground(t.Muted).Render("1/2/3 to choose · esc to deny"))
+	return lines, nil
 }
 
 func maskConnectInput(s string, step int) string {

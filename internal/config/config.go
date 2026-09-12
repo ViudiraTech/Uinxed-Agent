@@ -52,6 +52,7 @@ type Config struct {
 	Animations             bool       `json:"animations"`
 	StreamRenderIntervalMS int        `json:"stream_render_interval_ms"`
 	Glyphs                 string     `json:"glyphs,omitempty"`
+	ApprovalMode           string     `json:"approval_mode,omitempty"`
 	StatusItems            []string   `json:"status_items,omitempty"`
 	StatuslineCommand      string     `json:"statusline_command,omitempty"`
 	Debug                  bool       `json:"debug,omitempty"`
@@ -84,7 +85,7 @@ func Defaults() Config {
 		Providers: BuiltinProviders(), ActiveProvider: "ux-gateway",
 		Thinking: true, Effort: "high", Theme: "uinxed", Mouse: true,
 		ScrollSpeed: 3, Sidebar: "off", Animations: true, StreamRenderIntervalMS: 16,
-		Glyphs: "auto", StatusItems: DefaultStatusItems(),
+		Glyphs: "auto", ApprovalMode: "auto-edit", StatusItems: DefaultStatusItems(),
 	}
 }
 
@@ -93,7 +94,7 @@ func Defaults() Config {
 // every extra segment competes with the transcript for attention. Agents,
 // providers and effort stay available by adding them here.
 func DefaultStatusItems() []string {
-	return []string{"model", "cwd", "context"}
+	return []string{"model", "cwd", "context", "mode"}
 }
 
 type Store struct {
@@ -416,6 +417,9 @@ func mergeDefaults(in Config) Config {
 	if in.Glyphs != "" {
 		d.Glyphs = in.Glyphs
 	}
+	if in.ApprovalMode != "" {
+		d.ApprovalMode = in.ApprovalMode
+	}
 	if len(in.StatusItems) > 0 {
 		d.StatusItems = append([]string(nil), in.StatusItems...)
 	}
@@ -532,6 +536,11 @@ func validate(c *Config) error {
 	case "auto", "unicode", "ascii":
 	default:
 		c.Glyphs = "auto"
+	}
+	switch c.ApprovalMode {
+	case "plan", "read-only", "auto-edit", "full-auto":
+	default:
+		c.ApprovalMode = "auto-edit"
 	}
 	if len(c.StatusItems) > 0 {
 		known := map[string]bool{"model": true, "cwd": true, "context": true, "mode": true, "agent": true, "session": true, "provider": true, "effort": true, "storage": true}

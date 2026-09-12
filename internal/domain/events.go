@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type EventKind string
 
@@ -19,6 +22,13 @@ const (
 	EventCompaction     EventKind = "context.compaction"
 	EventError          EventKind = "error"
 	EventStatus         EventKind = "status"
+
+	// Approval events are notifications only. The user's answer travels back
+	// through a direct method call (Controller.ResolveApproval), never through
+	// an event: the event pipeline is one-way and CoalesceEvents reorders and
+	// batches, which cannot safely carry a response.
+	EventApprovalRequested EventKind = "approval.requested"
+	EventApprovalResolved  EventKind = "approval.resolved"
 )
 
 type Event struct {
@@ -57,6 +67,32 @@ type ErrorData struct {
 	Op      string
 	Message string
 	Details string
+}
+
+// ApprovalRequest is one pending tool call awaiting a user decision.
+//
+// It is deliberately self-contained: the TUI renders the prompt from this
+// value alone, so an approval raised by a delegate child session displays just
+// as well as one from the session the user is looking at.
+type ApprovalRequest struct {
+	ID        string          `json:"id"`
+	ToolName  string          `json:"tool_name"`
+	Category  string          `json:"category"`
+	Summary   string          `json:"summary"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	// SessionID and RunID identify the origin so the UI can attribute a
+	// request to a subagent instead of assuming it belongs to the open session.
+	SessionID string `json:"session_id,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
+}
+
+// ApprovalResolved reports how a pending request ended. It carries no authority;
+// it exists so the UI can clear a prompt that was answered elsewhere (a
+// cancelled turn, or a second client).
+type ApprovalResolved struct {
+	ID      string `json:"id"`
+	Allowed bool   `json:"allowed"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 func NewEvent(kind EventKind, sessionID string, data any) Event {

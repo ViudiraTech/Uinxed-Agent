@@ -75,11 +75,41 @@ func filter(fn func(domain.AgentDefinition) bool) []domain.AgentDefinition {
 	return out
 }
 
+// planPrompt is appended in plan mode. The approval layer already refuses every
+// mutating call in this mode, so this text exists to make that refusal
+// predictable rather than surprising: the model is told up front that it cannot
+// write, and what to produce instead.
+const planPrompt = `## Plan mode (active)
+
+You are in plan mode. You may investigate but you may not modify anything:
+file writes, edits, shell commands, network calls and delegation are all
+refused by the host, and there is no approval prompt to confirm them.
+
+Rules for this mode:
+- Investigate freely with read-only tools (read_file, grep, glob, list_dir,
+  git_status, git_diff, git_log, tree) before proposing anything.
+- Do not attempt a write to discover whether it is allowed; it is not.
+- Finish your turn with a concrete, actionable plan.
+- End the plan with the exact line:
+  Ready to implement — switch out of plan mode to proceed.
+- Do not claim work is done. Nothing has been changed yet.`
+
 func SystemPrompt(a domain.AgentDefinition, model, skillBlock, effort string) string {
 	return systemPromptAt(a, model, skillBlock, effort, time.Now())
 }
 
+// SystemPromptMode appends the active approval mode's instructions. The mode is
+// threaded in from the session so the prompt always describes the policy the
+// approval layer will actually enforce for that session.
+func SystemPromptMode(a domain.AgentDefinition, model, skillBlock, effort, mode string) string {
+	return systemPromptModeAt(a, model, skillBlock, effort, mode, time.Now())
+}
+
 func systemPromptAt(a domain.AgentDefinition, model, skillBlock, effort string, now time.Time) string {
+	return systemPromptModeAt(a, model, skillBlock, effort, "", now)
+}
+
+func systemPromptModeAt(a domain.AgentDefinition, model, skillBlock, effort, mode string, now time.Time) string {
 	p := a.Prompt
 	zone, offset := now.Zone()
 	offsetSign := "+"
@@ -102,6 +132,9 @@ Timezone: %s (UTC%s%02d:%02d)
 		p += fmt.Sprintf("\n\n## 运行时\n你当前运行的模型是: %s。回答与代码风格应适配该模型的能力。", model)
 	}
 	p += skillBlock
+	if mode == "plan" {
+		p += "\n\n" + planPrompt
+	}
 	if effort == "supercode" {
 		p += `\n\n## Supercode 模式
 你正处于 supercode 模式:推理 effort=max,并开启多子 agent 并发编排。
