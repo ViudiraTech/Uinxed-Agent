@@ -8,33 +8,44 @@ import (
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
 )
 
-func TestConversationDeltasAreForwardedImmediatelyAndIndividually(t *testing.T) {
+// TestConversationDeltasAreBatchedWithinTheFrameBudget pins the contract that
+// makes streaming cheap: many provider deltas reach the UI as one event, with
+// every byte preserved. View() runs per message in Bubble Tea, so forwarding
+// each delta individually costs a full transcript rebuild per token.
+func TestConversationDeltasAreBatchedWithinTheFrameBudget(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	in := make(chan domain.Event, 8)
-	out := CoalesceEvents(ctx, in, 5*time.Second)
+	out := CoalesceEvents(ctx, in, 20*time.Millisecond)
 
-	in <- domain.Event{Kind: domain.EventStreamDelta, SessionID: "s", RunID: "r", Data: domain.StreamDelta{MessageID: "m", Text: "a"}}
-	in <- domain.Event{Kind: domain.EventStreamDelta, SessionID: "s", RunID: "r", Data: domain.StreamDelta{MessageID: "m", Text: "b"}}
+	for _, text := range []string{"a", "b", "c"} {
+		in <- domain.Event{Kind: domain.EventStreamDelta, SessionID: "s", RunID: "r", Data: domain.StreamDelta{MessageID: "m", Text: text}}
+	}
 
-	for i, want := range []string{"a", "b"} {
-		select {
-		case e := <-out:
-			d, ok := e.Data.(domain.StreamDelta)
-			if !ok || d.Text != want {
-				t.Fatalf("event %d = %#v, want delta %q", i, e, want)
-			}
-		case <-time.After(500 * time.Millisecond):
-			t.Fatalf("conversation delta %d was delayed by coalescing interval", i)
+	select {
+	case e := <-out:
+		d, ok := e.Data.(domain.StreamDelta)
+		if !ok || d.Text != "abc" {
+			t.Fatalf("batched delta = %#v, want %q", e.Data, "abc")
 		}
+	case <-time.After(time.Second):
+		t.Fatal("batched delta never arrived")
+	}
+	// The batch must be delivered once, not once per input delta.
+	select {
+	case e := <-out:
+		t.Fatalf("expected a single batched event, got a second: %#v", e)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
-func TestReasoningDeltaIsNotBatchedBehindContent(t *testing.T) {
+// TestReasoningAndContentBatchesStaySeparate keeps the two streams independent
+// so collapsing reasoning cannot swallow answer text.
+func TestReasoningAndContentBatchesStaySeparate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	in := make(chan domain.Event, 4)
-	out := CoalesceEvents(ctx, in, 5*time.Second)
+	out := CoalesceEvents(ctx, in, 20*time.Millisecond)
 
 	in <- domain.Event{Kind: domain.EventStreamDelta, SessionID: "s", RunID: "r", Data: domain.StreamDelta{MessageID: "m", Text: "answer"}}
 	in <- domain.Event{Kind: domain.EventReasoningDelta, SessionID: "s", RunID: "r", Data: domain.ReasoningDelta{MessageID: "m", Text: "think"}}
@@ -43,6 +54,36 @@ func TestReasoningDeltaIsNotBatchedBehindContent(t *testing.T) {
 	second := <-out
 	if first.Kind != domain.EventStreamDelta || second.Kind != domain.EventReasoningDelta {
 		t.Fatalf("unexpected order: %s then %s", first.Kind, second.Kind)
+	}
+	firstDelta, _ := first.Data.(domain.StreamDelta)
+	secondDelta, _ := second.Data.(domain.ReasoningDelta)
+	if firstDelta.Text != "answer" || secondDelta.Text != "think" {
+		t.Fatalf("batches crossed streams: %q / %q", firstDelta.Text, secondDelta.Text)
+	}
+}
+
+// TestLifecycleBoundaryFlushesPendingText guards ordering: a turn must not be
+// reported finished before the text it produced.
+func TestLifecycleBoundaryFlushesPendingText(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	in := make(chan domain.Event, 4)
+	// Interval far longer than the test: only the boundary may release this.
+	out := CoalesceEvents(ctx, in, time.Hour)
+
+	in <- domain.Event{Kind: domain.EventStreamDelta, SessionID: "s", RunID: "r", Data: domain.StreamDelta{MessageID: "m", Text: "partial"}}
+	in <- domain.Event{Kind: domain.EventAgentFinished, SessionID: "s", RunID: "r", Data: domain.AgentEvent{}}
+
+	first := <-out
+	second := <-out
+	if first.Kind != domain.EventStreamDelta {
+		t.Fatalf("text must precede the lifecycle event, got %s first", first.Kind)
+	}
+	if d, _ := first.Data.(domain.StreamDelta); d.Text != "partial" {
+		t.Fatalf("pending text was dropped at the boundary: %#v", first.Data)
+	}
+	if second.Kind != domain.EventAgentFinished {
+		t.Fatalf("second event = %s, want %s", second.Kind, domain.EventAgentFinished)
 	}
 }
 

@@ -7,6 +7,7 @@ type EventKind string
 const (
 	EventStreamDelta    EventKind = "stream.delta"
 	EventReasoningDelta EventKind = "stream.reasoning"
+	EventMessageAdded   EventKind = "message.added"
 	EventToolStarted    EventKind = "tool.started"
 	EventToolOutput     EventKind = "tool.output"
 	EventToolFinished   EventKind = "tool.finished"

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -148,13 +149,13 @@ func (c *Controller) EnsureSession(ctx context.Context) (domain.Session, error) 
 		_ = c.Config.Update(func(x *config.Config) error { x.ActiveSessionID = list[0].ID; return nil })
 		return c.Store.LoadSession(ctx, list[0].ID)
 	}
-	return c.NewSession(ctx, "会话 1")
+	return c.NewSession(ctx, "Session 1")
 }
 
 func (c *Controller) NewSession(ctx context.Context, name string) (domain.Session, error) {
 	cfg := c.Config.Snapshot()
 	if strings.TrimSpace(name) == "" {
-		name = "新会话"
+		name = "New session"
 	}
 	cwd := cfg.CWD
 	if cwd == "" {
@@ -356,6 +357,141 @@ func (c *Controller) RenameSession(ctx context.Context, id, name string) error {
 
 func (c *Controller) Compact(ctx context.Context, id string) error {
 	return c.Runtime.Compact(ctx, id)
+}
+
+// titleInstruction drives AutoTitleSession. Asking for a bare title keeps the
+// reply cheap enough to run in the background of an otherwise finished turn.
+const titleInstruction = `为这段对话生成一个简短标题。
+要求：不超过 12 个字或 6 个单词；只输出标题本身；不要引号、不要句号、不要任何解释或前缀。`
+
+// AutoTitleSession names a session after its first completed exchange, using
+// the model that session already runs on.
+//
+// It is deliberately conservative: it never runs twice for one session, never
+// overwrites a name the user chose, and never runs on a subagent session. A
+// failure is returned so the caller can decide, but it is not fatal — a session
+// simply keeps its default name.
+func (c *Controller) AutoTitleSession(ctx context.Context, sessionID string) (string, error) {
+	s, err := c.Store.LoadSession(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if titled, _ := s.Metadata["autotitled"].(bool); titled {
+		return "", nil
+	}
+	if s.ParentID != "" || !isDefaultSessionName(s.Name) {
+		return "", nil
+	}
+	excerpt, ok := firstExchange(s.Messages)
+	if !ok {
+		return "", nil
+	}
+	p, err := c.resolveProvider(s.ProviderID)
+	if err != nil {
+		return "", err
+	}
+	stream, err := p.Stream(ctx, provider.Request{
+		Model:    s.Model,
+		Thinking: false,
+		Messages: []domain.Message{
+			{Role: domain.RoleSystem, Content: titleInstruction},
+			{Role: domain.RoleUser, Content: excerpt},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for ev := range stream {
+		switch ev.Kind {
+		case provider.EventContent:
+			b.WriteString(ev.Text)
+		case provider.EventError:
+			if ev.Err != nil {
+				return "", ev.Err
+			}
+		}
+	}
+	title := cleanTitle(b.String())
+	if title == "" {
+		return "", nil
+	}
+	s.Name = title
+	if s.Metadata == nil {
+		s.Metadata = map[string]any{}
+	}
+	s.Metadata["autotitled"] = true
+	s.UpdatedAt = time.Now()
+	if err := c.Store.SaveSession(ctx, s); err != nil {
+		return "", err
+	}
+	return title, nil
+}
+
+// firstExchange returns a bounded transcript of the first user turn and the
+// first assistant reply. Both must be present: titling before the model has
+// answered would name the session after the question alone.
+func firstExchange(msgs []domain.Message) (string, bool) {
+	var user, assistant string
+	for _, m := range msgs {
+		switch m.Role {
+		case domain.RoleUser:
+			if user == "" && strings.TrimSpace(m.Content) != "" {
+				user = m.Content
+			}
+		case domain.RoleAssistant:
+			if assistant == "" && strings.TrimSpace(m.Content) != "" {
+				assistant = m.Content
+			}
+		}
+		if user != "" && assistant != "" {
+			break
+		}
+	}
+	if user == "" || assistant == "" {
+		return "", false
+	}
+	excerpt := "User: " + user + "\n\nAssistant: " + assistant
+	if r := []rune(excerpt); len(r) > 2000 {
+		excerpt = string(r[:2000])
+	}
+	return excerpt, true
+}
+
+// cleanTitle reduces a model reply to a single usable name. Models routinely
+// ignore formatting instructions, so quotes, markdown emphasis, trailing
+// punctuation and extra lines are all stripped rather than trusted.
+func cleanTitle(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "\"'“”‘’`*#《》「」")
+	s = strings.TrimSpace(s)
+	s = strings.TrimRight(s, "。.!！?？,，;；:：")
+	s = strings.TrimSpace(s)
+	if r := []rune(s); len(r) > 40 {
+		s = strings.TrimSpace(string(r[:40]))
+	}
+	return s
+}
+
+// isDefaultSessionName reports whether a session still carries a generated
+// name, which is the only case where auto-titling may replace it.
+func isDefaultSessionName(name string) bool {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return true
+	}
+	for _, prefix := range []string{"Session ", "会话 "} {
+		if rest, ok := strings.CutPrefix(n, prefix); ok {
+			if _, err := strconv.Atoi(strings.TrimSpace(rest)); err == nil {
+				return true
+			}
+		}
+	}
+	return n == "New session" || n == "新会话"
 }
 
 func (c *Controller) Profile(ctx context.Context, providerID string) (map[string]any, error) {

@@ -20,35 +20,35 @@ type commandDef struct {
 }
 
 var commandDefs = []commandDef{
-	{"/help", "显示命令与快捷键", "?"},
-	{"/sidebar", "切换左侧边栏显示/隐藏", "Ctrl+B"},
-	{"/connect", "接入 OpenAI-compatible Provider", ""},
-	{"/provider", "查看/切换 Provider", ""},
-	{"/key", "设置当前 Provider API Key", ""},
-	{"/model", "查看/切换模型", ""},
-	{"/thinking", "开关 reasoning/thinking 展示", "Ctrl+T"},
-	{"/effort", "reasoning effort: low..max / supercode", ""},
-	{"/agent", "查看/切换主 Agent", "Tab"},
-	{"/quota", "查询本地网关账户/余额", ""},
-	{"/context", "查看上下文占用与压缩阈值", ""},
-	{"/compact", "立即压缩当前上下文", ""},
-	{"/todos", "查看 Todo", "Ctrl+O"},
-	{"/cd", "切换工作目录", ""},
-	{"/pwd", "显示工作目录", ""},
-	{"/new", "新建 Session", ""},
-	{"/sessions", "切换 Session", ""},
-	{"/rename", "重命名当前 Session", ""},
-	{"/parent", "返回父 Agent Session", ""},
-	{"/delete", "删除 Session", ""},
-	{"/storage", "SQLite/config.json 存储互转", ""},
-	{"/migrate", "等价 /storage", ""},
-	{"/diff", "打开 Git Diff 审阅器", "Ctrl+D"},
-	{"/skills", "查看/加载 Agent Skill", ""},
-	{"/mouse", "开关鼠标捕获", ""},
-	{"/theme", "切换主题 (uinxed/tokyonight/catppuccin/dark/light)", ""},
-	{"/clear", "清空当前 Session", ""},
-	{"/restore", "恢复出厂设置", ""},
-	{"/exit", "退出", "Ctrl+C"},
+	{"/help", "Show commands and shortcuts", "?"},
+	{"/sidebar", "Toggle the session sidebar", "Ctrl+B"},
+	{"/connect", "Add an OpenAI-compatible provider", ""},
+	{"/provider", "Show or switch provider", ""},
+	{"/key", "Set the API key for the current provider", ""},
+	{"/model", "Show or switch model", ""},
+	{"/thinking", "Toggle reasoning display", "Ctrl+T"},
+	{"/effort", "Reasoning effort: low..max / supercode", ""},
+	{"/agent", "Show or switch the primary agent", "Tab"},
+	{"/quota", "Query gateway account and balance", ""},
+	{"/context", "Show context usage and compaction thresholds", ""},
+	{"/compact", "Compact the context now", ""},
+	{"/todos", "Show the todo list", "Ctrl+O"},
+	{"/cd", "Change the working directory", ""},
+	{"/pwd", "Print the working directory", ""},
+	{"/new", "Start a new session", ""},
+	{"/sessions", "Switch session", ""},
+	{"/rename", "Rename the current session", ""},
+	{"/parent", "Return to the parent agent session", ""},
+	{"/delete", "Delete a session", ""},
+	{"/storage", "Switch between SQLite and config.json storage", ""},
+	{"/migrate", "Alias for /storage", ""},
+	{"/diff", "Open the git diff reviewer", "Ctrl+D"},
+	{"/skills", "Browse and load agent skills", ""},
+	{"/mouse", "Toggle terminal mouse capture", ""},
+	{"/theme", "Switch color theme", ""},
+	{"/clear", "Clear the current session", ""},
+	{"/restore", "Restore factory settings", ""},
+	{"/exit", "Quit", "Ctrl+C"},
 }
 
 func (m *Model) executeCommand(text string) tea.Cmd {
@@ -61,16 +61,7 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 	sid := m.session.ID
 	switch name {
 	case "/help":
-		var b strings.Builder
-		for _, c := range commandDefs {
-			fmt.Fprintf(&b, "%-12s %s", c.Name, c.Desc)
-			if c.Shortcut != "" {
-				fmt.Fprintf(&b, "  [%s]", c.Shortcut)
-			}
-			b.WriteByte('\n')
-		}
-		b.WriteString("\n快捷键: Ctrl+P command palette · Ctrl+T reasoning · Ctrl+O todos · Ctrl+E tool details · PgUp/PgDn scroll · Esc cancel")
-		m.openInfo("Help", strings.TrimSpace(b.String()), overlayHelp)
+		m.openInfo("Help", helpText(), overlayHelp)
 	case "/exit", "/quit":
 		return tea.Quit
 	case "/agent":
@@ -101,18 +92,18 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 		if arg == "" {
 			p := m.ctrl.Config.ActiveProvider()
 			key, _ := m.ctrl.Config.ProviderKey(p.ID)
-			shown := "未设置"
+			shown := "not set"
 			if key != "" {
 				shown = config.RedactSecret(key)
 			}
-			m.openInfo("API Key · "+p.Name, shown+"\n\n设置: /key <key>", overlayInfo)
+			m.openInfo("API Key · "+p.Name, shown+"\n\nSet with: /key <key>", overlayInfo)
 			return nil
 		}
 		key := strings.TrimSpace(arg)
 		pid := m.session.ProviderID
 		return asyncOp("key", func() (any, error) {
 			if err := m.ctrl.CheckKey(m.ctx, pid, key); err != nil {
-				return nil, fmt.Errorf("Key 验证失败: %w", err)
+				return nil, fmt.Errorf("key check failed: %w", err)
 			}
 			return nil, m.ctrl.SetKey(pid, key)
 		})
@@ -145,10 +136,10 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 		if window > 0 {
 			pct = used * 100 / window
 		}
-		m.openInfo("Context", fmt.Sprintf("模型: %s\n窗口: %d tokens\n已用: ≈%d tokens (%d%%)\n自动压缩阈值: ≈%d tokens (62%%)\n请求历史预算: ≈%d tokens (72%%)", m.session.Model, window, used, pct, thr, ctxutil.HistoryBudget(m.session.Model)), overlayContext)
+		m.openInfo("Context", fmt.Sprintf("Model: %s\nWindow: %d tokens\nUsed: ≈%d tokens (%d%%)\nAuto-compact threshold: ≈%d tokens (62%%)\nHistory budget: ≈%d tokens (72%%)", m.session.Model, window, used, pct, thr, ctxutil.HistoryBudget(m.session.Model)), overlayContext)
 	case "/compact":
 		if m.busy {
-			m.showToast("当前 Agent 正在运行")
+			m.showToast("agent is still running")
 			return nil
 		}
 		return asyncOp("compact", func() (any, error) { return nil, m.ctrl.Compact(m.ctx, sid) })
@@ -171,7 +162,7 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 	case "/new":
 		name := strings.TrimSpace(arg)
 		if name == "" {
-			name = fmt.Sprintf("会话 %d", len(m.sessions)+1)
+			name = fmt.Sprintf("Session %d", len(m.sessions)+1)
 		}
 		return asyncOp("new_session", func() (any, error) { return m.ctrl.NewSession(m.ctx, name) })
 	case "/sessions":
@@ -179,13 +170,13 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 	case "/rename":
 		newName := strings.TrimSpace(arg)
 		if newName == "" {
-			m.openInfo("Rename Session", "用法: /rename <新名称>", overlayInfo)
+			m.openInfo("Rename Session", "Usage: /rename <new name>", overlayInfo)
 			return nil
 		}
 		return asyncOp("rename", func() (any, error) { return nil, m.ctrl.RenameSession(m.ctx, sid, newName) })
 	case "/parent":
 		if m.session.ParentID == "" {
-			m.showToast("当前已经是主 Session")
+			m.showToast("already at the root session")
 			return nil
 		}
 		return m.switchSessionCmd(m.session.ParentID)
@@ -196,7 +187,7 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 		}
 		target := m.resolveSession(strings.TrimSpace(arg))
 		if target == nil {
-			m.showError(fmt.Errorf("没有会话: %s", arg))
+			m.showError(fmt.Errorf("no such session: %s", arg))
 			return nil
 		}
 		m.confirmTarget = target.ID
@@ -206,7 +197,7 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 	case "/storage", "/migrate":
 		target := strings.ToLower(strings.TrimSpace(arg))
 		if target == "" {
-			m.openInfo("Storage", fmt.Sprintf("当前: %s\n\n/storage db      迁入 SQLite\n/storage config  写回 config.json", m.ctrl.Config.Snapshot().Storage), overlayInfo)
+			m.openInfo("Storage", fmt.Sprintf("Current: %s\n\n/storage db      migrate into SQLite\n/storage config  write back to config.json", m.ctrl.Config.Snapshot().Storage), overlayInfo)
 			return nil
 		}
 		return asyncOp("storage", func() (any, error) { n, e := m.ctrl.SwitchStorage(m.ctx, target); return n, e })
@@ -246,8 +237,8 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 			m.openThemePicker()
 			return nil
 		}
-		if v != "uinxed" && v != "dark" && v != "light" && v != "tokyonight" && v != "catppuccin" {
-			m.showError(fmt.Errorf("theme must be uinxed, tokyonight, catppuccin, dark, or light"))
+		if !config.ValidTheme(v) {
+			m.showError(fmt.Errorf("theme must be one of: %s", strings.Join(config.Themes(), ", ")))
 			return nil
 		}
 		return asyncOp("theme", func() (any, error) {
@@ -255,7 +246,7 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 		})
 	case "/clear":
 		if m.busy {
-			m.showToast("先取消当前生成")
+			m.showToast("cancel the running turn first")
 			return nil
 		}
 		return asyncOp("clear", func() (any, error) { return nil, m.ctrl.ClearSession(m.ctx, sid) })
@@ -263,7 +254,7 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 		m.overlay = overlayConfirmRestore
 		m.setFocus(FocusOverlay)
 	default:
-		m.showError(fmt.Errorf("未知命令: %s", name))
+		m.showError(fmt.Errorf("unknown command: %s", name))
 	}
 	return nil
 }
@@ -276,26 +267,58 @@ func validEffort(v string) bool {
 	return false
 }
 
+// helpText renders the grouped shortcuts and command reference shown by /help.
+func helpText() string {
+	var b strings.Builder
+	b.WriteString("Shortcuts\n")
+	for _, s := range [][2]string{
+		{"Ctrl+P", "Command palette"},
+		{"Tab", "Accept completion, else cycle agent"},
+		{"Ctrl+O", "Show todos"},
+		{"Ctrl+T", "Expand or collapse reasoning"},
+		{"Ctrl+E", "Expand or collapse tool details"},
+		{"Ctrl+B", "Toggle sidebar"},
+		{"Ctrl+D", "Open git diff"},
+		{"PgUp/PgDn", "Scroll the conversation"},
+		{"Esc", "Close overlay; cancel the running turn"},
+		{"Ctrl+C", "Cancel the running turn; quit when idle"},
+		{"@file", "Attach file context to the turn"},
+		{"@agent task", "Delegate to explorer, coding or general"},
+		{"?", "This panel"},
+	} {
+		fmt.Fprintf(&b, "  %-13s %s\n", s[0], s[1])
+	}
+	b.WriteString("\nCommands\n")
+	for _, c := range commandDefs {
+		fmt.Fprintf(&b, "  %-11s %s", c.Name, c.Desc)
+		if c.Shortcut != "" {
+			fmt.Fprintf(&b, "  [%s]", c.Shortcut)
+		}
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func (m *Model) openCommandPalette() {
 	items := []PickerItem{
-		{"new", "New Session", "创建新会话", ""},
-		{"sessions", "Switch Session", "切换会话", ""},
-		{"sidebar", "Toggle Sidebar", "切换左侧边栏", "Ctrl+B"},
-		{"agent", "Change Agent", "切换 Agent", "Tab"},
-		{"model", "Change Model", "切换模型", ""},
-		{"provider", "Change Provider", "切换 Provider", ""},
-		{"thinking", "Toggle Thinking", "切换思考过程显示", "Ctrl+T"},
-		{"tools", "Toggle Tool Details", "切换工具调用详情", "Ctrl+E"},
-		{"compact", "Compact Context", "压缩当前上下文", ""},
-		{"todos", "Show Todos", "查看待办任务", "Ctrl+O"},
-		{"diff", "Open Diff", "审阅代码改动", "Ctrl+D"},
-		{"theme", "Change Theme", "切换界面颜色主题", ""},
-		{"rename", "Rename Session", "重命名当前会话", ""},
-		{"mouse", "Toggle Mouse", "鼠标捕获开关", ""},
-		{"quit", "Quit", "退出", "Ctrl+C"},
+		{"new", "New Session", "Start a fresh conversation", ""},
+		{"sessions", "Switch Session", "Jump to another session", ""},
+		{"sidebar", "Toggle Sidebar", "Show or hide the session sidebar", "Ctrl+B"},
+		{"agent", "Change Agent", "Switch the primary agent", "Tab"},
+		{"model", "Change Model", "Switch the active model", ""},
+		{"provider", "Change Provider", "Switch the active provider", ""},
+		{"thinking", "Toggle Thinking", "Show or hide reasoning", "Ctrl+T"},
+		{"tools", "Toggle Tool Details", "Expand or collapse tool output", "Ctrl+E"},
+		{"compact", "Compact Context", "Summarize the context now", ""},
+		{"todos", "Show Todos", "Review the task list", "Ctrl+O"},
+		{"diff", "Open Diff", "Review working tree changes", "Ctrl+D"},
+		{"theme", "Change Theme", "Pick a color theme", ""},
+		{"rename", "Rename Session", "Give the current session a new name", ""},
+		{"mouse", "Toggle Mouse", "Turn terminal mouse capture on or off", ""},
+		{"quit", "Quit", "Exit ux-agent", "Ctrl+C"},
 	}
 	if m.session.ParentID != "" {
-		items = append(items, PickerItem{"parent", "Return to Parent", "返回父 Agent Session", "Esc/command"})
+		items = append(items, PickerItem{"parent", "Return to Parent", "Go back to the parent agent session", ""})
 	}
 	m.picker.Reset("Command Palette", ActionCommand, items)
 	m.pickerPurpose = "command"
@@ -346,7 +369,7 @@ func (m *Model) openEffortPicker() {
 	for _, v := range vals {
 		d := ""
 		if v == "supercode" {
-			d = "max reasoning + 多子 Agent 并发"
+			d = "max reasoning with concurrent subagents"
 		}
 		items = append(items, PickerItem{v, v, d, ""})
 	}
@@ -394,11 +417,14 @@ func (m *Model) openThemePicker() {
 	opts := []struct {
 		id, label, desc string
 	}{
-		{"uinxed", "Uinxed Cyberpunk", "赛博朋克紫青霓虹 (默认)"},
-		{"tokyonight", "Tokyo Night", "东京之夜深蓝冷调"},
-		{"catppuccin", "Catppuccin Mocha", "柔和舒适马卡龙调色"},
-		{"dark", "Dark Slate", "沉稳灰阶高对比暗黑"},
-		{"light", "Light Clean", "明亮清爽浅色纸张"},
+		{"uinxed", "Uinxed Cyberpunk", "Purple and cyan neon (default)"},
+		{"tokyonight", "Tokyo Night", "Cool deep blues"},
+		{"catppuccin", "Catppuccin Mocha", "Soft pastel palette"},
+		{"gruvbox", "Gruvbox", "Warm retro earth tones"},
+		{"nord", "Nord", "Muted arctic blues"},
+		{"dracula", "Dracula", "High-contrast purple"},
+		{"dark", "Dark Slate", "Neutral high-contrast dark"},
+		{"light", "Light Clean", "Bright paper-like light"},
 	}
 	var items []PickerItem
 	for _, x := range opts {
@@ -493,7 +519,7 @@ func (m *Model) runPaletteAction(id string) tea.Cmd {
 	case "sidebar":
 		return m.toggleSidebar()
 	case "thinking":
-		m.conv.ToggleAllThinking(m.streamReasoning)
+		m.conv.ToggleAllThinking()
 		m.closeOverlay()
 		return nil
 	case "tools":
@@ -621,14 +647,14 @@ func (m *Model) handleConnectKey(k tea.KeyPressMsg) tea.Cmd {
 	switch m.connect.Step {
 	case 0:
 		if v == "" {
-			m.showToast("名称不能为空")
+			m.showToast("name cannot be empty")
 			return nil
 		}
 		m.connect.Name = v
 		m.connect.Step = 1
 	case 1:
 		if v == "" {
-			m.showToast("Base URL 不能为空")
+			m.showToast("base URL cannot be empty")
 			return nil
 		}
 		m.connect.BaseURL = strings.TrimRight(v, "/")

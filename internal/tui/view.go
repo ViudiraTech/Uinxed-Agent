@@ -2,18 +2,21 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	ctxutil "github.com/ViudiraTech/Uinxed-Agent/internal/context"
+	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
 	terminalutil "github.com/ViudiraTech/Uinxed-Agent/internal/terminal"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func (m *Model) View() tea.View {
 	m.cfg = m.ctrl.Config.Snapshot()
 	m.regions = m.regions[:0]
-	t := theme(m.cfg.Theme)
+	t := themeFor(m.cfg)
 	if m.width <= 0 {
 		m.width = 100
 	}
@@ -41,6 +44,10 @@ func (m *Model) View() tea.View {
 	return v
 }
 
+// renderBase lays out the transcript-first screen: conversation fills the
+// terminal, the composer is the only bordered element, and a single dim status
+// row anchors the bottom. There is no header — model, directory and context
+// live in the status row so vertical space goes to the conversation.
 func (m *Model) renderBase(t Theme) string {
 	width, height := m.width, m.height
 	sidebarW := 0
@@ -67,107 +74,55 @@ func (m *Model) renderBase(t Theme) string {
 	if promptH > 6 {
 		promptH = 6
 	}
-	headerH := 3
 	statusH := 1
-	promptFrameH := promptH + 2
-	chatH := height - headerH - statusH - promptFrameH - len(sugg)
+	promptFrameH := promptH + 2 // one rule above, one below
+	spacerH := 1                // breathing room between transcript and composer
+	chatH := height - statusH - promptFrameH - spacerH - len(sugg)
 	if chatH < 4 {
 		chatH = 4
 	}
-	maxTotal := headerH + statusH + promptFrameH + len(sugg) + chatH
-	if maxTotal > height {
-		chatH = max(1, chatH-(maxTotal-height))
+	if total := statusH + promptFrameH + spacerH + len(sugg) + chatH; total > height {
+		chatH = max(1, chatH-(total-height))
 	}
 
-	m.layout.chat = Rect{chatX, headerH, chatW, chatH}
-	m.layout.sidebar = Rect{0, headerH, sidebarW, max(0, height-headerH-statusH)}
-	m.layout.prompt = Rect{chatX, headerH + chatH + len(sugg), chatW, promptFrameH}
+	m.layout.chat = Rect{chatX, 0, chatW, chatH}
+	m.layout.sidebar = Rect{0, 0, sidebarW, max(0, height-statusH)}
+	m.layout.prompt = Rect{chatX, chatH + spacerH + len(sugg), chatW, promptFrameH}
 	m.layout.status = Rect{0, height - 1, width, 1}
 	m.layout.chatX = chatX
 
-	// ==================== 1. Top Header ====================
-	safeAgent := terminalutil.SanitizeText(m.session.AgentID)
-	safeModel := terminalutil.SanitizeText(m.session.Model)
-	safeProvider := terminalutil.SanitizeText(m.session.ProviderID)
-
-	// Row 0: Brand and Interactive Pill Badges
-	logoPill := lipgloss.NewStyle().Bold(true).Background(t.Primary).Foreground(lipgloss.Color("#FFFFFF")).Padding(0, 1).Render("◆ UINXED AGENT")
-	verText := lipgloss.NewStyle().Foreground(t.Muted).Render("v2.0")
-	leftBrand := " " + logoPill + " " + verText
-
-	agentPill := lipgloss.NewStyle().Background(t.PillBg).Foreground(t.Primary).Bold(true).Padding(0, 1).Render("🤖 " + safeAgent + " ▾")
-	modelPill := lipgloss.NewStyle().Background(t.PillBg).Foreground(t.Secondary).Padding(0, 1).Render("󰘧 " + safeModel + " ▾")
-	providerPill := lipgloss.NewStyle().Background(t.PillBg).Foreground(t.Accent).Padding(0, 1).Render("󰢏 " + safeProvider + " ▾")
-	rightPills := agentPill + " " + modelPill + " " + providerPill + " "
-
-	row0 := fitLine(padBetween(leftBrand, rightPills, width), width)
-
-	// Register header click hitboxes on Row 0
-	pillsW := lipgloss.Width(rightPills)
-	rightStart := max(0, width-pillsW)
-	aW := lipgloss.Width(agentPill)
-	mW := lipgloss.Width(modelPill)
-	pW := lipgloss.Width(providerPill)
-	m.regions = append(m.regions,
-		Region{Rect: Rect{rightStart, 0, aW, 1}, Kind: ActionAgent, Value: m.session.AgentID},
-		Region{Rect: Rect{rightStart + aW + 1, 0, mW, 1}, Kind: ActionModel, Value: m.session.Model},
-		Region{Rect: Rect{rightStart + aW + 1 + mW + 1, 0, pW, 1}, Kind: ActionProvider, Value: m.session.ProviderID},
-	)
-
-	// Row 1: Working Directory and Context Usage Progress Bar
-	cwd := terminalutil.SanitizeText(m.session.CWD)
-	if cwd == "" {
-		cwd = "."
-	}
-	ctxUsed := ctxutil.EstimateMessages(m.session.Messages)
-	ctxWin := ctxutil.Window(m.session.Model)
-	pct := 0
-	if ctxWin > 0 {
-		pct = ctxUsed * 100 / ctxWin
-	}
-	ctxColor := t.Success
-	if pct > 80 {
-		ctxColor = t.Error
-	} else if pct > 60 {
-		ctxColor = t.Warning
-	}
-	barW := 6
-	filled := min(barW, pct*barW/100)
-	bar := strings.Repeat("■", filled) + strings.Repeat("·", max(0, barW-filled))
-	ctxMeter := lipgloss.NewStyle().Foreground(ctxColor).Render(fmt.Sprintf("󰓅 Context: %d%% [%s] ", pct, bar))
-	dirText := lipgloss.NewStyle().Foreground(t.Muted).Render("  📁 " + truncWidth(cwd, max(10, width-lipgloss.Width(ctxMeter)-6)))
-	row1 := fitLine(padBetween(dirText, ctxMeter, width), width)
-
-	// Row 2: Top Separator Line
-	var row2 string
-	if sidebarW > 0 {
-		row2 = lipgloss.NewStyle().Foreground(t.Border).Render(strings.Repeat("─", sidebarW) + "┬" + strings.Repeat("─", chatW))
-	} else {
-		row2 = lipgloss.NewStyle().Foreground(t.Border).Render(strings.Repeat("─", width))
-	}
-	headerLines := []string{row0, row1, row2}
-
-	// ==================== 2. Chat Conversation Body ====================
+	// ==================== 1. Conversation ====================
 	var chatLines []string
-	convLines := m.conv.Render(chatH, t, m.streamContent, m.streamReasoning, m.activities, m.hover)
+	convLines := m.conv.Render(chatH, t, RenderOptions{
+		StreamContent:   m.streamContent,
+		StreamReasoning: m.streamReasoning,
+		StreamMessageID: m.streamMessageID,
+		Activities:      m.activities,
+		Hover:           m.hover,
+		Frame:           m.activityFrame,
+	})
 	for row, line := range convLines {
 		chatLines = append(chatLines, fitLine(line.Text, chatW))
 		if line.Action != "" {
-			m.regions = append(m.regions, Region{Rect: Rect{chatX, headerH + row, chatW, 1}, Kind: line.Action, Value: line.Value})
+			m.regions = append(m.regions, Region{Rect: Rect{chatX, row, chatW, 1}, Kind: line.Action, Value: line.Value})
 		}
 	}
 	chatLines = append(chatLines, sugg...)
+	// Every row must already be fitted to chatW: clampLines only fills the tail.
+	chatLines = append(chatLines, fitLine("", chatW))
 
-	// ==================== 3. Input Prompt Card ====================
-	promptY := headerH + chatH + len(sugg)
-	borderStyle := lipgloss.NewStyle().Foreground(t.Border)
+	// ==================== 2. Composer ====================
+	borderColor := t.Border
 	if m.focus.Current() == FocusPrompt {
-		borderStyle = lipgloss.NewStyle().Foreground(t.Primary)
+		borderColor = t.Primary
 	}
-	promptTitle := lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render("󰋽 Prompt")
-	topPromptBorder := borderStyle.Render("╭─ ") + promptTitle + " " + borderStyle.Render(strings.Repeat("─", max(1, chatW-lipgloss.Width(promptTitle)-5))+"╮")
-	chatLines = append(chatLines, fitLine(topPromptBorder, chatW))
+	ruleStyle := lipgloss.NewStyle().Foreground(borderColor)
+	rule := func() string {
+		return ruleStyle.Render(strings.Repeat(t.Glyphs.Rule, max(1, chatW)))
+	}
+	chatLines = append(chatLines, rule())
 
+	prefixStyle := lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
 	pview := strings.TrimSuffix(m.prompt.View(), "\n")
 	plines := strings.Split(pview, "\n")
 	for i := 0; i < promptH; i++ {
@@ -177,52 +132,41 @@ func (m *Model) renderBase(t Theme) string {
 		}
 		prefix := "  "
 		if i == 0 {
-			prefix = lipgloss.NewStyle().Foreground(t.Primary).Render("› ")
+			prefix = prefixStyle.Render(t.Glyphs.User) + " "
 		}
-		contentLine := prefix + line
-		gap := max(0, chatW-2-lipgloss.Width(contentLine))
-		inside := borderStyle.Render("│ ") + contentLine + strings.Repeat(" ", gap) + borderStyle.Render("│")
-		chatLines = append(chatLines, fitLine(inside, chatW))
+		chatLines = append(chatLines, fitLine(prefix+line, chatW))
 	}
+	chatLines = append(chatLines, rule())
 
-	hints := "[↵ Send] [⇧↵ Line] [^P Menu] [^B Sidebar] [^T Think]"
-	if chatW < 60 {
-		hints = "[↵ Send] [^P Menu] [^B Side]"
-	}
-	hintPills := lipgloss.NewStyle().Foreground(t.Muted).Render(hints)
-	botDash := max(1, chatW-lipgloss.Width(hintPills)-5)
-	botPromptBorder := borderStyle.Render("╰─ ") + hintPills + " " + borderStyle.Render(strings.Repeat("─", botDash)+"╯")
-	chatLines = append(chatLines, fitLine(botPromptBorder, chatW))
-
-	m.regions = append(m.regions, Region{Rect: Rect{chatX, promptY, chatW, promptFrameH}, Kind: ActionPrompt, Value: "prompt"})
+	m.regions = append(m.regions, Region{Rect: Rect{chatX, m.layout.prompt.Y, chatW, promptFrameH}, Kind: ActionPrompt, Value: "prompt"})
 	m.regions = append(m.regions, Region{Rect: m.layout.chat, Kind: ActionChat, Value: "chat"})
 
-	// ==================== 4. Layout Composition ====================
+	// ==================== 3. Status row ====================
+	statusText, statusRegs := m.statusLine(t, width)
+	m.regions = append(m.regions, statusRegs...)
+
+	// ==================== 4. Compose ====================
 	if sidebarW == 0 {
 		var all []string
-		all = append(all, headerLines...)
 		all = append(all, chatLines...)
-		all = append(all, fitLine(m.statusLine(t, width), width))
+		all = append(all, fitLine(statusText, width))
 		return clampLines(all, width, height)
 	}
 
-	sideLines := m.renderSidebar(t, sidebarW, height-headerH-statusH)
-	bodyH := height - headerH - statusH
+	sideLines := m.renderSidebar(t, sidebarW, height-statusH)
+	bodyH := height - statusH
 	var all []string
-	all = append(all, headerLines...)
 	for y := 0; y < bodyH; y++ {
-		sl := ""
+		sl, cl := "", ""
 		if y < len(sideLines) {
 			sl = sideLines[y]
 		}
-		cl := ""
 		if y < len(chatLines) {
 			cl = chatLines[y]
 		}
-		bodyRow := fitLine(sl, sidebarW) + lipgloss.NewStyle().Foreground(t.Border).Render("│") + fitLine(cl, chatW)
-		all = append(all, bodyRow)
+		all = append(all, fitLine(sl, sidebarW)+lipgloss.NewStyle().Foreground(t.Border).Render(t.Glyphs.VBar)+fitLine(cl, chatW))
 	}
-	all = append(all, fitLine(m.statusLine(t, width), width))
+	all = append(all, fitLine(statusText, width))
 	return clampLines(all, width, height)
 }
 
@@ -230,14 +174,11 @@ func (m *Model) renderSidebar(t Theme, w, h int) []string {
 	if w <= 0 || h <= 0 {
 		return nil
 	}
+	g := t.Glyphs
 	var out []string
-	borderStyle := lipgloss.NewStyle().Foreground(t.Border)
+	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(t.Muted)
 
-	// Section 1: Sessions
-	sessHeader := lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render(" 󰋜 SESSIONS")
-	out = append(out, fitLine(sessHeader, w))
-	out = append(out, fitLine(borderStyle.Render(strings.Repeat("─", w)), w))
-
+	out = append(out, fitLine(" "+sectionStyle.Render("SESSIONS"), w))
 	start := m.sidebarOffset
 	if start < 0 {
 		start = 0
@@ -249,19 +190,16 @@ func (m *Model) renderSidebar(t Theme, w, h int) []string {
 		isCur := s.ID == m.session.ID
 		mark := "  "
 		nameStyle := lipgloss.NewStyle().Foreground(t.Text)
-		timeText := formatAgo(s.UpdatedAt)
 		if isCur {
-			mark = "▸ "
+			mark = g.Bullet + " "
 			nameStyle = lipgloss.NewStyle().Bold(true).Foreground(t.Primary)
 		}
-		sName := terminalutil.SanitizeText(s.Name)
-		rowLeft := mark + sName
-		line := padBetween(nameStyle.Render(rowLeft), lipgloss.NewStyle().Foreground(t.Muted).Render(timeText), w-1)
+		rowLeft := mark + terminalutil.SanitizeText(s.Name)
+		line := padBetween(nameStyle.Render(rowLeft), lipgloss.NewStyle().Foreground(t.Muted).Render(formatAgo(s.UpdatedAt)), w-1)
 		out = append(out, fitLine(line, w))
-		m.regions = append(m.regions, Region{Rect: Rect{0, 3 + len(out) - 1, w, 1}, Kind: ActionSession, Value: s.ID})
+		m.regions = append(m.regions, Region{Rect: Rect{0, len(out) - 1, w, 1}, Kind: ActionSession, Value: s.ID})
 	}
 
-	// Section 2: Todos
 	if len(out) < h-3 {
 		done := 0
 		for _, x := range m.session.Todos {
@@ -270,53 +208,72 @@ func (m *Model) renderSidebar(t Theme, w, h int) []string {
 			}
 		}
 		out = append(out, "")
-		todoHeader := lipgloss.NewStyle().Bold(true).Foreground(t.Secondary).Render(fmt.Sprintf(" 󰄲 TODOS (%d/%d)", done, len(m.session.Todos)))
-		out = append(out, fitLine(todoHeader, w))
-		out = append(out, fitLine(borderStyle.Render(strings.Repeat("─", w)), w))
-
+		out = append(out, fitLine(" "+sectionStyle.Render(fmt.Sprintf("TODOS %d/%d", done, len(m.session.Todos))), w))
 		if len(m.session.Todos) == 0 {
-			out = append(out, fitLine(lipgloss.NewStyle().Foreground(t.Muted).Render("  no active todos"), w))
+			out = append(out, fitLine(lipgloss.NewStyle().Foreground(t.Muted).Render("  none"), w))
 		} else {
 			for _, x := range m.session.Todos {
-				icon := "○"
-				iStyle := lipgloss.NewStyle().Foreground(t.Muted)
+				icon, iStyle := g.TodoOpen, lipgloss.NewStyle().Foreground(t.Muted)
 				if x.Status == "completed" {
-					icon = "✓"
-					iStyle = lipgloss.NewStyle().Foreground(t.Success)
+					icon, iStyle = g.TodoDone, lipgloss.NewStyle().Foreground(t.Success)
 				} else if x.Status == "in_progress" {
-					icon = "◉"
-					iStyle = lipgloss.NewStyle().Foreground(t.Warning)
+					icon, iStyle = g.Bullet, lipgloss.NewStyle().Foreground(t.Warning)
 				}
 				line := "  " + iStyle.Render(icon) + " " + terminalutil.SanitizeText(x.Subject)
 				out = append(out, fitLine(line, w))
-				m.regions = append(m.regions, Region{Rect: Rect{0, 3 + len(out) - 1, w, 1}, Kind: ActionTodo, Value: x.ID})
-				if len(out) >= h-4 {
+				m.regions = append(m.regions, Region{Rect: Rect{0, len(out) - 1, w, 1}, Kind: ActionTodo, Value: x.ID})
+				if len(out) >= h-2 {
 					break
 				}
 			}
 		}
 	}
 
-	// Section 3: Subagents
 	if len(m.subagents) > 0 && len(out) < h-3 {
 		out = append(out, "")
-		subHeader := lipgloss.NewStyle().Bold(true).Foreground(t.Accent).Render(" 󰚩 SUBAGENTS")
-		out = append(out, fitLine(subHeader, w))
-		out = append(out, fitLine(borderStyle.Render(strings.Repeat("─", w)), w))
-		for _, a := range m.subagents {
-			icon := "○"
-			iStyle := lipgloss.NewStyle().Foreground(t.Muted)
-			if a.State == "running" {
-				icon = "◉"
-				iStyle = lipgloss.NewStyle().Foreground(t.Warning)
-			} else if a.State == "done" || a.State == "completed" {
-				icon = "●"
-				iStyle = lipgloss.NewStyle().Foreground(t.Success)
+		out = append(out, fitLine(" "+sectionStyle.Render("SUBAGENTS"), w))
+		for _, a := range m.sortedSubagents() {
+			icon, iStyle := g.Pending, lipgloss.NewStyle().Foreground(t.Muted)
+			stateLabel := terminalutil.SanitizeText(a.State)
+			if stateLabel == "" {
+				stateLabel = "pending"
 			}
-			line := fmt.Sprintf("  %s %s · %s", iStyle.Render(icon), terminalutil.SanitizeText(a.AgentID), terminalutil.SanitizeText(a.State))
-			out = append(out, fitLine(line, w))
+			switch a.State {
+			case "running":
+				// Spinner frame makes a live subagent visibly tick without
+				// changing row order or count, which is what previously read
+				// as flicker when the map order shuffled every frame.
+				icon, iStyle = g.spinner(m.activityFrame), lipgloss.NewStyle().Foreground(t.Warning)
+			case "done", "completed":
+				icon, iStyle = g.Success, lipgloss.NewStyle().Foreground(t.Success)
+			case "failed", "cancelled":
+				icon, iStyle = g.Failure, lipgloss.NewStyle().Foreground(t.Error)
+			}
+			prog := m.subagentProgress[a.ID]
+			elapsed := formatSubagentElapsed(a, m.activityFrame)
+			head := fmt.Sprintf("  %s %s · %s", iStyle.Render(icon), terminalutil.SanitizeText(a.AgentID), stateLabel)
+			if elapsed != "" {
+				head += lipgloss.NewStyle().Foreground(t.Muted).Render(" · "+elapsed)
+			}
+			if prog.Tools > 0 {
+				head += lipgloss.NewStyle().Foreground(t.Muted).Render(fmt.Sprintf(" · %d tools", prog.Tools))
+			}
+			out = append(out, fitLine(head, w))
 			if a.SessionID != "" {
-				m.regions = append(m.regions, Region{Rect: Rect{0, 3 + len(out) - 1, w, 1}, Kind: ActionSession, Value: a.SessionID})
+				m.regions = append(m.regions, Region{Rect: Rect{0, len(out) - 1, w, 1}, Kind: ActionSession, Value: a.SessionID})
+			}
+			if len(out) >= h-1 {
+				break
+			}
+			// Second dim line carries the task / last-tool so progress is
+			// visible at a glance. It is always rendered (possibly empty) so
+			// a running subagent never changes the sidebar height mid-turn.
+			detail := m.subagentDetail(a, prog)
+			if detail != "" {
+				dim := lipgloss.NewStyle().Foreground(t.Muted).Render("    " + detail)
+				out = append(out, fitLine(dim, w))
+			} else {
+				out = append(out, fitLine("", w))
 			}
 			if len(out) >= h {
 				break
@@ -333,6 +290,97 @@ func (m *Model) renderSidebar(t Theme, w, h int) []string {
 	return out
 }
 
+// sortedSubagents returns background runs in a stable order. Go map iteration
+// is randomized, so rendering the map directly reshuffles the sidebar on every
+// 125ms spinner frame — the flicker this fixes. Running runs come first so a
+// finishing run never jumps above an active one mid-turn.
+func (m *Model) sortedSubagents() []domain.AgentRun {
+	if len(m.subagents) == 0 {
+		return nil
+	}
+	out := make([]domain.AgentRun, 0, len(m.subagents))
+	for _, a := range m.subagents {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ri, rj := out[i].State == "running", out[j].State == "running"
+		if ri != rj {
+			return ri
+		}
+		if !out[i].StartedAt.Equal(out[j].StartedAt) {
+			return out[i].StartedAt.Before(out[j].StartedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+func formatSubagentElapsed(a domain.AgentRun, _ int) string {
+	if a.StartedAt.IsZero() {
+		return ""
+	}
+	end := time.Now()
+	if !a.FinishedAt.IsZero() {
+		end = a.FinishedAt
+	}
+	d := end.Sub(a.StartedAt)
+	if d < 0 {
+		return ""
+	}
+	return formatDuration(d)
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return "0s"
+	}
+	s := int(d.Seconds())
+	if s < 60 {
+		return fmt.Sprintf("%ds", s)
+	}
+	m := s / 60
+	if m < 60 {
+		if r := s % 60; r > 0 {
+			return fmt.Sprintf("%dm%ds", m, r)
+		}
+		return fmt.Sprintf("%dm", m)
+	}
+	h := m / 60
+	if r := m % 60; r > 0 {
+		return fmt.Sprintf("%dh%dm", h, r)
+	}
+	return fmt.Sprintf("%dh", h)
+}
+
+// subagentDetail prefers the delegated task, falling back to the session name
+// (which embeds the task for @-started runs) and finally the last tool seen.
+func (m *Model) subagentDetail(a domain.AgentRun, prog subagentProgress) string {
+	if t := strings.TrimSpace(a.Task); t != "" {
+		return truncWidth(singleLine(terminalutil.SanitizeText(t)), 60)
+	}
+	for _, s := range m.sessions {
+		if s.ID == a.SessionID && strings.TrimSpace(s.Name) != "" {
+			name := terminalutil.SanitizeText(s.Name)
+			if i := strings.Index(name, ": "); i >= 0 {
+				name = strings.TrimSpace(name[i+2:])
+			}
+			if name != "" {
+				return truncWidth(singleLine(name), 60)
+			}
+		}
+	}
+	if prog.LastTool != "" {
+		if prog.Tools > 0 {
+			return "↳ " + prog.LastTool
+		}
+		return prog.LastTool
+	}
+	return ""
+}
+
+// renderSuggestions draws the inline command / @-mention completions as a
+// compact list directly above the composer, matching the flat transcript style
+// instead of boxing them.
 func (m *Model) renderSuggestions(t Theme, w int) []string {
 	var items []PickerItem
 	if len(m.atMatches) > 0 {
@@ -343,65 +391,24 @@ func (m *Model) renderSuggestions(t Theme, w int) []string {
 	if len(items) == 0 {
 		return nil
 	}
-	n := min(5, len(items))
-	out := make([]string, 0, n+2)
-	borderStyle := lipgloss.NewStyle().Foreground(t.Border)
-	title := lipgloss.NewStyle().Bold(true).Foreground(t.Secondary).Render("󰘧 Suggestions")
-	tDash := max(1, w-lipgloss.Width(title)-5)
-	out = append(out, fitLine(borderStyle.Render("╭─ ")+title+" "+borderStyle.Render(strings.Repeat("─", tDash)+"╮"), w))
-
+	n := min(6, len(items))
+	out := make([]string, 0, n)
 	for i := 0; i < n; i++ {
 		it := items[i]
-		rowContent := ""
+		label := terminalutil.SanitizeText(it.Label)
+		desc := terminalutil.SanitizeText(it.Description)
 		if i == 0 {
-			label := lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render(" ▸ " + terminalutil.SanitizeText(it.Label))
-			desc := lipgloss.NewStyle().Foreground(t.Text).Render("  " + terminalutil.SanitizeText(it.Description))
-			tabHint := lipgloss.NewStyle().Foreground(t.Muted).Render("[Tab]")
-			rowContent = padBetween(label+desc, tabHint+" ", w-4)
-		} else {
-			label := lipgloss.NewStyle().Foreground(t.Text).Render("   " + terminalutil.SanitizeText(it.Label))
-			desc := lipgloss.NewStyle().Foreground(t.Muted).Render("  " + terminalutil.SanitizeText(it.Description))
-			rowContent = label + desc
+			left := lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render(" "+t.Glyphs.Bullet+" "+label) +
+				lipgloss.NewStyle().Foreground(t.Muted).Render("  "+desc)
+			right := lipgloss.NewStyle().Foreground(t.Muted).Render("[Tab] ")
+			out = append(out, fitLine(padBetween(left, right, w), w))
+			continue
 		}
-		gap := max(0, w-2-lipgloss.Width(rowContent))
-		row := borderStyle.Render("│ ") + rowContent + strings.Repeat(" ", gap) + borderStyle.Render("│")
-		out = append(out, fitLine(row, w))
+		left := lipgloss.NewStyle().Foreground(t.Text).Render("   "+label) +
+			lipgloss.NewStyle().Foreground(t.Muted).Render("  "+desc)
+		out = append(out, fitLine(left, w))
 	}
-	out = append(out, fitLine(borderStyle.Render("╰"+strings.Repeat("─", max(1, w-2))+"╯"), w))
 	return out
-}
-
-func (m *Model) statusLine(t Theme, w int) string {
-	agentPill := lipgloss.NewStyle().Bold(true).Background(t.Primary).Foreground(lipgloss.Color("#FFFFFF")).Padding(0, 1).Render("🤖 " + strings.ToUpper(terminalutil.SanitizeText(m.session.AgentID)))
-	modelPill := lipgloss.NewStyle().Background(t.PillBg).Foreground(t.Secondary).Padding(0, 1).Render("󰘧 " + terminalutil.SanitizeText(m.session.Model))
-	providerPill := lipgloss.NewStyle().Background(t.PillBg).Foreground(t.Muted).Padding(0, 1).Render("󰢏 " + terminalutil.SanitizeText(m.session.ProviderID))
-	effortPill := lipgloss.NewStyle().Background(t.PillBg).Foreground(t.Warning).Padding(0, 1).Render("⚡ " + m.currentEffort())
-
-	left := agentPill + " " + modelPill + " " + providerPill + " " + effortPill
-
-	center := ""
-	if m.busy {
-		frames := []string{"◐", "◓", "◑", "◒"}
-		spin := frames[m.activityFrame%len(frames)]
-		center = lipgloss.NewStyle().Foreground(t.Warning).Bold(true).Render(fmt.Sprintf(" %s Generating...", spin))
-	} else if m.toast != "" {
-		center = lipgloss.NewStyle().Foreground(t.Accent).Bold(true).Render(" 󰋽 " + m.toast)
-	} else {
-		center = lipgloss.NewStyle().Foreground(t.Success).Render(" 󰄴 Ready")
-	}
-
-	storagePill := lipgloss.NewStyle().Background(t.PillBg).Foreground(t.Muted).Padding(0, 1).Render("💾 " + m.ctrl.Config.Snapshot().Storage)
-	keyHints := lipgloss.NewStyle().Foreground(t.Muted).Render("[^P Menu] [^B Sidebar] [^D Diff] [^C Exit]")
-
-	right := storagePill + " " + keyHints
-	if w < 110 {
-		right = storagePill
-	}
-	if w < 80 {
-		left = agentPill + " " + modelPill
-	}
-
-	return padBetween(left+center, right+" ", w)
 }
 
 func (m *Model) renderOverlay(t Theme) string {
@@ -422,19 +429,16 @@ func (m *Model) renderOverlay(t Theme) string {
 	case overlayDiff:
 		lines, regs = m.diff.Render(max(20, w-4), max(4, h-4), t)
 	case overlayTodos:
-		lines = append(lines, lipgloss.NewStyle().Bold(true).Background(t.Secondary).Foreground(lipgloss.Color("#FFFFFF")).Padding(0, 1).Render("󰄲 Task Todos"), "")
+		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(t.Secondary).Render("Todos"), "")
 		if len(m.session.Todos) == 0 {
 			lines = append(lines, lipgloss.NewStyle().Foreground(t.Muted).Render("  No active todos for this session."))
 		} else {
 			for _, x := range m.session.Todos {
-				icon := "○"
-				iStyle := lipgloss.NewStyle().Foreground(t.Muted)
+				icon, iStyle := t.Glyphs.TodoOpen, lipgloss.NewStyle().Foreground(t.Muted)
 				if x.Status == "completed" {
-					icon = "✓"
-					iStyle = lipgloss.NewStyle().Foreground(t.Success)
+					icon, iStyle = t.Glyphs.TodoDone, lipgloss.NewStyle().Foreground(t.Success)
 				} else if x.Status == "in_progress" {
-					icon = "◉"
-					iStyle = lipgloss.NewStyle().Foreground(t.Warning)
+					icon, iStyle = t.Glyphs.Bullet, lipgloss.NewStyle().Foreground(t.Warning)
 				}
 				row := fmt.Sprintf("  %s %s  [%s]", iStyle.Render(icon), terminalutil.SanitizeText(x.Subject), terminalutil.SanitizeText(string(x.Status)))
 				lines = append(lines, row)
@@ -447,19 +451,19 @@ func (m *Model) renderOverlay(t Theme) string {
 		if step < 0 || step >= len(labels) {
 			step = 0
 		}
-		title := lipgloss.NewStyle().Bold(true).Background(t.Primary).Foreground(lipgloss.Color("#FFFFFF")).Padding(0, 1).Render("󰢏 Connect Provider")
+		title := lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render("Connect Provider")
 		stepInfo := lipgloss.NewStyle().Foreground(t.Muted).Render(fmt.Sprintf("Step %d of %d", step+1, len(labels)))
 		lines = []string{
-			title + " " + stepInfo,
+			title + "  " + stepInfo,
 			"",
 			lipgloss.NewStyle().Bold(true).Foreground(t.Text).Render(labels[step]),
 			lipgloss.NewStyle().Foreground(t.Primary).Render(maskConnectInput(m.connect.Input, step)),
 			"",
-			lipgloss.NewStyle().Foreground(t.Muted).Render("↵ Next · Esc Cancel"),
+			lipgloss.NewStyle().Foreground(t.Muted).Render("enter Next · esc Cancel"),
 		}
 	case overlayConfirmRestore:
 		lines = []string{
-			lipgloss.NewStyle().Bold(true).Background(t.Error).Foreground(lipgloss.Color("#FFFFFF")).Padding(0, 1).Render("Restore Factory Settings"),
+			lipgloss.NewStyle().Bold(true).Foreground(t.Error).Render("Restore Factory Settings"),
 			"",
 			"This will delete all sessions and configuration data.",
 			"",
@@ -467,7 +471,7 @@ func (m *Model) renderOverlay(t Theme) string {
 		}
 	case overlayConfirmDelete:
 		lines = []string{
-			lipgloss.NewStyle().Bold(true).Background(t.Error).Foreground(lipgloss.Color("#FFFFFF")).Padding(0, 1).Render("Delete Session"),
+			lipgloss.NewStyle().Bold(true).Foreground(t.Error).Render("Delete Session"),
 			"",
 			terminalutil.SanitizeText(m.infoText),
 			"",
@@ -478,7 +482,7 @@ func (m *Model) renderOverlay(t Theme) string {
 		if title == "" {
 			title = "Info"
 		}
-		lines = append(lines, lipgloss.NewStyle().Bold(true).Background(t.Primary).Foreground(lipgloss.Color("#FFFFFF")).Padding(0, 1).Render(title), "")
+		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render(title), "")
 		lines = append(lines, wrapPlain(m.infoText, max(10, w-4))...)
 	}
 	innerH := max(3, h-2)
@@ -540,8 +544,34 @@ func maskConnectInput(s string, step int) string {
 	if s == "" {
 		return "> "
 	}
-	return "> " + strings.Repeat("•", min(48, len([]rune(s))))
+	return "> " + strings.Repeat("*", min(48, len([]rune(s))))
 }
+
+// busyIndicator renders the right-hand side of the status row: elapsed time and
+// an explicit interrupt hint while a turn runs, a transient toast, or the
+// shortcuts hint when idle.
+func (m *Model) busyIndicator(t Theme) string {
+	if m.busy {
+		spin := t.Glyphs.spinner(m.activityFrame)
+		elapsed := ""
+		if !m.busySince.IsZero() {
+			if d := time.Since(m.busySince); d >= time.Second {
+				elapsed = " " + d.Round(time.Second).String()
+			}
+		}
+		return lipgloss.NewStyle().Foreground(t.Warning).Render(fmt.Sprintf("%s Working%s · esc to interrupt", spin, elapsed))
+	}
+	if m.toast != "" {
+		return lipgloss.NewStyle().Foreground(t.Accent).Render(terminalutil.SanitizeText(m.toast))
+	}
+	if m.statusCmdText != "" {
+		return lipgloss.NewStyle().Foreground(t.Muted).Render(m.statusCmdText)
+	}
+	// Idle shows nothing. A permanent "? for shortcuts" on every frame is
+	// clutter; the composer placeholder carries that hint instead.
+	return ""
+}
+
 func fitLine(s string, w int) string {
 	if w <= 0 {
 		return ""
@@ -555,33 +585,29 @@ func fitLine(s string, w int) string {
 	}
 	return s
 }
+
+// truncANSI clips to a display width. Counting runes instead would silently
+// fail to shrink a line of double-width CJK, which is what makes long localized
+// lines overrun the terminal.
 func truncANSI(s string, w int) string {
 	if w <= 0 {
 		return ""
 	}
-	if lipgloss.Width(s) <= w {
-		return s
-	}
-	plain := stripANSI(s)
-	r := []rune(plain)
-	if len(r) > w {
-		if w > 1 {
-			r = r[:w-1]
-			return string(r) + "…"
-		}
-		return string(r[:w])
-	}
-	return string(r)
+	return ansi.Truncate(s, w, "…")
 }
+
+// clampLines trims or pads to exactly h rows. Input lines are already fitted to
+// w by their builders, so this only has to fill the tail — re-measuring every
+// line here would double the per-frame width scanning for no benefit.
 func clampLines(lines []string, w, h int) string {
 	if len(lines) > h {
 		lines = lines[:h]
 	}
-	for len(lines) < h {
-		lines = append(lines, "")
-	}
-	for i := range lines {
-		lines[i] = fitLine(lines[i], w)
+	if pad := h - len(lines); pad > 0 {
+		blank := strings.Repeat(" ", max(0, w))
+		for i := 0; i < pad; i++ {
+			lines = append(lines, blank)
+		}
 	}
 	return strings.Join(lines, "\n")
 }

@@ -7,6 +7,7 @@ import (
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/app"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/config"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
@@ -47,9 +48,8 @@ func TestConversationHidesSystemAndVirtualizes(t *testing.T) {
 		msgs = append(msgs, domain.Message{ID: fmt.Sprintf("m-%d", i), Role: domain.RoleUser, Content: "line of text"})
 	}
 	c := NewConversation()
-	c.SetTheme("dark")
 	c.SetSession(domain.Session{Messages: msgs}, 80)
-	lines := c.Render(24, ThemeByName("dark"), "", "", nil)
+	lines := c.Render(24, ThemeByName("dark"), RenderOptions{StreamContent: "", StreamReasoning: "", Activities: nil})
 	if len(lines) != 24 {
 		t.Fatalf("visible lines=%d", len(lines))
 	}
@@ -115,7 +115,7 @@ func TestReasoningClickStaysExpandedAcrossRenders(t *testing.T) {
 		ID: "a1", Role: domain.RoleAssistant, Content: "answer", ReasoningContent: reasoning,
 	}}}, 40)
 
-	c.ToggleThinking("a1", "")
+	c.ToggleThinking("a1")
 	if !c.expandedThinking["a1"] {
 		t.Fatal("reasoning should be expanded")
 	}
@@ -124,7 +124,7 @@ func TestReasoningClickStaysExpandedAcrossRenders(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		lines := c.Render(12, ThemeByName("dark"), "", "", nil)
+		lines := c.Render(12, ThemeByName("dark"), RenderOptions{StreamContent: "", StreamReasoning: "", Activities: nil})
 		var b strings.Builder
 		for _, line := range lines {
 			b.WriteString(stripANSI(line.Text))
@@ -145,7 +145,7 @@ func TestReasoningExpansionIsPerMessage(t *testing.T) {
 		{ID: "a1", Role: domain.RoleAssistant, ReasoningContent: "reason one"},
 		{ID: "a2", Role: domain.RoleAssistant, ReasoningContent: "reason two"},
 	}}, 60)
-	c.ToggleThinking("a1", "")
+	c.ToggleThinking("a1")
 	if !c.expandedThinking["a1"] {
 		t.Fatal("first reasoning should be expanded")
 	}
@@ -160,7 +160,7 @@ func TestReasoningStateAndViewportSurviveSameSessionReload(t *testing.T) {
 		ID: "a1", Role: domain.RoleAssistant, Content: "answer", ReasoningContent: "one\ntwo\nthree",
 	}}}
 	c.SetSession(s, 40)
-	c.ToggleThinking("a1", "")
+	c.ToggleThinking("a1")
 	wantScroll := c.scroll
 	if wantScroll == 0 {
 		t.Fatal("expected scroll compensation")
@@ -206,7 +206,6 @@ func newMouseTestModel(t *testing.T) *Model {
 		height:    30,
 	}
 	m.setFocus(FocusPrompt)
-	m.conv.SetTheme(m.cfg.Theme)
 	m.conv.SetSession(session, 80)
 	return m
 }
@@ -254,9 +253,8 @@ func TestReasoningRawMouseClickTogglesExactlyOnce(t *testing.T) {
 
 func TestStreamingAssistantUsesLightweightPlainRenderer(t *testing.T) {
 	c := NewConversation()
-	c.SetTheme("dark")
 	c.SetSession(domain.Session{ID: "s1"}, 80)
-	lines := c.Render(8, ThemeByName("dark"), "**hello**", "", nil)
+	lines := c.Render(8, ThemeByName("dark"), RenderOptions{StreamContent: "**hello**", StreamReasoning: "", Activities: nil})
 	var b strings.Builder
 	for _, line := range lines {
 		b.WriteString(stripANSI(line.Text))
@@ -268,7 +266,7 @@ func TestStreamingAssistantUsesLightweightPlainRenderer(t *testing.T) {
 }
 
 func TestModernThemes(t *testing.T) {
-	for _, name := range []string{"uinxed", "tokyonight", "catppuccin", "dark", "light"} {
+	for _, name := range []string{"uinxed", "tokyonight", "catppuccin", "gruvbox", "nord", "dracula", "dark", "light"} {
 		th := ThemeByName(name)
 		if th.Name != name {
 			t.Fatalf("theme name mismatch: got %s, want %s", th.Name, name)
@@ -276,21 +274,139 @@ func TestModernThemes(t *testing.T) {
 		if th.Primary == nil || th.Secondary == nil || th.Border == nil {
 			t.Fatalf("theme %s has nil color components", name)
 		}
+		if th.Reasoning == nil || th.Gutter == nil {
+			t.Fatalf("theme %s is missing the transcript tokens", name)
+		}
+		if len(th.Glyphs.Spinner) == 0 {
+			t.Fatalf("theme %s has no spinner frames", name)
+		}
 	}
 }
 
-func TestModernRenderBaseCards(t *testing.T) {
+// TestNoColorPalette pins the NO_COLOR behaviour: every semantic token must
+// resolve to a no-op color so the UI is readable without escape sequences.
+func TestNoColorPalette(t *testing.T) {
+	if _, ok := noColorPalette.Primary.(lipgloss.NoColor); !ok {
+		t.Fatal("NO_COLOR palette should use lipgloss.NoColor for every token")
+	}
+}
+
+// TestASCIIGlyphsAreNonUnicode guards the LANG=C fallback: nothing may leak a
+// multi-byte glyph into a terminal that cannot render it.
+func TestASCIIGlyphsAreNonUnicode(t *testing.T) {
+	g := glyphSet("ascii")
+	for name, v := range map[string]string{
+		"Assistant": g.Assistant, "User": g.User, "Result": g.Result, "Thinking": g.Thinking,
+		"Success": g.Success, "Failure": g.Failure, "Pending": g.Pending, "Bullet": g.Bullet,
+		"ListBullet": g.ListBullet, "Cursor": g.Cursor, "TodoDone": g.TodoDone, "TodoOpen": g.TodoOpen,
+		"BarFull": g.BarFull, "BarEmpty": g.BarEmpty, "Sep": g.Sep, "Rule": g.Rule, "VBar": g.VBar,
+	} {
+		if strings.ContainsFunc(v, func(r rune) bool { return r > 127 }) {
+			t.Fatalf("ascii glyph %s = %q contains a non-ASCII rune", name, v)
+		}
+	}
+	for _, f := range g.Spinner {
+		if strings.ContainsFunc(f, func(r rune) bool { return r > 127 }) {
+			t.Fatalf("ascii spinner frame %q contains a non-ASCII rune", f)
+		}
+	}
+}
+
+// TestTranscriptIsBorderless pins the central visual decision: turns are drawn
+// with a glyph gutter, not box-drawing cards.
+func TestTranscriptIsBorderless(t *testing.T) {
+	c := NewConversation()
+	c.SetSession(domain.Session{
+		ID: "s1",
+		Messages: []domain.Message{
+			{ID: "u1", Role: domain.RoleUser, Content: "hello there"},
+			{ID: "a1", Role: domain.RoleAssistant, Content: "hi, doing well", ToolCalls: []domain.ToolCall{
+				{ID: "t1", Function: domain.ToolCallFunction{Name: "read_file", Arguments: `{"path":"internal/tui/view.go"}`}},
+			}},
+		},
+	}, 80)
+	lines := c.Render(40, ThemeByName("uinxed"), RenderOptions{StreamContent: "", StreamReasoning: "", Activities: nil})
+	var b strings.Builder
+	for _, l := range lines {
+		b.WriteString(stripANSI(l.Text))
+		b.WriteByte('\n')
+	}
+	got := b.String()
+	for _, box := range []string{"╭", "╰", "│", "╮", "╯"} {
+		if strings.Contains(got, box) {
+			t.Fatalf("transcript should not draw card borders, found %q in:\n%s", box, got)
+		}
+	}
+	if !strings.Contains(got, "read_file(internal/tui/view.go)") {
+		t.Fatalf("expected a collapsed one-line tool call, got:\n%s", got)
+	}
+	if !strings.Contains(got, "❯ hello there") {
+		t.Fatalf("expected the user gutter marker, got:\n%s", got)
+	}
+}
+
+func TestModernRenderBaseLayout(t *testing.T) {
 	m := newMouseTestModel(t)
 	m.width, m.height = 100, 30
 	v := m.renderBase(ThemeByName("uinxed"))
-	if !strings.Contains(v, "UINXED AGENT") {
-		t.Fatal("expected UINXED AGENT brand in header")
+	plain := stripANSI(v)
+	if strings.Contains(plain, "╭─") || strings.Contains(plain, "╰─") {
+		t.Fatal("base layout should not draw card borders")
 	}
-	if !strings.Contains(v, "Prompt") {
-		t.Fatal("expected Prompt container in view")
+	if strings.Contains(plain, "UINXED AGENT") {
+		t.Fatal("header brand was removed; model info belongs in the status row")
 	}
-	if !strings.Contains(v, "╭─") || !strings.Contains(v, "╰─") {
-		t.Fatal("expected card rounded borders in view")
+	if !strings.Contains(plain, "test-model") {
+		t.Fatalf("status row should show the active model, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "─") {
+		t.Fatal("composer should be delimited by a horizontal rule")
+	}
+	if strings.Contains(plain, "? for shortcuts") {
+		t.Fatal("the status row must stay quiet when idle; the composer placeholder carries the hint")
+	}
+}
+
+// TestStatusLineDropsLowValueSegments keeps the status row to one line on a
+// narrow terminal by discarding the least important segments first.
+func TestStatusLineDropsLowValueSegments(t *testing.T) {
+	m := newMouseTestModel(t)
+	m.cfg.StatusItems = []string{"model", "cwd", "context", "agent", "session"}
+	m.session.Name = "a-very-long-session-name-that-would-not-fit"
+	m.height = 30
+
+	wide, _ := m.statusLine(ThemeByName("uinxed"), 120)
+	narrow, _ := m.statusLine(ThemeByName("uinxed"), 20)
+	if lipgloss.Width(narrow) > 20 {
+		t.Fatalf("narrow status row overflowed: %q", stripANSI(narrow))
+	}
+	if !strings.Contains(stripANSI(narrow), "test-model") {
+		t.Fatalf("model is the last segment to be dropped, got %q", stripANSI(narrow))
+	}
+	if len(stripANSI(narrow)) >= len(stripANSI(wide)) {
+		t.Fatalf("narrow row should render fewer segments:\n%q\n%q", stripANSI(narrow), stripANSI(wide))
+	}
+}
+
+// TestToolSummaryPrefersSalientArgument keeps collapsed call lines readable.
+func TestToolSummaryPrefersSalientArgument(t *testing.T) {
+	cases := []struct{ tool, args, want string }{
+		{"read_file", `{"path":"src/app.go","offset":1,"limit":500}`, "src/app.go"},
+		{"bash", `{"cmd":"go test ./...","timeout":30}`, "go test ./..."},
+		{"grep", `{"pattern":"TODO","include":"*.go"}`, "TODO"},
+		{"write_file", `{"path":"a/b/c.go","content":"package a"}`, "a/b/c.go"},
+		{"calc", `{"expr":"1+1"}`, "1+1"},
+	}
+	for _, c := range cases {
+		if got := toolSummary(c.tool, c.args); got != c.want {
+			t.Errorf("toolSummary(%s) = %q, want %q", c.tool, got, c.want)
+		}
+	}
+	if got := toolSummary("bash", `{"cmd":"echo a\n echo b"}`); strings.Contains(got, "\n") {
+		t.Errorf("summary must be single-line, got %q", got)
+	}
+	if got := toolSummary("bash", "{}"); got != "" {
+		t.Errorf("empty arguments should produce no summary, got %q", got)
 	}
 }
 
@@ -310,7 +426,7 @@ func TestToggleSidebar(t *testing.T) {
 func TestModernPickerRender(t *testing.T) {
 	var p Picker
 	p.Reset("Commands", ActionCommand, []PickerItem{
-		{ID: "sidebar", Label: "Toggle Sidebar", Description: "开关边栏", Shortcut: "Ctrl+B"},
+		{ID: "sidebar", Label: "Toggle Sidebar", Description: "Show or hide the sidebar", Shortcut: "Ctrl+B"},
 	})
 	lines, regs := p.Render(80, 20, ThemeByName("uinxed"), "")
 	if len(lines) == 0 || len(regs) == 0 {

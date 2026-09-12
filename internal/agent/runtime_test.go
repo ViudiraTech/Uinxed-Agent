@@ -319,3 +319,58 @@ func TestTerminalEventDeliveryCannotBlockClose(t *testing.T) {
 	}
 	r.Close()
 }
+
+// TestRuntimePublishesEachRoundSeparately guards the live transcript. One turn
+// spans several model rounds, and the UI needs a boundary event per round so it
+// can settle that round's text and tool calls. Without it every round is
+// concatenated into a single streaming blob and the tool calls in between are
+// never shown.
+func TestRuntimePublishesEachRoundSeparately(t *testing.T) {
+	st := newMemStore()
+	sess := domain.Session{ID: "s", Name: "s", CreatedAt: time.Now(), UpdatedAt: time.Now(), ProviderID: "p", Model: "test", AgentID: "build", CWD: t.TempDir()}
+	if err := st.SaveSession(context.Background(), sess); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRuntime(st, nil, func(string) (provider.Provider, error) { return &scriptedProvider{mode: "tool"}, nil })
+	defer r.Close()
+	if _, err := r.StartTurn(context.Background(), "s", "calculate"); err != nil {
+		t.Fatal(err)
+	}
+
+	var published []domain.Message
+	timeout := time.NewTimer(3 * time.Second)
+	defer timeout.Stop()
+	finished := false
+	for !finished {
+		select {
+		case e := <-r.Events():
+			switch e.Kind {
+			case domain.EventMessageAdded:
+				if msg, ok := e.Data.(domain.Message); ok {
+					published = append(published, msg)
+				}
+			case domain.EventAgentFinished:
+				finished = true
+			case domain.EventError:
+				if d, ok := e.Data.(domain.ErrorData); ok {
+					t.Fatalf("runtime error: %s", d.Message)
+				}
+			}
+		case <-timeout.C:
+			t.Fatal("timed out waiting for the turn to finish")
+		}
+	}
+
+	if len(published) != 3 {
+		t.Fatalf("expected user turn + two model rounds, got %d: %#v", len(published), published)
+	}
+	if published[0].Role != domain.RoleUser || published[0].Content != "calculate" {
+		t.Errorf("first published message should be the user turn: %#v", published[0])
+	}
+	if published[1].Role != domain.RoleAssistant || len(published[1].ToolCalls) != 1 {
+		t.Errorf("second should be the round that called a tool: %#v", published[1])
+	}
+	if published[2].Role != domain.RoleAssistant || published[2].Content != "done" {
+		t.Errorf("third should be the final answer: %#v", published[2])
+	}
+}

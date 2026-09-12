@@ -51,6 +51,9 @@ type Config struct {
 	Sidebar                string     `json:"sidebar"`
 	Animations             bool       `json:"animations"`
 	StreamRenderIntervalMS int        `json:"stream_render_interval_ms"`
+	Glyphs                 string     `json:"glyphs,omitempty"`
+	StatusItems            []string   `json:"status_items,omitempty"`
+	StatuslineCommand      string     `json:"statusline_command,omitempty"`
 	Debug                  bool       `json:"debug,omitempty"`
 }
 
@@ -80,8 +83,17 @@ func Defaults() Config {
 		Version: 2, BaseURL: DefaultBaseURL, Model: DefaultModel, Storage: "db",
 		Providers: BuiltinProviders(), ActiveProvider: "ux-gateway",
 		Thinking: true, Effort: "high", Theme: "uinxed", Mouse: true,
-		ScrollSpeed: 3, Sidebar: "auto", Animations: true, StreamRenderIntervalMS: 16,
+		ScrollSpeed: 3, Sidebar: "off", Animations: true, StreamRenderIntervalMS: 16,
+		Glyphs: "auto", StatusItems: DefaultStatusItems(),
 	}
+}
+
+// DefaultStatusItems is the segment order of the single-line status bar. The
+// default is deliberately short: a status bar is a glance, not a dashboard, and
+// every extra segment competes with the transcript for attention. Agents,
+// providers and effort stay available by adding them here.
+func DefaultStatusItems() []string {
+	return []string{"model", "cwd", "context"}
 }
 
 type Store struct {
@@ -401,6 +413,15 @@ func mergeDefaults(in Config) Config {
 	if in.Sidebar != "" {
 		d.Sidebar = in.Sidebar
 	}
+	if in.Glyphs != "" {
+		d.Glyphs = in.Glyphs
+	}
+	if len(in.StatusItems) > 0 {
+		d.StatusItems = append([]string(nil), in.StatusItems...)
+	}
+	if in.StatuslineCommand != "" {
+		d.StatuslineCommand = in.StatuslineCommand
+	}
 	if in.StreamRenderIntervalMS != 0 {
 		d.StreamRenderIntervalMS = in.StreamRenderIntervalMS
 	}
@@ -468,6 +489,21 @@ func mergeProvider(base, override Provider) Provider {
 	return out
 }
 
+// themeNames is the single source of truth for valid theme ids. The CLI flag,
+// the /theme command and validation all consult it so they cannot drift apart.
+var themeNames = []string{"uinxed", "tokyonight", "catppuccin", "gruvbox", "nord", "dracula", "dark", "light"}
+
+func Themes() []string { return append([]string(nil), themeNames...) }
+
+func ValidTheme(name string) bool {
+	for _, n := range themeNames {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
 func validate(c *Config) error {
 	if c.Storage != "db" && c.Storage != "config" {
 		c.Storage = "db"
@@ -489,10 +525,23 @@ func validate(c *Config) error {
 	default:
 		c.Effort = "high"
 	}
-	switch c.Theme {
-	case "uinxed", "dark", "light", "tokyonight", "catppuccin":
-	default:
+	if !ValidTheme(c.Theme) {
 		c.Theme = "uinxed"
+	}
+	switch c.Glyphs {
+	case "auto", "unicode", "ascii":
+	default:
+		c.Glyphs = "auto"
+	}
+	if len(c.StatusItems) > 0 {
+		known := map[string]bool{"model": true, "cwd": true, "context": true, "mode": true, "agent": true, "session": true, "provider": true, "effort": true, "storage": true}
+		out := c.StatusItems[:0]
+		for _, it := range c.StatusItems {
+			if known[it] {
+				out = append(out, it)
+			}
+		}
+		c.StatusItems = out
 	}
 	if len(c.Providers) == 0 {
 		return errors.New("at least one provider is required")
@@ -518,6 +567,7 @@ func cloneConfig(c Config) Config {
 	for i, p := range c.Providers {
 		out.Providers[i] = cloneProvider(p)
 	}
+	out.StatusItems = append([]string(nil), c.StatusItems...)
 	return out
 }
 

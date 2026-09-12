@@ -44,13 +44,13 @@ func (d *DiffView) Render(width, height int, t Theme) ([]string, []Region) {
 		fileLines := make([]string, 0, height)
 		fileTitle := lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render(fmt.Sprintf("Changed Files (%d)", len(d.Snapshot.Files)))
 		fileLines = append(fileLines, fitLine(fileTitle, left))
-		fileLines = append(fileLines, fitLine(borderStyle.Render(strings.Repeat("─", left)), left))
+		fileLines = append(fileLines, fitLine(borderStyle.Render(strings.Repeat(t.Glyphs.Rule, left)), left))
 
 		for i, f := range d.Snapshot.Files {
 			isSel := i == d.Selected
 			mark := "  "
 			if isSel {
-				mark = "▸ "
+				mark = t.Glyphs.Bullet + " "
 			}
 			fName := f.Path
 			statStyled := lipgloss.NewStyle().Foreground(t.Success).Render(fmt.Sprintf("+%d", f.Added)) + " " + lipgloss.NewStyle().Foreground(t.Error).Render(fmt.Sprintf("-%d", f.Deleted))
@@ -75,7 +75,7 @@ func (d *DiffView) Render(width, height int, t Theme) ([]string, []Region) {
 			if i < len(diff) {
 				b = diff[i]
 			}
-			lines = append(lines, fitLine(a, left)+borderStyle.Render(" │ ")+fitLine(b, right))
+			lines = append(lines, fitLine(a, left)+borderStyle.Render(" "+t.Glyphs.VBar+" ")+fitLine(b, right))
 		}
 	} else {
 		head := "Diff"

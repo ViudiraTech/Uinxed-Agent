@@ -43,7 +43,7 @@ func run() error {
 	flag.StringVar(&o.base, "base", "", "base URL for the active provider")
 	flag.StringVar(&o.model, "model", "", "model id")
 	flag.StringVar(&o.provider, "provider", "", "provider id")
-	flag.StringVar(&o.theme, "theme", "", "theme: uinxed, dark, light, tokyonight, catppuccin")
+	flag.StringVar(&o.theme, "theme", "", "theme: "+strings.Join(config.Themes(), ", "))
 	flag.StringVar(&o.session, "session", "", "resume session by id or exact name")
 	flag.StringVar(&o.configDir, "config-dir", "", "override config directory")
 	flag.BoolVar(&o.noMouse, "no-mouse", false, "disable terminal mouse capture")
@@ -75,7 +75,7 @@ Options:
 		if err := cfg.Reset(); err != nil {
 			return err
 		}
-		fmt.Println("配置与会话已清除")
+		fmt.Println("Configuration and sessions cleared")
 		return nil
 	}
 	if err := applyCLI(cfg, o); err != nil {
@@ -132,8 +132,8 @@ func applyCLI(s *config.Store, o options) error {
 		}
 		if o.theme != "" {
 			v := strings.ToLower(o.theme)
-			if v != "uinxed" && v != "dark" && v != "light" && v != "tokyonight" && v != "catppuccin" {
-				return fmt.Errorf("unknown theme %q", o.theme)
+			if !config.ValidTheme(v) {
+				return fmt.Errorf("unknown theme %q (available: %s)", o.theme, strings.Join(config.Themes(), ", "))
 			}
 			c.Theme = v
 		}

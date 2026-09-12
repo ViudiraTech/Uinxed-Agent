@@ -5,6 +5,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	terminalutil "github.com/ViudiraTech/Uinxed-Agent/internal/terminal"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type PickerItem struct{ ID, Label, Description, Shortcut string }
@@ -74,8 +75,10 @@ func (p *Picker) Render(width, height int, t Theme, hover string) ([]string, []R
 	}
 	var lines []string
 	var regions []Region
-	title := lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render("󰍉 " + terminalutil.SanitizeText(p.Title))
-	search := lipgloss.NewStyle().Foreground(t.Secondary).Render("🔍 ") + lipgloss.NewStyle().Foreground(t.Text).Bold(true).Render(terminalutil.SanitizeText(p.Query)) + lipgloss.NewStyle().Foreground(t.Muted).Render("▏")
+	title := lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render(terminalutil.SanitizeText(p.Title))
+	search := lipgloss.NewStyle().Foreground(t.Primary).Render(t.Glyphs.User+" ") +
+		lipgloss.NewStyle().Foreground(t.Text).Bold(true).Render(terminalutil.SanitizeText(p.Query)) +
+		lipgloss.NewStyle().Foreground(t.Muted).Render(t.Glyphs.Cursor)
 	lines = append(lines, title, search)
 	end := min(len(p.Filtered), p.Scroll+visible)
 	for row, j := range p.Filtered[p.Scroll:end] {
@@ -86,7 +89,7 @@ func (p *Picker) Render(width, height int, t Theme, hover string) ([]string, []R
 		shortcut := terminalutil.SanitizeText(it.Shortcut)
 
 		if sel {
-			left := " ▸ " + label
+			left := " " + t.Glyphs.Bullet + " " + label
 			if desc != "" {
 				left += "  " + desc
 			}
@@ -134,13 +137,12 @@ func fuzzy(s, q string) int {
 	}
 	return score - (len(s)-len(q))/8
 }
+
+// truncWidth clips a string to a display width, adding an ellipsis when it does
+// not fit. Measuring by rune would let double-width CJK text overflow its cell.
 func truncWidth(s string, w int) string {
-	r := []rune(s)
-	if len(r) <= w {
-		return s
+	if w <= 0 {
+		return ""
 	}
-	if w < 2 {
-		return string(r[:w])
-	}
-	return string(r[:w-1]) + "…"
+	return ansi.Truncate(s, w, "…")
 }

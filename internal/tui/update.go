@@ -88,9 +88,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showToast(string(x))
 		return m, nil
 	case animationTickMsg:
-		if m.busy && m.cfg.Animations {
+		if m.cfg.Animations && (m.busy || m.hasRunningSubagents()) {
 			m.activityFrame++
 			return m, animationTick()
+		}
+		return m, nil
+	case statusCmdTickMsg:
+		if strings.TrimSpace(m.ctrl.Config.Snapshot().StatuslineCommand) == "" {
+			return m, nil
+		}
+		return m, tea.Batch(m.runStatusCommand(), statusTick())
+	case statusCmdMsg:
+		if x.err == nil {
+			m.statusCmdText = x.text
 		}
 		return m, nil
 	case tea.MouseClickMsg:
@@ -133,12 +143,16 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 		if a, ok := e.Data.(domain.AgentEvent); ok {
 			if a.Run.SessionID == m.session.ID {
 				m.busy = true
+				m.busySince = time.Now()
 				m.mainRunID = a.Run.ID
 				if m.cfg.Animations {
 					return animationTick()
 				}
 			} else {
-				m.subagents[a.Run.ID] = a.Run
+				m.upsertSubagent(a.Run)
+				if m.cfg.Animations && !m.busy {
+					return animationTick()
+				}
 			}
 		}
 	case domain.EventAgentFinished:
@@ -146,9 +160,9 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 			if a.Run.SessionID == m.session.ID {
 				m.busy = false
 				m.mainRunID = ""
-				return m.reloadSession()
+				return tea.Batch(m.reloadSession(), m.autoTitle())
 			}
-			m.subagents[a.Run.ID] = a.Run
+			m.upsertSubagent(a.Run)
 		}
 	case domain.EventStreamDelta:
 		if e.SessionID == m.session.ID {
@@ -156,6 +170,8 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 				m.streamMessageID = d.MessageID
 				m.streamContent += d.Text
 			}
+		} else {
+			m.touchSubagentHeartbeat(e.RunID, e.SessionID)
 		}
 	case domain.EventReasoningDelta:
 		if e.SessionID == m.session.ID {
@@ -163,13 +179,40 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 				m.streamMessageID = d.MessageID
 				m.streamReasoning += d.Text
 			}
+		} else {
+			m.touchSubagentHeartbeat(e.RunID, e.SessionID)
 		}
-	case domain.EventToolStarted, domain.EventToolOutput, domain.EventToolFinished:
+	case domain.EventMessageAdded:
+		// A turn is made of several model rounds; each finished round arrives
+		// here already persisted. Settling it immediately is what keeps one
+		// round's text and tool calls from being concatenated with the next.
+		if e.SessionID == m.session.ID {
+			if msg, ok := e.Data.(domain.Message); ok {
+				m.settleMessage(msg)
+			}
+		}
+	case domain.EventToolStarted, domain.EventToolFinished:
+		if e.SessionID == m.session.ID {
+			if d, ok := e.Data.(domain.ToolEvent); ok {
+				m.mergeActivity(d.Activity)
+			}
+		} else if d, ok := e.Data.(domain.ToolEvent); ok {
+			// Child-session tool activity belongs to a delegate subagent.
+			// Mirror only start/finish (not every output chunk) so the sidebar
+			// stays live without re-rendering on every streamed byte.
+			if d.Activity.Name != "" {
+				m.trackSubagentTool(e.RunID, e.SessionID, d.Activity, e.Kind == domain.EventToolStarted)
+			}
+		}
+	case domain.EventToolOutput:
 		if e.SessionID == m.session.ID {
 			if d, ok := e.Data.(domain.ToolEvent); ok {
 				m.mergeActivity(d.Activity)
 			}
 		}
+		// Deliberately ignored for subagents: output chunks arrive at byte
+		// granularity and would repaint the sidebar far more often than the
+		// 125ms spinner tick, which is what made it look like flicker.
 	case domain.EventTodoChanged:
 		if e.SessionID == m.session.ID {
 			if ts, ok := e.Data.([]domain.Todo); ok {
@@ -189,7 +232,143 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 	}
 	return nil
 }
+
+// upsertSubagent inserts or updates a background run and keeps the list bounded
+// so the sidebar height stays stable instead of growing with every delegate.
+func (m *Model) upsertSubagent(run domain.AgentRun) {
+	if run.ID == "" {
+		return
+	}
+	if m.subagents == nil {
+		m.subagents = map[string]domain.AgentRun{}
+	}
+	if m.subagentProgress == nil {
+		m.subagentProgress = map[string]subagentProgress{}
+	}
+	m.subagents[run.ID] = run
+	if _, ok := m.subagentProgress[run.ID]; !ok {
+		m.subagentProgress[run.ID] = subagentProgress{UpdatedAt: time.Now()}
+	}
+	m.pruneSubagents()
+}
+
+// trackSubagentTool records live tool progress for a delegate child. It matches
+// by run ID first, then by child session ID for events that arrived before the
+// AgentStarted was processed.
+func (m *Model) trackSubagentTool(runID, sessionID string, act domain.ToolActivity, started bool) {
+	if m.subagents == nil {
+		m.subagents = map[string]domain.AgentRun{}
+	}
+	if m.subagentProgress == nil {
+		m.subagentProgress = map[string]subagentProgress{}
+	}
+	key := runID
+	if _, ok := m.subagents[key]; !ok && sessionID != "" {
+		for id, r := range m.subagents {
+			if r.SessionID == sessionID {
+				key = id
+				break
+			}
+		}
+	}
+	if _, ok := m.subagents[key]; !ok {
+		return
+	}
+	p := m.subagentProgress[key]
+	if started {
+		p.Tools++
+	}
+	if act.Name != "" {
+		p.LastTool = act.Name
+	}
+	p.UpdatedAt = time.Now()
+	m.subagentProgress[key] = p
+}
+
+// touchSubagentHeartbeat keeps a running subagent's elapsed timer visibly fresh
+// without storing per-byte output. Stream deltas are throttled to 1s so they
+// cannot drive the render loop by themselves.
+func (m *Model) touchSubagentHeartbeat(runID, sessionID string) {
+	key := runID
+	if _, ok := m.subagents[key]; !ok && sessionID != "" {
+		for id, r := range m.subagents {
+			if r.SessionID == sessionID {
+				key = id
+				break
+			}
+		}
+	}
+	p, ok := m.subagentProgress[key]
+	if !ok {
+		return
+	}
+	if _, running := m.subagents[key]; !running {
+		return
+	}
+	if time.Since(p.UpdatedAt) < time.Second {
+		return
+	}
+	p.UpdatedAt = time.Now()
+	m.subagentProgress[key] = p
+}
+
+func (m *Model) hasRunningSubagents() bool {
+	for _, r := range m.subagents {
+		if r.State == "running" {
+			return true
+		}
+	}
+	return false
+}
+
+const maxVisibleSubagents = 8
+
+func (m *Model) pruneSubagents() {
+	if len(m.subagents) <= maxVisibleSubagents {
+		return
+	}
+	// Keep running runs plus the most recently started finished runs.
+	type entry struct {
+		id      string
+		running bool
+		started time.Time
+	}
+	entries := make([]entry, 0, len(m.subagents))
+	for id, r := range m.subagents {
+		entries = append(entries, entry{id: id, running: r.State == "running", started: r.StartedAt})
+	}
+	// Sort: running first, then newest start first.
+	for i := 0; i < len(entries); i++ {
+		for j := i + 1; j < len(entries); j++ {
+			swap := false
+			if entries[j].running && !entries[i].running {
+				swap = true
+			} else if entries[j].running == entries[i].running && entries[j].started.After(entries[i].started) {
+				swap = true
+			}
+			if swap {
+				entries[i], entries[j] = entries[j], entries[i]
+			}
+		}
+	}
+	for _, e := range entries[maxVisibleSubagents:] {
+		delete(m.subagents, e.id)
+		delete(m.subagentProgress, e.id)
+	}
+}
 func (m *Model) mergeActivity(a domain.ToolActivity) {
+	// Nameless activities belong to ghost calls that were filtered upstream;
+	// keeping them would resurrect an empty card via the activity list.
+	if a.Name == "" {
+		// Allow lookup by CallID to fill in the name late, but never store a
+		// permanently nameless entry.
+		for i := range m.activities {
+			if m.activities[i].ID == a.ID && m.activities[i].Name != "" {
+				return
+			}
+		}
+		return
+	}
 	for i := range m.activities {
 		if m.activities[i].ID == a.ID {
 			m.activities[i] = a
@@ -197,6 +376,33 @@ func (m *Model) mergeActivity(a domain.ToolActivity) {
 		}
 	}
 	m.activities = append(m.activities, a)
+}
+
+// settleMessage folds a finished model round into the transcript and clears the
+// streaming buffers, so the next round draws as its own turn. Without this the
+// live block would accumulate every round of a multi-round turn into one blob
+// and hide the tool calls made in between.
+func (m *Model) settleMessage(msg domain.Message) {
+	for _, existing := range m.session.Messages {
+		if existing.ID != "" && existing.ID == msg.ID {
+			return
+		}
+	}
+	msg.ToolCalls = sanitizeToolCalls(msg.ToolCalls)
+	// A round that only carried ghost calls carries no visible content; settling
+	// it would insert a bare marker line. The following rounds still arrive.
+	if len(msg.ToolCalls) == 0 && msg.Content == "" && msg.ReasoningContent == "" {
+		m.streamContent = ""
+		m.streamReasoning = ""
+		m.streamMessageID = ""
+		return
+	}
+	m.session.Messages = append(m.session.Messages, msg)
+	m.session.UpdatedAt = time.Now()
+	m.streamContent = ""
+	m.streamReasoning = ""
+	m.streamMessageID = ""
+	m.conv.SetSession(m.session, m.conv.width)
 }
 
 func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
@@ -211,7 +417,7 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 		if m.busy && m.ctrl.Cancel(m.session.ID) {
-			m.showToast("取消当前生成…")
+			m.showToast("cancelling…")
 			return nil, true
 		}
 		return tea.Quit, true
@@ -222,7 +428,7 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 		if m.busy && m.ctrl.Cancel(m.session.ID) {
-			m.showToast("取消当前生成…")
+			m.showToast("cancelling…")
 			return nil, true
 		}
 		m.conv.GotoBottom()
@@ -287,7 +493,7 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.openCommandPalette()
 		return nil, true
 	case "ctrl+t":
-		m.conv.ToggleAllThinking(m.streamReasoning)
+		m.conv.ToggleAllThinking()
 		return nil, true
 	case "ctrl+o":
 		m.overlay = overlayTodos
@@ -307,6 +513,13 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 		return m.cycleAgent(), true
 	case "enter":
 		return m.submitPrompt(), true
+	case "?":
+		// Only steal "?" when the composer is empty, so typing a question at
+		// the start of a prompt still works.
+		if strings.TrimSpace(m.prompt.Value()) == "" {
+			return m.executeCommand("/help"), true
+		}
+		return nil, false
 	case "shift+enter", "alt+enter":
 		m.prompt.InsertString("\n")
 		return nil, true
@@ -344,7 +557,7 @@ func (m *Model) submitPrompt() tea.Cmd {
 		if def := agent.Get(name); def.ID == name && def.CanSubagent() {
 			task := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
 			if task == "" {
-				m.showToast("@" + name + " 后面需要任务")
+				m.showToast("@" + name + " needs a task description")
 				return nil
 			}
 			parentID := m.session.ID
@@ -359,7 +572,7 @@ func (m *Model) submitPrompt() tea.Cmd {
 		}
 	}
 	if m.busy {
-		m.showToast("当前生成仍在运行；Esc/Ctrl+C 可取消")
+		m.showToast("a turn is already running; esc or ctrl+c to cancel")
 		return nil
 	}
 	m.streamContent = ""
@@ -412,7 +625,7 @@ func (m *Model) handleMouseClick(mouse tea.Mouse, r Region, ok bool) tea.Cmd {
 		m.ensurePromptFocus()
 	case ActionThinking:
 		id := strings.TrimPrefix(r.Value, "thinking:")
-		m.conv.ToggleThinking(id, m.streamReasoning)
+		m.conv.ToggleThinking(id)
 		m.ensurePromptFocus()
 	case ActionCommand:
 		m.prompt.SetValue(r.Value)
@@ -431,9 +644,9 @@ func (m *Model) handleMouseClick(mouse tea.Mouse, r Region, ok bool) tea.Cmd {
 	case ActionTodo:
 		for _, todo := range m.session.Todos {
 			if todo.ID == r.Value {
-				detail := fmt.Sprintf("%s\n\n状态: %s", todo.Subject, todo.Status)
+				detail := fmt.Sprintf("%s\n\nStatus: %s", todo.Subject, todo.Status)
 				if todo.Reason != "" {
-					detail += "\n原因: " + todo.Reason
+					detail += "\nReason: " + todo.Reason
 				}
 				m.openInfo("Todo", detail, overlayInfo)
 				break
@@ -509,18 +722,44 @@ func (m *Model) handleMouseMotion(_ tea.Mouse, r Region, ok bool) {
 	}
 }
 
+// autoTitle names the session from its first exchange once a turn completes.
+// Titling is cosmetic, so a failure is swallowed rather than surfaced: the
+// session simply keeps its generated name and the next turn may try again.
+func (m *Model) autoTitle() tea.Cmd {
+	if titled, _ := m.session.Metadata["autotitled"].(bool); titled {
+		return nil
+	}
+	id := m.session.ID
+	return asyncOp("autotitle", func() (any, error) {
+		title, err := m.ctrl.AutoTitleSession(m.ctx, id)
+		if err != nil {
+			return "", nil
+		}
+		return title, nil
+	})
+}
+
 func (m *Model) handleOp(x opMsg) tea.Cmd {
 	if x.err != nil {
 		m.showError(x.err)
 		return nil
 	}
 	switch x.op {
+	case "autotitle":
+		title, _ := x.value.(string)
+		if title == "" {
+			return nil
+		}
+		m.showToast("✓ " + title)
+		return tea.Batch(m.reloadSession(), m.refreshSessions())
 	case "submit":
 		m.busy = true
+		m.busySince = time.Now()
 	case "start_subagent":
 		if child, ok := x.value.(domain.Session); ok {
 			m.setSession(child)
 			m.busy = true
+			m.busySince = time.Now()
 			return m.refreshSessions()
 		}
 	case "switch_session":
@@ -541,7 +780,6 @@ func (m *Model) handleOp(x opMsg) tea.Cmd {
 		return m.refreshSessions()
 	case "theme":
 		m.cfg = m.ctrl.Config.Snapshot()
-		m.conv.SetTheme(m.cfg.Theme)
 		m.showToast("✓ theme: " + m.cfg.Theme)
 		return nil
 	case "mouse":
@@ -580,7 +818,7 @@ func (m *Model) resize() {
 		chatW = max(20, m.width)
 	}
 	m.prompt.SetWidth(max(10, chatW-4))
-	m.conv.SetWidth(max(20, chatW-2))
+	m.conv.SetWidth(max(20, chatW))
 }
 func (m *Model) fetchModels() tea.Cmd {
 	id := m.session.ProviderID

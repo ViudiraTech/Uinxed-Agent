@@ -202,11 +202,16 @@ func (r *Runtime) runTurn(ctx context.Context, sessionID, text, runID string) er
 	}
 	now := time.Now()
 	referenceContext := r.expandFileReferences(ctx, sess, text)
-	sess.Messages = append(sess.Messages, domain.Message{ID: r.id("msg"), Role: domain.RoleUser, Content: text, CreatedAt: now})
+	userMsg := domain.Message{ID: r.id("msg"), Role: domain.RoleUser, Content: text, CreatedAt: now}
+	sess.Messages = append(sess.Messages, userMsg)
 	sess.UpdatedAt = now
 	if err := r.store.SaveSession(ctx, sess); err != nil {
 		return err
 	}
+	// Publish the persisted user turn so the UI can show it immediately rather
+	// than waiting for the end-of-turn reload. The event carries the stored
+	// message, so nothing is shown that has not been saved.
+	r.emit(ctx, domain.Event{Kind: domain.EventMessageAdded, SessionID: sess.ID, RunID: runID, At: now, Data: userMsg})
 	st := &turnState{s: sess, referenceContext: referenceContext}
 	err = r.loop(ctx, p, st, runID)
 	st.mu.Lock()
@@ -276,6 +281,11 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 			st.s.Messages = append(st.s.Messages, message)
 			st.s.UpdatedAt = time.Now()
 			st.mu.Unlock()
+			// A turn can span several model rounds. Publishing each finished
+			// round tells the UI where one round's text and tool calls end, so
+			// it can settle that message and start a fresh streaming buffer
+			// instead of concatenating every round into one blob.
+			r.emit(ctx, domain.Event{Kind: domain.EventMessageAdded, SessionID: sess.ID, RunID: runID, At: time.Now(), Data: message})
 		}
 		if len(message.ToolCalls) == 0 {
 			if !done && message.Content == "" {
@@ -337,10 +347,40 @@ func (a *toolAccumulator) Add(delta []domain.ToolCall) {
 	}
 }
 func (a *toolAccumulator) Calls() []domain.ToolCall {
-	return append([]domain.ToolCall(nil), a.calls...)
+	out := make([]domain.ToolCall, 0, len(a.calls))
+	for _, c := range a.calls {
+		c.Function.Name = strings.TrimSpace(c.Function.Name)
+		// Drop placeholder/ghost calls with no tool name. These arise when a
+		// provider streams an index gap (we pre-fill slots) or emits a heartbeat
+		// fragment with an ID but no name yet. Executing them would surface as
+		// `unknown tool ""` and pollute the transcript with an empty card.
+		if c.Function.Name == "" {
+			continue
+		}
+		if c.ID == "" {
+			c.ID = fmt.Sprintf("call-%d", c.Index)
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 func (r *Runtime) executeCalls(ctx context.Context, st *turnState, runID string, calls []domain.ToolCall, adef domain.AgentDefinition) error {
+	// Second line of defense: never execute a nameless call even if it slipped
+	// past the accumulator (e.g. a persisted or hand-crafted message). Skipping
+	// silently keeps `unknown tool ""` out of the transcript entirely.
+	filtered := calls[:0]
+	for _, c := range calls {
+		c.Function.Name = strings.TrimSpace(c.Function.Name)
+		if c.Function.Name == "" {
+			continue
+		}
+		filtered = append(filtered, c)
+	}
+	calls = filtered
+	if len(calls) == 0 {
+		return nil
+	}
 	type outcome struct {
 		res tools.Result
 		err error

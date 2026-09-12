@@ -19,14 +19,27 @@ type legacyConfig struct {
 	ActiveProvider  string          `json:"activeProvider"`
 }
 
+// legacySession is the on-disk shape used in config storage mode. The first
+// block of fields is the original schema and must keep its names so files
+// written by older versions still load. The second block is the canonical
+// session, written by SaveLegacySessions; every field is optional, and a read
+// falls back to the legacy values or the global config when it is absent.
 type legacySession struct {
-	ID           string          `json:"id"`
-	Name         string          `json:"name"`
-	AgentID      string          `json:"agentId"`
-	CWD          string          `json:"cwd"`
-	UpdatedAt    int64           `json:"updatedAt"`
-	History      []legacyMessage `json:"history"`
-	Conversation []legacyMessage `json:"conversation"`
+	ID           string           `json:"id"`
+	Name         string           `json:"name"`
+	AgentID      string           `json:"agentId"`
+	CWD          string           `json:"cwd"`
+	UpdatedAt    int64            `json:"updatedAt"`
+	History      []legacyMessage  `json:"history"`
+	Conversation []domain.Message `json:"conversation"`
+
+	CreatedAt      int64                 `json:"created_at,omitempty"`
+	ProviderID     string                `json:"provider,omitempty"`
+	Model          string                `json:"model,omitempty"`
+	ParentID       string                `json:"parent_id,omitempty"`
+	Metadata       map[string]any        `json:"metadata,omitempty"`
+	Todos          []domain.Todo         `json:"todos,omitempty"`
+	ToolActivities []domain.ToolActivity `json:"tool_activities,omitempty"`
 }
 
 type legacyMessage struct {
@@ -56,22 +69,27 @@ func ReadLegacySessions(configFile string) (LegacySnapshot, error) {
 	}
 	sessions := lc.Sessions
 	if len(sessions) == 0 && (len(lc.History) > 0 || len(lc.Conversation) > 0) {
+		// Pre-session config files stored one flat transcript. It is in the
+		// legacy message shape, so it belongs in History, not Conversation.
+		history := lc.Conversation
+		if len(history) == 0 {
+			history = lc.History
+		}
 		sessions = []legacySession{{
-			ID: "s-default", Name: "会话 1", AgentID: lc.AgentID, CWD: lc.CWD,
-			UpdatedAt: time.Now().UnixMilli(), History: lc.History, Conversation: lc.Conversation,
+			ID: "s-default", Name: "Session 1", AgentID: lc.AgentID, CWD: lc.CWD,
+			UpdatedAt: time.Now().UnixMilli(), History: history,
 		}}
 	}
 	out := LegacySnapshot{ActiveSessionID: lc.ActiveSessionID}
 	for _, s := range sessions {
-		msgs := s.Conversation
-		if len(msgs) == 0 {
-			msgs = s.History
-		}
 		updated := time.UnixMilli(s.UpdatedAt)
 		if s.UpdatedAt <= 0 {
 			updated = time.Now()
 		}
 		created := updated
+		if s.CreatedAt > 0 {
+			created = time.UnixMilli(s.CreatedAt)
+		}
 		id := s.ID
 		if id == "" {
 			id = "s-legacy-" + updated.Format("20060102150405.000")
@@ -86,7 +104,14 @@ func ReadLegacySessions(configFile string) (LegacySnapshot, error) {
 		}
 		session := domain.Session{
 			ID: id, Name: name, CreatedAt: created, UpdatedAt: updated,
-			ProviderID: lc.ActiveProvider, Model: lc.Model, AgentID: agent, CWD: s.CWD,
+			ProviderID: s.ProviderID, Model: s.Model, AgentID: agent, CWD: s.CWD,
+			ParentID: s.ParentID, Metadata: s.Metadata,
+			Todos: s.Todos, ToolActivities: s.ToolActivities,
+		}
+		// Sessions written before these fields existed inherit the global
+		// configuration, which is what the UI showed them as anyway.
+		if session.ProviderID == "" {
+			session.ProviderID = lc.ActiveProvider
 		}
 		if session.CWD == "" {
 			session.CWD = lc.CWD
@@ -95,21 +120,29 @@ func ReadLegacySessions(configFile string) (LegacySnapshot, error) {
 			session.ProviderID = "ux-gateway"
 		}
 		if session.Model == "" {
+			session.Model = lc.Model
+		}
+		if session.Model == "" {
 			session.Model = DefaultModel
 		}
-		for _, m := range msgs {
-			reasoning := m.ReasoningContent
-			if reasoning == "" {
-				reasoning = m.Reasoning
+
+		if len(s.Conversation) > 0 {
+			session.Messages = append([]domain.Message(nil), s.Conversation...)
+		} else {
+			for _, m := range s.History {
+				reasoning := m.ReasoningContent
+				if reasoning == "" {
+					reasoning = m.Reasoning
+				}
+				msg := domain.Message{
+					Role: domain.Role(m.Role), Content: m.Content, ReasoningContent: reasoning,
+					ToolCallID: m.ToolCallID, Name: m.Name, ToolCalls: m.ToolCalls,
+				}
+				if m.Time > 0 {
+					msg.CreatedAt = time.UnixMilli(m.Time)
+				}
+				session.Messages = append(session.Messages, msg)
 			}
-			msg := domain.Message{
-				Role: domain.Role(m.Role), Content: m.Content, ReasoningContent: reasoning,
-				ToolCallID: m.ToolCallID, Name: m.Name, ToolCalls: m.ToolCalls,
-			}
-			if m.Time > 0 {
-				msg.CreatedAt = time.UnixMilli(m.Time)
-			}
-			session.Messages = append(session.Messages, msg)
 		}
 		out.Sessions = append(out.Sessions, session)
 	}
@@ -119,6 +152,8 @@ func ReadLegacySessions(configFile string) (LegacySnapshot, error) {
 	return out, nil
 }
 
+// legacySessionOut writes both the original fields (so older builds can still
+// read the file) and the canonical session, so nothing is lost on round-trip.
 type legacySessionOut struct {
 	ID           string           `json:"id"`
 	Name         string           `json:"name"`
@@ -127,6 +162,14 @@ type legacySessionOut struct {
 	UpdatedAt    int64            `json:"updatedAt"`
 	History      []map[string]any `json:"history"`
 	Conversation []domain.Message `json:"conversation"`
+
+	CreatedAt      int64                 `json:"created_at,omitempty"`
+	ProviderID     string                `json:"provider,omitempty"`
+	Model          string                `json:"model,omitempty"`
+	ParentID       string                `json:"parent_id,omitempty"`
+	Metadata       map[string]any        `json:"metadata,omitempty"`
+	Todos          []domain.Todo         `json:"todos,omitempty"`
+	ToolActivities []domain.ToolActivity `json:"tool_activities,omitempty"`
 }
 
 func (s *Store) SaveLegacySessions(sessions []domain.Session, activeID string) error {
@@ -160,7 +203,12 @@ func (s *Store) SaveLegacySessions(sessions []domain.Session, activeID string) e
 			}
 			history = append(history, x)
 		}
-		out = append(out, legacySessionOut{ID: ss.ID, Name: ss.Name, AgentID: ss.AgentID, CWD: ss.CWD, UpdatedAt: ss.UpdatedAt.UnixMilli(), History: history, Conversation: ss.Messages})
+		out = append(out, legacySessionOut{
+			ID: ss.ID, Name: ss.Name, AgentID: ss.AgentID, CWD: ss.CWD,
+			UpdatedAt: ss.UpdatedAt.UnixMilli(), History: history, Conversation: ss.Messages,
+			CreatedAt: ss.CreatedAt.UnixMilli(), ProviderID: ss.ProviderID, Model: ss.Model,
+			ParentID: ss.ParentID, Metadata: ss.Metadata, Todos: ss.Todos, ToolActivities: ss.ToolActivities,
+		})
 		if ss.ID == activeID {
 			active = &ss
 		}

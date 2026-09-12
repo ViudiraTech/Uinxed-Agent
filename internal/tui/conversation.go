@@ -1,18 +1,25 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
 	md "github.com/ViudiraTech/Uinxed-Agent/internal/markdown"
 	terminalutil "github.com/ViudiraTech/Uinxed-Agent/internal/terminal"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type convBlock struct {
-	ID        string
+	ID string
+	// StreamID identifies the live message, so the incremental wrapper can tell
+	// one model round from the next. Empty for everything but the live block.
+	StreamID  string
 	Role      domain.Role
 	Content   string
 	Reasoning string
@@ -35,7 +42,36 @@ type Conversation struct {
 	expandedThinking map[string]bool
 	sessionID        string
 	width            int
-	theme            string
+	mdStyle          md.Style
+	mdKey            string
+	rendered         map[string]renderCacheEntry
+	stream           streamWrap
+}
+
+// renderCacheEntry memoizes one block's rendered lines. Streaming only mutates
+// the newest block, so without this every frame would rebuild every visible
+// block: hundreds of lipgloss style constructions and string joins per repaint,
+// which is what makes streaming feel sluggish.
+type renderCacheEntry struct {
+	key   renderKey
+	lines []renderLine
+}
+
+// renderKey is every input that can change a block's rendered output. Anything
+// missing here would show up as a stale line, so it deliberately includes the
+// hover target (it brightens one element) and a tool-activity signature.
+type renderKey struct {
+	id      string
+	version int
+	width   int
+	style   string
+	think   bool
+	toolSig string
+	hover   string
+	running bool
+	// frame is only part of the key while something is animating, so an idle
+	// block keeps a stable key instead of missing the cache on every frame.
+	frame int
 }
 
 func NewConversation() *Conversation {
@@ -43,7 +79,84 @@ func NewConversation() *Conversation {
 		cache:            md.NewCache(1024),
 		expandedTools:    map[string]bool{},
 		expandedThinking: map[string]bool{},
+		rendered:         map[string]renderCacheEntry{},
 	}
+}
+
+// renderCached returns the memoized rendering of a block, recomputing only when
+// one of its inputs changed.
+func (c *Conversation) renderCached(b *convBlock, t Theme, acts map[string]domain.ToolActivity, hover string, frame int) []renderLine {
+	key := renderKey{
+		id:      b.ID,
+		version: b.Version,
+		width:   c.width,
+		style:   c.mdKey,
+		think:   c.expandedThinking[b.ID],
+		toolSig: toolSignature(b.ToolCalls, acts, c.expandedTools),
+		hover:   hover,
+		running: hasRunningTool(b.ToolCalls, acts),
+	}
+	if key.running {
+		key.frame = frame
+	}
+	if e, ok := c.rendered[b.ID]; ok && e.key == key {
+		return e.lines
+	}
+	lines := c.renderBlock(*b, t, acts, hover, frame)
+	if len(c.rendered) >= renderCacheMax {
+		clear(c.rendered)
+	}
+	c.rendered[b.ID] = renderCacheEntry{key: key, lines: lines}
+	return lines
+}
+
+const renderCacheMax = 1024
+
+// hasRunningTool reports whether any call in the block is mid-flight, which is
+// what makes its rendered output depend on the animation frame.
+func hasRunningTool(calls []domain.ToolCall, acts map[string]domain.ToolActivity) bool {
+	for _, tc := range calls {
+		if strings.TrimSpace(tc.Function.Name) == "" {
+			continue
+		}
+		if acts[tc.ID].State == "running" {
+			return true
+		}
+	}
+	return false
+}
+
+// toolSignature captures the per-call state a tool line depends on: its status
+// glyph, how much output it has, and whether it is expanded.
+func toolSignature(calls []domain.ToolCall, acts map[string]domain.ToolActivity, expanded map[string]bool) string {
+	calls = sanitizeToolCalls(calls)
+	if len(calls) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, tc := range calls {
+		a := acts[tc.ID]
+		fmt.Fprintf(&b, "%s|%s|%d|%d|%t;", tc.ID, a.State, len(a.Output), len(a.Error), expanded[tc.ID])
+	}
+	return b.String()
+}
+
+// sanitizeToolCalls drops nameless calls so a ghost `unknown tool ""` never
+// reaches the transcript. Providers occasionally stream a placeholder slot
+// (index gap / heartbeat fragment) that the accumulator cannot always merge;
+// older sessions may already have such calls persisted.
+func sanitizeToolCalls(calls []domain.ToolCall) []domain.ToolCall {
+	if len(calls) == 0 {
+		return calls
+	}
+	out := make([]domain.ToolCall, 0, len(calls))
+	for _, tc := range calls {
+		if strings.TrimSpace(tc.Function.Name) == "" {
+			continue
+		}
+		out = append(out, tc)
+	}
+	return out
 }
 
 func (c *Conversation) SetSession(s domain.Session, width int) {
@@ -63,14 +176,22 @@ func (c *Conversation) SetSession(s domain.Session, width int) {
 		if id == "" {
 			id = fmt.Sprintf("%s-%d", m.Role, i)
 		}
-		c.blocks = append(c.blocks, convBlock{ID: id, Role: m.Role, Content: m.Content, Reasoning: m.ReasoningContent, ToolCalls: m.ToolCalls, Estimate: estimateBlockWithReasoning(m.Content, m.ReasoningContent, width, len(m.ToolCalls), c.expandedThinking[id]), Version: len(m.Content) + len(m.ReasoningContent)})
+		clean := sanitizeToolCalls(m.ToolCalls)
+		c.blocks = append(c.blocks, convBlock{ID: id, Role: m.Role, Content: m.Content, Reasoning: m.ReasoningContent, ToolCalls: clean, Estimate: estimateBlockWithReasoning(m.Content, m.ReasoningContent, width, len(clean), c.expandedThinking[id]), Version: len(m.Content) + len(m.ReasoningContent)})
 	}
 }
-func (c *Conversation) SetTheme(t string) {
-	if c.theme != t {
-		c.theme = t
+
+// applyTheme syncs the Markdown renderer with the theme of the current frame.
+// Deriving it here rather than caching it in a setter keeps Render's theme
+// argument the single source of truth, so a glyph or color change can never
+// leave stale Markdown in the cache.
+func (c *Conversation) applyTheme(t Theme) {
+	key := mdStyleKey(t)
+	if c.mdKey != key {
 		c.cache.Clear()
+		c.mdKey = key
 	}
+	c.mdStyle = mdStyle(t)
 }
 func (c *Conversation) SetWidth(w int) {
 	if w < 20 {
@@ -110,12 +231,12 @@ func (c *Conversation) ToggleTool(id string) { c.expandedTools[id] = !c.expanded
 // anchored. Without scroll compensation, adding the reasoning lines increases
 // total conversation height and a bottom-anchored viewport immediately jumps
 // past the block on the next render, which looks like a one-frame flash.
-func (c *Conversation) ToggleThinking(id, streamReasoning string) {
+func (c *Conversation) ToggleThinking(id string) {
 	if id == "" {
 		return
 	}
 	open := !c.expandedThinking[id]
-	delta := c.reasoningHeight(id, streamReasoning)
+	delta := c.reasoningHeight(id)
 	c.expandedThinking[id] = open
 	c.adjustReasoningEstimate(id, delta, open)
 	if delta <= 0 {
@@ -131,8 +252,8 @@ func (c *Conversation) ToggleThinking(id, streamReasoning string) {
 	}
 }
 
-func (c *Conversation) ToggleAllThinking(streamReasoning string) {
-	ids := make([]string, 0, len(c.blocks)+1)
+func (c *Conversation) ToggleAllThinking() {
+	ids := make([]string, 0, len(c.blocks))
 	anyCollapsed := false
 	for _, b := range c.blocks {
 		if strings.TrimSpace(b.Reasoning) == "" {
@@ -143,17 +264,13 @@ func (c *Conversation) ToggleAllThinking(streamReasoning string) {
 			anyCollapsed = true
 		}
 	}
-	if strings.TrimSpace(streamReasoning) != "" {
-		ids = append(ids, "__stream__")
-		if !c.expandedThinking["__stream__"] {
-			anyCollapsed = true
-		}
-	}
+	// The live streaming block is always expanded while it is being written, so
+	// it takes no part in the toggle.
 	for _, id := range ids {
 		if c.expandedThinking[id] == anyCollapsed {
 			continue
 		}
-		delta := c.reasoningHeight(id, streamReasoning)
+		delta := c.reasoningHeight(id)
 		c.expandedThinking[id] = anyCollapsed
 		c.adjustReasoningEstimate(id, delta, anyCollapsed)
 		if anyCollapsed {
@@ -167,24 +284,21 @@ func (c *Conversation) ToggleAllThinking(streamReasoning string) {
 	}
 }
 
-func (c *Conversation) reasoningHeight(id, streamReasoning string) int {
+func (c *Conversation) reasoningHeight(id string) int {
 	reasoning := ""
-	if id == "__stream__" {
-		reasoning = streamReasoning
-	} else {
-		for _, b := range c.blocks {
-			if b.ID == id {
-				reasoning = b.Reasoning
-				break
-			}
+	for _, b := range c.blocks {
+		if b.ID == id {
+			reasoning = b.Reasoning
+			break
 		}
 	}
 	reasoning = terminalutil.SanitizeText(reasoning)
 	if strings.TrimSpace(reasoning) == "" {
 		return 0
 	}
-	innerW := max(14, c.width-4)
-	return len(wrapPlain(reasoning, max(8, innerW-4))) + 1
+	// Expanding replaces the single collapsed line with a header plus the
+	// wrapped body, so the net height delta is exactly the body line count.
+	return len(wrapPlain(reasoning, max(8, c.width-4)))
 }
 
 func (c *Conversation) adjustReasoningEstimate(id string, delta int, open bool) {
@@ -209,6 +323,9 @@ func (c *Conversation) ToggleAllTools() {
 	anyCollapsed := false
 	for _, b := range c.blocks {
 		for _, tc := range b.ToolCalls {
+			if strings.TrimSpace(tc.Function.Name) == "" {
+				continue
+			}
 			ids = append(ids, tc.ID)
 			if !c.expandedTools[tc.ID] {
 				anyCollapsed = true
@@ -220,14 +337,25 @@ func (c *Conversation) ToggleAllTools() {
 	}
 }
 
-func (c *Conversation) Render(height int, t Theme, streamContent, streamReasoning string, activities []domain.ToolActivity, hoverValue ...string) []renderLine {
-	hover := ""
-	if len(hoverValue) > 0 {
-		hover = hoverValue[0]
-	}
+// RenderOptions carries the per-frame state that is not part of the
+// conversation itself: the live streaming buffers, tool activity, the current
+// hover target, and the animation frame used for in-flight markers.
+type RenderOptions struct {
+	StreamContent   string
+	StreamReasoning string
+	StreamMessageID string
+	Activities      []domain.ToolActivity
+	Hover           string
+	Frame           int
+}
+
+func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine {
 	if height <= 0 {
 		return nil
 	}
+	streamContent, streamReasoning := o.StreamContent, o.StreamReasoning
+	activities, hover := o.Activities, o.Hover
+	c.applyTheme(t)
 	width := c.width
 	if width < 20 {
 		width = 20
@@ -235,7 +363,7 @@ func (c *Conversation) Render(height int, t Theme, streamContent, streamReasonin
 	total := c.totalEstimate()
 	streamEst := 0
 	if streamContent != "" || streamReasoning != "" {
-		streamEst = estimateBlockWithReasoning(streamContent, streamReasoning, width, 0, c.expandedThinking["__stream__"])
+		streamEst = estimateBlockWithReasoning(streamContent, streamReasoning, width, 0, c.reasoningExpanded("__stream__"))
 	}
 	total += streamEst
 	bottom := total - c.scroll
@@ -257,7 +385,7 @@ func (c *Conversation) Render(height int, t Theme, streamContent, streamReasonin
 		b := &c.blocks[i]
 		end := pos + b.Estimate
 		if end >= top && pos <= wantBottom {
-			rendered := c.renderBlock(*b, t, acts, hover)
+			rendered := c.renderCached(b, t, acts, hover, o.Frame)
 			if len(rendered) != b.Estimate {
 				delta := len(rendered) - b.Estimate
 				b.Estimate = len(rendered)
@@ -267,14 +395,14 @@ func (c *Conversation) Render(height int, t Theme, streamContent, streamReasonin
 			lines = append(lines, rendered...)
 		} else if end >= top-20 && pos <= wantBottom+20 {
 			// Small overscan gets rendered once so future height estimates become exact.
-			rendered := c.renderBlock(*b, t, acts, hover)
+			rendered := c.renderCached(b, t, acts, hover, o.Frame)
 			b.Estimate = len(rendered)
 		}
 		pos += b.Estimate
 	}
 	if streamContent != "" || streamReasoning != "" {
-		b := convBlock{ID: "__stream__", Role: domain.RoleAssistant, Content: streamContent, Reasoning: streamReasoning, Estimate: streamEst, Version: len(streamContent) + len(streamReasoning)}
-		lines = append(lines, c.renderBlock(b, t, acts, hover)...)
+		b := convBlock{ID: "__stream__", StreamID: o.StreamMessageID, Role: domain.RoleAssistant, Content: streamContent, Reasoning: streamReasoning, Estimate: streamEst, Version: len(streamContent) + len(streamReasoning)}
+		lines = append(lines, c.renderCached(&b, t, acts, hover, o.Frame)...)
 	}
 	// Slice from bottom using actual visible line list. When scrolled far into lazily skipped blocks,
 	// estimates keep the location stable while only overscan blocks are materialized.
@@ -290,139 +418,400 @@ func (c *Conversation) Render(height int, t Theme, streamContent, streamReasonin
 		}
 		lines = lines[cut:end]
 	}
-	for len(lines) < height {
-		lines = append(lines, renderLine{})
+	// Pad to the viewport height. At the bottom of the transcript the newest
+	// content must sit just above the composer, so short conversations pad at
+	// the top; while scrolled back the remaining content belongs below.
+	if pad := height - len(lines); pad > 0 {
+		blank := make([]renderLine, pad)
+		if c.scroll == 0 {
+			lines = append(blank, lines...)
+		} else {
+			lines = append(lines, blank...)
+		}
 	}
 	return lines
 }
 
-func (c *Conversation) renderBlock(b convBlock, t Theme, acts map[string]domain.ToolActivity, hover string) []renderLine {
+// Tool results are indented under their call; expanded argument and output
+// bodies use a deeper gutter so the tree stays readable.
+const expandedGut = "      "
+
+func resultGutter(g Glyphs) string { return "   " + g.Result + "  " }
+
+func (c *Conversation) renderBlock(b convBlock, t Theme, acts map[string]domain.ToolActivity, hover string, frame int) []renderLine {
 	var out []renderLine
 	width := c.width
 	if width < 20 {
 		width = 20
 	}
-	borderStyle := lipgloss.NewStyle().Foreground(t.Border)
+	g := t.Glyphs
 
-	// 1. Role Card Header
-	roleTitle := " You"
-	roleColor := t.User
-	if b.Role == domain.RoleAssistant {
-		roleTitle = "󰚩 Assistant"
-		roleColor = t.Primary
+	if b.Role == domain.RoleUser {
+		out = append(out, c.renderUserBlock(b, t, width)...)
+		out = append(out, renderLine{})
+		return out
 	}
-	titlePill := lipgloss.NewStyle().Bold(true).Foreground(roleColor).Render(roleTitle)
-	pillLen := lipgloss.Width(titlePill)
-	topDashCount := max(1, width-pillLen-5)
-	headerLine := borderStyle.Render("╭─ ") + titlePill + " " + borderStyle.Render(strings.Repeat("─", topDashCount)+"╮")
-	out = append(out, renderLine{Text: headerLine})
 
-	// 2. Reasoning (if any)
+	// 1. Assistant turn. Reasoning is indented under the turn; the marker leads
+	// the actual answer so the two never stack up on one line.
+	marker := lipgloss.NewStyle().Foreground(t.Gutter).Render(g.Assistant)
+	if b.ID == "__stream__" {
+		marker = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render(g.Assistant)
+	}
+	contentW := max(16, width-2)
+	emitted := false
+
 	b.Reasoning = terminalutil.SanitizeText(b.Reasoning)
-	if b.Reasoning != "" {
-		innerW := max(14, width-4)
-		if c.expandedThinking[b.ID] {
-			headText := lipgloss.NewStyle().Foreground(t.Secondary).Bold(hover == "thinking:"+b.ID).Render("💭 Thought Process · Enter/Click to collapse")
-			hLen := lipgloss.Width(headText)
-			rDash := max(1, innerW-hLen-5)
-			rHead := borderStyle.Render("│ ╭─ ") + headText + " " + borderStyle.Render(strings.Repeat("─", rDash)+"╮")
-			out = append(out, renderLine{Text: rHead, Action: ActionThinking, Value: "thinking:" + b.ID})
-			for _, l := range wrapPlain(b.Reasoning, max(8, innerW-4)) {
-				out = append(out, renderLine{Text: borderStyle.Render("│ │ ") + lipgloss.NewStyle().Foreground(t.Muted).Render(l)})
-			}
-			out = append(out, renderLine{Text: borderStyle.Render("│ ╰" + strings.Repeat("─", max(1, innerW-2)) + "╯")})
-		} else {
-			headText := lipgloss.NewStyle().Foreground(t.Muted).Bold(hover == "thinking:"+b.ID).Render("💭 Thought Process · Enter/Click to expand")
-			hLen := lipgloss.Width(headText)
-			rDash := max(1, innerW-hLen-5)
-			rHead := borderStyle.Render("│ ╭─ ") + headText + " " + borderStyle.Render(strings.Repeat("─", rDash)+"╮")
-			out = append(out, renderLine{Text: rHead, Action: ActionThinking, Value: "thinking:" + b.ID})
-		}
+	if strings.TrimSpace(b.Reasoning) != "" {
+		out = append(out, c.renderReasoning(b, t, width, hover)...)
 	}
 
-	// 3. Content
+	// 2. Answer content.
 	if strings.TrimSpace(b.Content) != "" {
-		var rendered string
-		contentW := max(16, width-4)
+		var contentLines []string
 		if b.ID == "__stream__" {
-			rendered = md.PlainFallback(b.Content, contentW)
+			// The streaming path wraps incrementally; see streamWrap.
+			contentLines = c.stream.wrap(b.Content, contentW, b.StreamID)
 		} else {
-			var err error
-			rendered, err = c.cache.Render(b.ID, b.Version, contentW, c.theme, b.Content)
+			rendered, err := c.cache.Render(b.ID, b.Version, contentW, c.mdKey, b.Content, c.mdStyle)
 			if err != nil {
 				rendered = md.PlainFallback(b.Content, contentW)
 			}
+			contentLines = strings.Split(rendered, "\n")
 		}
-		for _, l := range strings.Split(rendered, "\n") {
-			out = append(out, renderLine{Text: borderStyle.Render("│ ") + l})
+		for _, l := range contentLines {
+			if !emitted {
+				out = append(out, renderLine{Text: marker + " " + l})
+				emitted = true
+				continue
+			}
+			out = append(out, renderLine{Text: "  " + l})
 		}
 	}
 
-	// 4. Tool Calls
+	if !emitted && len(out) == 0 {
+		// An empty turn still needs a marker, but a turn that has shown
+		// reasoning must not trail a bare marker with nothing after it.
+		out = append(out, renderLine{Text: marker})
+	}
+
+	// 3. Tool calls render as a nested tree under the turn.
 	for _, tc := range b.ToolCalls {
-		a := acts[tc.ID]
-		icon := "○"
-		stateText := "ready"
-		fg := t.Muted
-		switch a.State {
-		case "running":
-			icon = "◓"
-			stateText = "running"
-			fg = t.Warning
-		case "success":
-			icon = "✓"
-			stateText = "completed"
-			fg = t.Success
-		case "failed":
-			icon = "✗"
-			stateText = "failed"
-			fg = t.Error
+		if strings.TrimSpace(tc.Function.Name) == "" {
+			continue
 		}
-		name := terminalutil.SanitizeText(tc.Function.Name)
-		summary := toolSummary(name, terminalutil.SanitizeText(tc.Function.Arguments))
-		innerW := max(14, width-4)
-		toolTitle := fmt.Sprintf("⚡ %s", name)
-		statusBadge := lipgloss.NewStyle().Foreground(fg).Bold(true).Render(fmt.Sprintf("[%s %s]", icon, stateText))
-		tLen := lipgloss.Width(toolTitle) + lipgloss.Width(statusBadge)
-		tDash := max(1, innerW-tLen-6)
-		toolHead := borderStyle.Render("│ ╭─ ") + lipgloss.NewStyle().Foreground(t.Tool).Bold(hover == tc.ID).Render(toolTitle) + " " + statusBadge + " " + borderStyle.Render(strings.Repeat("─", tDash)+"╮")
-		out = append(out, renderLine{Text: toolHead, Action: ActionTool, Value: tc.ID})
-
-		if c.expandedTools[tc.ID] {
-			if tc.Function.Arguments != "" {
-				out = append(out, renderLine{Text: borderStyle.Render("│ │ ") + lipgloss.NewStyle().Bold(true).Foreground(t.Muted).Render("Arguments:")})
-				for _, l := range wrapPlain(tc.Function.Arguments, max(8, innerW-6)) {
-					out = append(out, renderLine{Text: borderStyle.Render("│ │   ") + lipgloss.NewStyle().Foreground(t.Muted).Render(l)})
-				}
-			}
-			if a.Output != "" {
-				out = append(out, renderLine{Text: borderStyle.Render("│ │ ") + lipgloss.NewStyle().Bold(true).Foreground(t.Success).Render("Output:")})
-				for _, l := range wrapPlain(terminalutil.SanitizeText(a.Output), max(8, innerW-6)) {
-					out = append(out, renderLine{Text: borderStyle.Render("│ │   ") + l})
-				}
-			}
-			if a.Error != "" {
-				out = append(out, renderLine{Text: borderStyle.Render("│ │ ") + lipgloss.NewStyle().Bold(true).Foreground(t.Error).Render("Error:")})
-				for _, l := range wrapPlain(terminalutil.SanitizeText(a.Error), max(8, innerW-6)) {
-					out = append(out, renderLine{Text: borderStyle.Render("│ │   ") + lipgloss.NewStyle().Foreground(t.Error).Render(l)})
-				}
-			}
-			out = append(out, renderLine{Text: borderStyle.Render("│ ╰" + strings.Repeat("─", max(1, innerW-2)) + "╯")})
-		} else {
-			if summary != "" {
-				out = append(out, renderLine{Text: borderStyle.Render("│ │ ") + lipgloss.NewStyle().Foreground(t.Muted).Render(truncWidth(summary, max(6, innerW-6)))})
-				out = append(out, renderLine{Text: borderStyle.Render("│ ╰" + strings.Repeat("─", max(1, innerW-2)) + "╯")})
-			} else {
-				out = append(out, renderLine{Text: borderStyle.Render("│ ╰" + strings.Repeat("─", max(1, innerW-2)) + "╯")})
-			}
-		}
+		out = append(out, c.renderToolCall(tc, acts[tc.ID], t, width, hover, frame)...)
 	}
 
-	// 5. Card Footer
-	bottomLine := borderStyle.Render("╰" + strings.Repeat("─", max(1, width-2)) + "╯")
-	out = append(out, renderLine{Text: bottomLine})
 	out = append(out, renderLine{})
 	return out
+}
+
+func (c *Conversation) renderUserBlock(b convBlock, t Theme, width int) []renderLine {
+	g := t.Glyphs
+	marker := lipgloss.NewStyle().Foreground(t.User).Bold(true).Render(g.User)
+	style := lipgloss.NewStyle().Foreground(t.Text)
+	var out []renderLine
+	first := true
+	for _, l := range wrapPlain(b.Content, max(8, width-2)) {
+		if first {
+			out = append(out, renderLine{Text: marker + " " + style.Render(l)})
+			first = false
+			continue
+		}
+		out = append(out, renderLine{Text: "  " + style.Render(l)})
+	}
+	if first {
+		out = append(out, renderLine{Text: marker})
+	}
+	return out
+}
+
+// reasoningExpanded reports whether a block's reasoning should be shown in
+// full. The live streaming block is always expanded: collapsing it to a
+// one-line summary while it is still being written leaves the screen looking
+// frozen, because neither the text nor the line count visibly changes.
+// Collapsing is only right for history, where the answer is what matters.
+func (c *Conversation) reasoningExpanded(id string) bool {
+	return id == "__stream__" || c.expandedThinking[id]
+}
+
+// renderReasoning returns the reasoning subtree. Collapsed it is a single dim
+// line so long thinking does not push the answer off screen; expanded it shows
+// the wrapped text in the reasoning color.
+func (c *Conversation) renderReasoning(b convBlock, t Theme, width int, hover string) []renderLine {
+	g := t.Glyphs
+	live := b.ID == "__stream__"
+	style := lipgloss.NewStyle().Foreground(t.Reasoning)
+	if hover == "thinking:"+b.ID {
+		style = style.Bold(true)
+	}
+	if !c.reasoningExpanded(b.ID) {
+		lineCount := len(wrapPlain(b.Reasoning, max(8, width-4)))
+		label := fmt.Sprintf("Thinking… (%d lines %s ctrl+t)", lineCount, g.Sep)
+		return []renderLine{{
+			Text:   "  " + style.Render(g.Thinking+" "+label),
+			Action: ActionThinking,
+			Value:  "thinking:" + b.ID,
+		}}
+	}
+	header := "Thinking (ctrl+t to collapse)"
+	if live {
+		// No toggle hint while streaming: this state is transient, not a choice.
+		header = "Thinking…"
+	}
+	out := []renderLine{{
+		Text:   "  " + style.Render(g.Thinking+" "+header),
+		Action: ActionThinking,
+		Value:  "thinking:" + b.ID,
+	}}
+	for _, l := range wrapPlain(b.Reasoning, max(8, width-4)) {
+		out = append(out, renderLine{Text: "    " + style.Render(l)})
+	}
+	return out
+}
+
+func (c *Conversation) renderToolCall(tc domain.ToolCall, a domain.ToolActivity, t Theme, width int, hover string, frame int) []renderLine {
+	g := t.Glyphs
+	icon, fg := g.Pending, t.Muted
+	statusLabel := "queued"
+	switch a.State {
+	case "running":
+		icon, fg = g.spinner(frame), t.Warning
+		statusLabel = "running"
+	case "success":
+		icon, fg = g.Success, t.Success
+		statusLabel = "done"
+	case "failed":
+		icon, fg = g.Failure, t.Error
+		statusLabel = "failed"
+	}
+
+	name := terminalutil.SanitizeText(tc.Function.Name)
+	head := c.renderToolHead(tc, name, t, hover, g)
+	if a.State == "failed" {
+		// Failed calls read as errors first, tool second.
+		head = lipgloss.NewStyle().Foreground(t.Error).Render(ansi.Strip(head))
+		if hover == tc.ID {
+			head = lipgloss.NewStyle().Foreground(t.Error).Bold(true).Render(ansi.Strip(head))
+		}
+	}
+
+	// Status meta stays dim and fixed-position so the spinner can animate
+	// without shifting the call text: `· running 5s`, `· 800ms`, `· failed`.
+	meta := lipgloss.NewStyle().Foreground(t.Muted).Render(" · " + toolStatusMeta(a, statusLabel))
+
+	marker := lipgloss.NewStyle().Foreground(fg).Render(icon)
+	line := " " + marker + " " + head + meta
+	if c.expandedTools[tc.ID] {
+		line = " " + marker + " " + head + meta + lipgloss.NewStyle().Foreground(t.Muted).Render("  (ctrl+e)")
+	}
+
+	out := []renderLine{{Text: line, Action: ActionTool, Value: tc.ID}}
+
+	if c.expandedTools[tc.ID] {
+		if tc.Function.Arguments != "" {
+			for _, l := range wrapPlain(tc.Function.Arguments, max(8, width-lipgloss.Width(expandedGut)-2)) {
+				out = append(out, renderLine{Text: expandedGut + lipgloss.NewStyle().Foreground(t.Muted).Render(l)})
+			}
+		}
+		out = append(out, c.renderExpandedResult(a, t, width)...)
+		return out
+	}
+
+	// Collapsed: one dim result line, or the first line of the error so a
+	// failure is visible without expanding.
+	resultStyle := lipgloss.NewStyle().Foreground(t.Muted)
+	result := toolResultSummary(a)
+	if a.State == "failed" {
+		resultStyle = lipgloss.NewStyle().Foreground(t.Error)
+		if a.Error != "" {
+			result = firstLine(a.Error)
+		}
+	}
+	if result != "" {
+		if d := toolDuration(a); d != "" && a.State != "running" {
+			result += " · " + d
+		}
+		gutter := resultGutter(g)
+		out = append(out, renderLine{Text: gutter + resultStyle.Render(truncWidth(result, max(6, width-lipgloss.Width(gutter))))})
+	} else if a.State == "running" {
+		// A running call with no output yet still gets a result row so the
+		// card keeps a stable two-line height instead of popping when the
+		// first byte arrives.
+		gutter := resultGutter(g)
+		hint := lipgloss.NewStyle().Foreground(t.Muted).Render("…")
+		out = append(out, renderLine{Text: gutter + hint})
+	}
+	return out
+}
+
+// renderToolHead builds the `name(args)` call text with a two-tone style: the
+// tool name carries the accent, the argument stays dim. Delegate gets its own
+// modern form `delegate ▸ agent: task` so both arguments stay visible.
+func (c *Conversation) renderToolHead(tc domain.ToolCall, name string, t Theme, hover string, g Glyphs) string {
+	nameStyle := lipgloss.NewStyle().Foreground(t.Tool)
+	argStyle := lipgloss.NewStyle().Foreground(t.Muted)
+	if hover == tc.ID {
+		nameStyle = nameStyle.Bold(true)
+	}
+	if name == "delegate" {
+		if agent, task := parseDelegateArgs(tc.Function.Arguments); agent != "" {
+			head := nameStyle.Render(name) + argStyle.Render(" "+g.Bullet+" "+agent)
+			if task != "" {
+				head += argStyle.Render(": " + truncWidth(singleLine(terminalutil.SanitizeText(task)), 48))
+			}
+			return head
+		}
+	}
+	summary := toolSummary(name, terminalutil.SanitizeText(tc.Function.Arguments))
+	if summary == "" {
+		return nameStyle.Render(name)
+	}
+	return nameStyle.Render(name) + argStyle.Render("("+summary+")")
+}
+
+func parseDelegateArgs(args string) (agent, task string) {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return "", ""
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(args), &raw); err != nil {
+		return "", ""
+	}
+	if v, _ := raw["agent"].(string); v != "" {
+		agent = v
+	}
+	if v, _ := raw["task"].(string); v != "" {
+		task = v
+	}
+	return agent, task
+}
+
+// toolStatusMeta is the dim suffix on the header row: live elapsed while
+// running, total duration once finished, plain state when timing is unknown.
+func toolStatusMeta(a domain.ToolActivity, label string) string {
+	switch a.State {
+	case "running":
+		if d := toolElapsed(a); d != "" {
+			return "running " + d
+		}
+		return "running"
+	case "success":
+		if d := toolDuration(a); d != "" {
+			return d
+		}
+		return label
+	case "failed":
+		if d := toolDuration(a); d != "" {
+			return "failed · " + d
+		}
+		return "failed"
+	default:
+		return "queued"
+	}
+}
+
+func toolElapsed(a domain.ToolActivity) string {
+	if a.StartedAt.IsZero() {
+		return ""
+	}
+	d := time.Since(a.StartedAt)
+	if d < time.Second {
+		return ""
+	}
+	return formatToolDuration(d)
+}
+
+func toolDuration(a domain.ToolActivity) string {
+	if a.StartedAt.IsZero() || a.EndedAt.IsZero() {
+		return ""
+	}
+	d := a.EndedAt.Sub(a.StartedAt)
+	if d < 0 {
+		return ""
+	}
+	return formatToolDuration(d)
+}
+
+func formatToolDuration(d time.Duration) string {
+	if d < time.Millisecond*50 {
+		return "0ms"
+	}
+	if d < time.Second {
+		return fmt.Sprintf("%dms", int(d.Milliseconds()))
+	}
+	s := d.Seconds()
+	if s < 10 {
+		return fmt.Sprintf("%.1fs", s)
+	}
+	if s < 60 {
+		return fmt.Sprintf("%ds", int(s))
+	}
+	m := int(s) / 60
+	if r := int(s) % 60; r > 0 {
+		return fmt.Sprintf("%dm%ds", m, r)
+	}
+	return fmt.Sprintf("%dm", m)
+}
+
+const maxExpandedOutputLines = 12
+
+// renderExpandedResult shows arguments output capped to a fixed preview so one
+// large tool result cannot push the whole transcript or change the card height
+// on every streamed chunk.
+func (c *Conversation) renderExpandedResult(a domain.ToolActivity, t Theme, width int) []renderLine {
+	var out []renderLine
+	bodyW := max(8, width-lipgloss.Width(expandedGut)-2)
+	if a.Output != "" {
+		lines := wrapPlain(terminalutil.SanitizeText(a.Output), bodyW)
+		if len(lines) > maxExpandedOutputLines {
+			kept := lines[:maxExpandedOutputLines]
+			for _, l := range kept {
+				out = append(out, renderLine{Text: expandedGut + lipgloss.NewStyle().Foreground(t.Text).Render(l)})
+			}
+			more := lipgloss.NewStyle().Foreground(t.Muted).Render(fmt.Sprintf("… +%d more", len(lines)-maxExpandedOutputLines))
+			out = append(out, renderLine{Text: expandedGut + more})
+		} else {
+			for _, l := range lines {
+				out = append(out, renderLine{Text: expandedGut + lipgloss.NewStyle().Foreground(t.Text).Render(l)})
+			}
+		}
+	}
+	if a.Error != "" {
+		for _, l := range wrapPlain(terminalutil.SanitizeText(a.Error), bodyW) {
+			out = append(out, renderLine{Text: expandedGut + lipgloss.NewStyle().Foreground(t.Error).Render(l)})
+		}
+	}
+	return out
+}
+
+// toolResultSummary condenses a completed call into one line. Byte counts and
+// line counts are cheaper for a reader than the first line of compiler output.
+func toolResultSummary(a domain.ToolActivity) string {
+	if a.State == "running" {
+		return ""
+	}
+	if a.Output == "" && a.Error == "" {
+		return ""
+	}
+	text := a.Output
+	if text == "" {
+		text = a.Error
+	}
+	lines := strings.Count(strings.TrimRight(text, "\n"), "\n") + 1
+	if lines <= 1 {
+		return truncWidth(firstLine(text), 100)
+	}
+	return fmt.Sprintf("%d lines", lines)
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return strings.TrimRight(s[:i], "\r")
+	}
+	return strings.TrimRight(s, "\r")
 }
 
 func (c *Conversation) totalEstimate() int {
@@ -439,61 +828,125 @@ func estimateBlockWithReasoning(content, reasoning string, width, tools int, exp
 	if strings.TrimSpace(reasoning) == "" {
 		return n
 	}
-	n++ // reasoning header
+	n++ // the collapsed "Thinking…" line, always present
 	if expanded {
-		innerW := max(14, width-4)
-		n += len(wrapPlain(reasoning, max(8, innerW-4))) + 1
+		n += len(wrapPlain(reasoning, max(8, width-4)))
 	}
 	return n
 }
 
+// estimateBlock approximates the height of one turn. Block rendering corrects
+// the estimate to the real height for any block it materializes, so this only
+// needs to be close enough to keep the off-screen scroll position stable.
 func estimateBlock(content string, width, tools int) int {
 	if width < 20 {
 		width = 20
 	}
-	lines := 3 + tools*3 // header (1), footer (1), separator (1) + tools cards
-	contentW := max(16, width-4)
+	lines := 1 + tools*2 // trailing blank + one line per tool call and result
+	contentW := max(16, width-2)
 	for _, l := range strings.Split(content, "\n") {
-		lines += max(1, int(math.Ceil(float64(max(1, len([]rune(l))))/float64(contentW))))
+		lines += max(1, int(math.Ceil(float64(displayWidth(l))/float64(contentW))))
 	}
 	return lines
 }
 
-func boolInt(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
-}
-
+// wrapPlain hard-wraps plain text to a display width. It must measure display
+// columns rather than runes: CJK and emoji occupy two columns each, so a
+// rune-counting wrap overflows the terminal for exactly the messages this app
+// sees most often.
 func wrapPlain(s string, width int) []string {
 	if width < 8 {
 		width = 8
 	}
 	var out []string
-	for _, l := range strings.Split(s, "\n") {
-		r := []rune(l)
-		if len(r) == 0 {
+	for _, para := range strings.Split(s, "\n") {
+		if para == "" {
 			out = append(out, "")
 			continue
 		}
-		for len(r) > width {
-			out = append(out, string(r[:width]))
-			r = r[width:]
-		}
-		out = append(out, string(r))
+		out = append(out, strings.Split(ansi.Hardwrap(para, width, false), "\n")...)
 	}
 	return out
 }
 
-func toolSummary(name, args string) string {
-	args = strings.ReplaceAll(strings.TrimSpace(args), "\n", " ")
-	if len([]rune(args)) > 70 {
-		args = string([]rune(args)[:70]) + "…"
-	}
-	if args == "" {
-		return ""
-	}
-	return args
+// displayWidth is the rendered column count, ignoring escape sequences and
+// accounting for double-width characters.
+func displayWidth(s string) int { return ansi.StringWidth(s) }
+
+// toolArgKeys lists, per tool, the arguments worth showing in a collapsed
+// call line, in display order. Anything not listed falls back to argFallbackKeys
+// so a newly added tool still renders a useful one-line summary.
+var toolArgKeys = map[string][]string{
+	"bash":        {"cmd"},
+	"read_file":   {"path", "offset"},
+	"write_file":  {"path"},
+	"edit_file":   {"path"},
+	"list_dir":    {"path"},
+	"grep":        {"pattern", "include"},
+	"glob":        {"pattern"},
+	"fetch_url":   {"url"},
+	"web_search":  {"query"},
+	"use_skill":   {"skill"},
+	"calc":        {"expr"},
+	"delegate":    {"agent", "task"},
+	"todo_update": {"subject", "index"},
 }
 
+var argFallbackKeys = []string{"path", "cmd", "query", "url", "pattern", "expr", "skill", "subject", "task", "name"}
+
+// toolSummary renders the parenthesized part of a collapsed tool-call line.
+// Showing the salient argument beats dumping raw JSON: `Read(src/app.go)` is
+// readable at a glance, `Read({"path":"src/app.go","offset":1})` is not.
+func toolSummary(name, args string) string {
+	args = strings.TrimSpace(args)
+	if args == "" || args == "{}" {
+		return ""
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(args), &raw); err != nil {
+		return truncWidth(singleLine(args), 70)
+	}
+	keys := toolArgKeys[name]
+	for _, k := range append(append([]string(nil), keys...), argFallbackKeys...) {
+		v, ok := raw[k]
+		if !ok {
+			continue
+		}
+		s := formatArgValue(v)
+		if s == "" {
+			continue
+		}
+		return truncWidth(singleLine(s), 70)
+	}
+	return ""
+}
+
+func formatArgValue(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case bool:
+		if x {
+			return "true"
+		}
+		return "false"
+	case []any:
+		parts := make([]string, 0, len(x))
+		for _, e := range x {
+			if s := formatArgValue(e); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, ", ")
+	}
+	return ""
+}
+
+func singleLine(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	return strings.Join(strings.Fields(s), " ")
+}

@@ -59,12 +59,14 @@ type Model struct {
 	toast               string
 	toastUntil          time.Time
 	busy                bool
+	busySince           time.Time
 	mainRunID           string
 	streamContent       string
 	streamReasoning     string
 	streamMessageID     string
 	activities          []domain.ToolActivity
 	subagents           map[string]domain.AgentRun
+	subagentProgress    map[string]subagentProgress
 	regions             []Region
 	hover               string
 	layout              layoutState
@@ -77,6 +79,16 @@ type Model struct {
 	confirmTarget       string
 	overlayScroll       int
 	activityFrame       int
+	statusCmdText       string
+}
+
+// subagentProgress tracks live activity inside a delegate child so the sidebar
+// can show something more useful than a static "running" label. It is keyed by
+// the child run ID, matching Model.subagents.
+type subagentProgress struct {
+	Tools     int
+	LastTool  string
+	UpdatedAt time.Time
 }
 
 type connectWizard struct {
@@ -91,7 +103,7 @@ type connectWizard struct {
 func New(ctx context.Context, ctrl *app.Controller, session domain.Session) *Model {
 	cfg := ctrl.Config.Snapshot()
 	ta := textarea.New()
-	ta.Placeholder = "Ask anything…"
+	ta.Placeholder = "Ask anything…   ( / commands · @ files · ? shortcuts )"
 	ta.ShowLineNumbers = false
 	ta.Prompt = ""
 	ta.DynamicHeight = true
@@ -101,16 +113,19 @@ func New(ctx context.Context, ctrl *app.Controller, session domain.Session) *Mod
 	ta.CharLimit = 200000
 	ta.SetWidth(80)
 	_ = ta.Focus()
-	m := &Model{ctx: ctx, ctrl: ctrl, cfg: cfg, session: session, prompt: ta, conv: NewConversation(), subagents: map[string]domain.AgentRun{}}
+	m := &Model{ctx: ctx, ctrl: ctrl, cfg: cfg, session: session, prompt: ta, conv: NewConversation(), subagents: map[string]domain.AgentRun{}, subagentProgress: map[string]subagentProgress{}}
 	m.setFocus(FocusPrompt)
 	m.activities = append([]domain.ToolActivity(nil), session.ToolActivities...)
-	m.conv.SetTheme(cfg.Theme)
 	m.conv.SetSession(session, 80)
 	return m
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.prompt.Focus(), waitRuntime(m.ctrl.Events()), m.refreshSessions())
+	cmds := []tea.Cmd{m.prompt.Focus(), waitRuntime(m.ctrl.Events()), m.refreshSessions()}
+	if strings.TrimSpace(m.cfg.StatuslineCommand) != "" {
+		cmds = append(cmds, statusTick(), m.runStatusCommand())
+	}
+	return tea.Batch(cmds...)
 }
 
 type runtimeMsg struct {
@@ -161,7 +176,26 @@ func asyncOp(op string, fn func() (any, error)) tea.Cmd {
 
 func (m *Model) setSession(s domain.Session) {
 	m.session = s
-	m.activities = append([]domain.ToolActivity(nil), s.ToolActivities...)
+	m.activities = m.activities[:0]
+	for _, a := range s.ToolActivities {
+		if a.Name == "" {
+			continue
+		}
+		m.activities = append(m.activities, a)
+	}
+	// Subagent runs belong to the session that spawned them. Keeping the
+	// previous session's entries would show stale rows that never update and,
+	// because Go map iteration is random, shuffle the sidebar every frame.
+	if m.subagents == nil {
+		m.subagents = map[string]domain.AgentRun{}
+	} else {
+		clear(m.subagents)
+	}
+	if m.subagentProgress == nil {
+		m.subagentProgress = map[string]subagentProgress{}
+	} else {
+		clear(m.subagentProgress)
+	}
 	m.streamContent = ""
 	m.streamReasoning = ""
 	m.streamMessageID = ""
@@ -170,7 +204,6 @@ func (m *Model) setSession(s domain.Session) {
 		chatW = max(20, m.width)
 	}
 	m.conv.SetWidth(chatW)
-	m.conv.SetTheme(m.cfg.Theme)
 	m.conv.SetSession(s, chatW)
 }
 
@@ -227,6 +260,15 @@ func (m *Model) thinkingEnabled() bool {
 	}
 	return m.cfg.Thinking
 }
+
+// themeFor resolves the configured theme and glyph set together. Every render
+// path must go through it so a configured glyph mode is never silently ignored.
+func themeFor(cfg config.Config) Theme {
+	t := theme(cfg.Theme)
+	t.Glyphs = glyphSet(cfg.Glyphs)
+	return t
+}
+
 func padBetween(left, right string, width int) string {
 	gap := width - visibleLen(left) - visibleLen(right)
 	if gap < 1 {
@@ -235,37 +277,11 @@ func padBetween(left, right string, width int) string {
 	return left + strings.Repeat(" ", gap) + right
 }
 func visibleLen(s string) int { return lipgloss.Width(s) }
-func stripANSI(s string) string {
-	var b strings.Builder
-	esc := false
-	csi := false
-	for _, r := range s {
-		if r == 0x1b {
-			esc = true
-			continue
-		}
-		if esc {
-			if r == '[' {
-				csi = true
-				continue
-			}
-			esc = false
-		}
-		if csi {
-			if r >= '@' && r <= '~' {
-				csi = false
-				esc = false
-			}
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
+
 func formatAgo(t time.Time) string {
 	d := time.Since(t)
 	if d < time.Minute {
-		return "刚刚"
+		return "now"
 	}
 	if d < time.Hour {
 		return fmt.Sprintf("%dm", int(d.Minutes()))
