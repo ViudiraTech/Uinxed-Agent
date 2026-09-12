@@ -575,6 +575,7 @@ func (m *Model) submitPrompt() tea.Cmd {
 		m.showToast("a turn is already running; esc or ctrl+c to cancel")
 		return nil
 	}
+	m.errorText = ""
 	m.streamContent = ""
 	m.streamReasoning = ""
 	m.conv.GotoBottom()

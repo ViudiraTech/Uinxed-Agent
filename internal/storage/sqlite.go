@@ -339,9 +339,24 @@ func (s *SQLite) loadMessages(ctx context.Context, sess *domain.Session) error {
 		m.Role = domain.Role(role)
 		if tc != "" {
 			_ = json.Unmarshal([]byte(tc), &m.ToolCalls)
+			if len(m.ToolCalls) > 0 {
+				valid := m.ToolCalls[:0]
+				for _, c := range m.ToolCalls {
+					if strings.TrimSpace(c.Function.Name) != "" {
+						valid = append(valid, c)
+					}
+				}
+				m.ToolCalls = valid
+			}
 		}
 		if created > 0 {
 			m.CreatedAt = time.UnixMilli(created)
+		}
+		if m.Role == domain.RoleTool && m.ToolCallID == "" {
+			continue
+		}
+		if m.Role == domain.RoleAssistant && len(m.ToolCalls) == 0 && m.Content == "" && m.ReasoningContent == "" {
+			continue
 		}
 		sess.Messages = append(sess.Messages, m)
 	}

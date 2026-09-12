@@ -311,9 +311,6 @@ type toolAccumulator struct{ calls []domain.ToolCall }
 func (a *toolAccumulator) Add(delta []domain.ToolCall) {
 	for i, d := range delta {
 		idx := -1
-		if d.Index >= 0 && d.Index < len(a.calls) {
-			idx = d.Index
-		}
 		if d.ID != "" {
 			for j := range a.calls {
 				if a.calls[j].ID == d.ID {
@@ -322,18 +319,24 @@ func (a *toolAccumulator) Add(delta []domain.ToolCall) {
 				}
 			}
 		}
-		if idx < 0 && i < len(a.calls) && d.ID == "" {
+		if idx < 0 && d.Index >= 0 {
+			for j := range a.calls {
+				if a.calls[j].Index == d.Index {
+					idx = j
+					break
+				}
+			}
+		}
+		if idx < 0 && d.Index < 0 && d.ID == "" && i < len(a.calls) {
 			idx = i
 		}
 		if idx < 0 {
-			target := d.Index
-			if target < 0 {
-				target = len(a.calls)
-			}
-			for len(a.calls) <= target {
-				a.calls = append(a.calls, domain.ToolCall{Index: len(a.calls), Type: "function"})
-			}
-			idx = target
+			idx = len(a.calls)
+			a.calls = append(a.calls, domain.ToolCall{
+				Index: d.Index,
+				ID:    d.ID,
+				Type:  "function",
+			})
 		}
 		if d.ID != "" {
 			a.calls[idx].ID = d.ID
@@ -351,14 +354,16 @@ func (a *toolAccumulator) Calls() []domain.ToolCall {
 	for _, c := range a.calls {
 		c.Function.Name = strings.TrimSpace(c.Function.Name)
 		// Drop placeholder/ghost calls with no tool name. These arise when a
-		// provider streams an index gap (we pre-fill slots) or emits a heartbeat
-		// fragment with an ID but no name yet. Executing them would surface as
-		// `unknown tool ""` and pollute the transcript with an empty card.
+		// provider streams a heartbeat fragment with an ID but no name yet.
+		// Executing them would surface as `unknown tool ""` and pollute the transcript.
 		if c.Function.Name == "" {
 			continue
 		}
 		if c.ID == "" {
 			c.ID = fmt.Sprintf("call-%d", c.Index)
+		}
+		if c.Type == "" {
+			c.Type = "function"
 		}
 		out = append(out, c)
 	}
@@ -374,6 +379,12 @@ func (r *Runtime) executeCalls(ctx context.Context, st *turnState, runID string,
 		c.Function.Name = strings.TrimSpace(c.Function.Name)
 		if c.Function.Name == "" {
 			continue
+		}
+		if c.ID == "" {
+			c.ID = fmt.Sprintf("call-%d", c.Index)
+		}
+		if c.Type == "" {
+			c.Type = "function"
 		}
 		filtered = append(filtered, c)
 	}

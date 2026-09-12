@@ -213,3 +213,67 @@ func TestProfilePropagatesKeyError(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestChatMessagesSanitizesGhostCallsAndOrphanTools(t *testing.T) {
+	in := []domain.Message{
+		{Role: domain.RoleUser, Content: "hello"},
+		{
+			Role: domain.RoleAssistant,
+			ToolCalls: []domain.ToolCall{
+				{Index: 0, ID: "", Type: "function", Function: domain.ToolCallFunction{Name: "", Arguments: ""}}, // ghost
+				{Index: 1, ID: "call_valid", Type: "function", Function: domain.ToolCallFunction{Name: "web_search", Arguments: `{"query":"go"}`}},
+			},
+		},
+		{Role: domain.RoleTool, ToolCallID: "", Name: "", Content: `{"error":"unknown tool \"\""}`}, // orphan empty ID
+		{Role: domain.RoleTool, ToolCallID: "call_nonexistent", Name: "x", Content: "bad"},          // orphan unreferenced ID
+		{Role: domain.RoleTool, ToolCallID: "call_valid", Name: "web_search", Content: "result text"},
+		{Role: domain.RoleUser, Content: "continue"},
+	}
+
+	got := chatMessages(in, true)
+
+	// Expected:
+	// 0: user hello
+	// 1: assistant with only call_valid
+	// 2: tool with call_valid (orphans skipped)
+	// 3: user continue
+	if len(got) != 4 {
+		t.Fatalf("expected 4 messages, got %d: %#v", len(got), got)
+	}
+
+	// Verify assistant tool calls
+	asst := got[1]
+	tcList, ok := asst["tool_calls"].([]domain.ToolCall)
+	if !ok || len(tcList) != 1 || tcList[0].ID != "call_valid" || tcList[0].Function.Name != "web_search" {
+		t.Fatalf("expected 1 valid tool call in assistant message: %#v", asst)
+	}
+
+	// Verify tool result message
+	toolMsg := got[2]
+	if toolMsg["role"] != "tool" || toolMsg["tool_call_id"] != "call_valid" || toolMsg["content"] != "result text" {
+		t.Fatalf("expected tool message with call_valid: %#v", toolMsg)
+	}
+	if _, hasName := toolMsg["name"]; hasName {
+		t.Errorf("role: tool message should not include name field: %#v", toolMsg)
+	}
+}
+
+func TestResponsesInputSanitizesGhostCallsAndOrphanTools(t *testing.T) {
+	in := []domain.Message{
+		{Role: domain.RoleUser, Content: "hello"},
+		{
+			Role: domain.RoleAssistant,
+			ToolCalls: []domain.ToolCall{
+				{Index: 0, ID: "", Type: "function", Function: domain.ToolCallFunction{Name: "", Arguments: ""}}, // ghost
+				{Index: 1, ID: "call_valid", Type: "function", Function: domain.ToolCallFunction{Name: "web_search", Arguments: `{"query":"go"}`}},
+			},
+		},
+		{Role: domain.RoleTool, ToolCallID: "", Content: `{"error":"unknown tool \"\""}`}, // orphan
+		{Role: domain.RoleTool, ToolCallID: "call_valid", Content: "result text"},
+	}
+
+	got := responsesInput(in)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 items (user, function_call, function_call_output), got %d: %#v", len(got), got)
+	}
+}

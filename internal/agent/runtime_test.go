@@ -374,3 +374,108 @@ func TestRuntimePublishesEachRoundSeparately(t *testing.T) {
 		t.Errorf("third should be the final answer: %#v", published[2])
 	}
 }
+
+func TestToolAccumulatorHandlesOffsetIndicesWithoutGhostPadding(t *testing.T) {
+	var acc toolAccumulator
+	// Simulate streaming tool calls starting at Index = 2 (e.g. from Claude adapter)
+	acc.Add([]domain.ToolCall{
+		{Index: 2, ID: "call_web", Type: "function", Function: domain.ToolCallFunction{Name: "web_search"}},
+	})
+	acc.Add([]domain.ToolCall{
+		{Index: 2, Function: domain.ToolCallFunction{Arguments: `{"query":"test"}`}},
+	})
+	acc.Add([]domain.ToolCall{
+		{Index: 3, ID: "call_skill", Type: "function", Function: domain.ToolCallFunction{Name: "use_skill"}},
+	})
+	acc.Add([]domain.ToolCall{
+		{Index: 3, Function: domain.ToolCallFunction{Arguments: `{"skill":"core"}`}},
+	})
+
+	calls := acc.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d: %#v", len(calls), calls)
+	}
+	if calls[0].Function.Name != "web_search" || calls[0].ID != "call_web" || calls[0].Function.Arguments != `{"query":"test"}` {
+		t.Errorf("call 0 mismatch: %#v", calls[0])
+	}
+	if calls[1].Function.Name != "use_skill" || calls[1].ID != "call_skill" || calls[1].Function.Arguments != `{"skill":"core"}` {
+		t.Errorf("call 1 mismatch: %#v", calls[1])
+	}
+}
+
+func TestRuntimeExecutesToolRoundWithOffsetIndices(t *testing.T) {
+	st := newMemStore()
+	sess := domain.Session{ID: "s-offset", Name: "s-offset", CreatedAt: time.Now(), UpdatedAt: time.Now(), ProviderID: "p", Model: "test", AgentID: "build", CWD: t.TempDir()}
+	_ = st.SaveSession(context.Background(), sess)
+
+	// Scripted provider emits tool calls starting with Index = 2
+	fp := &scriptedOffsetProvider{}
+	r := NewRuntime(st, nil, func(string) (provider.Provider, error) { return fp, nil })
+	defer r.Close()
+
+	if _, err := r.StartTurn(context.Background(), sess.ID, "calculate offset"); err != nil {
+		t.Fatal(err)
+	}
+	waitFinished(t, r, sess.ID)
+
+	got, err := st.LoadSession(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify no ghost tool calls and no nameless tool results
+	for i, m := range got.Messages {
+		if m.Role == domain.RoleAssistant {
+			for _, tc := range m.ToolCalls {
+				if tc.Function.Name == "" {
+					t.Errorf("msg[%d] assistant has nameless tool call: %#v", i, tc)
+				}
+			}
+		}
+		if m.Role == domain.RoleTool {
+			if m.ToolCallID == "" {
+				t.Errorf("msg[%d] tool message has empty tool_call_id: %#v", i, m)
+			}
+			if strings.Contains(m.Content, "unknown tool") {
+				t.Errorf("msg[%d] tool message reports unknown tool error: %#v", i, m)
+			}
+		}
+	}
+}
+
+type scriptedOffsetProvider struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *scriptedOffsetProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+	p.mu.Lock()
+	p.calls++
+	n := p.calls
+	p.mu.Unlock()
+	ch := make(chan provider.Event, 8)
+	go func() {
+		defer close(ch)
+		send := func(e provider.Event) bool {
+			select {
+			case ch <- e:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		if n == 1 {
+			// Offset index = 2
+			send(provider.Event{Kind: provider.EventToolCall, ToolCalls: []domain.ToolCall{{Index: 2, ID: "call_offset_2", Type: "function", Function: domain.ToolCallFunction{Name: "calc", Arguments: `{"expr":"2+2"}`}}}})
+			send(provider.Event{Kind: provider.EventDone, FinishReason: "tool_calls"})
+			return
+		}
+		send(provider.Event{Kind: provider.EventContent, Text: "offset done"})
+		send(provider.Event{Kind: provider.EventDone, FinishReason: "stop"})
+	}()
+	return ch, nil
+}
+func (*scriptedOffsetProvider) Models(context.Context) ([]string, error) {
+	return []string{"test"}, nil
+}
+func (*scriptedOffsetProvider) CheckKey(context.Context, string) error { return nil }

@@ -328,19 +328,59 @@ func (p *OpenAICompatible) parseNonStreamChat(ctx context.Context, resp *http.Re
 
 func chatMessages(in []domain.Message, keepReasoning bool) []map[string]any {
 	out := make([]map[string]any, 0, len(in))
+	validToolCallIDs := make(map[string]bool)
 	for _, m := range in {
 		x := map[string]any{"role": string(m.Role)}
+		if m.Role == domain.RoleTool {
+			// In OpenAI specification, role: "tool" messages MUST have a valid tool_call_id
+			// matching a tool call in the preceding assistant message.
+			if m.ToolCallID == "" || !validToolCallIDs[m.ToolCallID] {
+				continue
+			}
+			x["content"] = m.Content
+			x["tool_call_id"] = m.ToolCallID
+			out = append(out, x)
+			continue
+		}
+
+		if m.Role == domain.RoleAssistant {
+			var validCalls []domain.ToolCall
+			for _, tc := range m.ToolCalls {
+				name := strings.TrimSpace(tc.Function.Name)
+				if name == "" {
+					continue
+				}
+				callID := tc.ID
+				if callID == "" {
+					callID = fmt.Sprintf("call-%d", tc.Index)
+				}
+				tc.ID = callID
+				tc.Function.Name = name
+				if tc.Type == "" {
+					tc.Type = "function"
+				}
+				validCalls = append(validCalls, tc)
+				validToolCallIDs[callID] = true
+			}
+			if len(validCalls) > 0 {
+				x["tool_calls"] = validCalls
+			}
+			if m.Content != "" {
+				x["content"] = m.Content
+			}
+			if keepReasoning && m.ReasoningContent != "" {
+				x["reasoning_content"] = m.ReasoningContent
+			}
+			// Skip completely empty assistant messages (no content, no tool calls)
+			if len(validCalls) == 0 && m.Content == "" && (!keepReasoning || m.ReasoningContent == "") {
+				continue
+			}
+			out = append(out, x)
+			continue
+		}
+
 		if m.Content != "" || m.Role == domain.RoleUser || m.Role == domain.RoleSystem {
 			x["content"] = m.Content
-		}
-		if keepReasoning && m.ReasoningContent != "" {
-			x["reasoning_content"] = m.ReasoningContent
-		}
-		if len(m.ToolCalls) > 0 {
-			x["tool_calls"] = m.ToolCalls
-		}
-		if m.ToolCallID != "" {
-			x["tool_call_id"] = m.ToolCallID
 		}
 		if m.Name != "" {
 			x["name"] = m.Name
@@ -469,6 +509,7 @@ func (p *OpenAICompatible) streamResponses(ctx context.Context, cfg config.Provi
 
 func responsesInput(in []domain.Message) []any {
 	out := make([]any, 0, len(in)+4)
+	validCalls := make(map[string]bool)
 	for _, m := range in {
 		switch m.Role {
 		case domain.RoleSystem, domain.RoleUser:
@@ -478,9 +519,21 @@ func responsesInput(in []domain.Message) []any {
 				out = append(out, map[string]any{"role": "assistant", "content": m.Content})
 			}
 			for _, tc := range m.ToolCalls {
-				out = append(out, map[string]any{"type": "function_call", "call_id": tc.ID, "name": tc.Function.Name, "arguments": tc.Function.Arguments})
+				name := strings.TrimSpace(tc.Function.Name)
+				if name == "" {
+					continue
+				}
+				callID := tc.ID
+				if callID == "" {
+					callID = fmt.Sprintf("call-%d", tc.Index)
+				}
+				validCalls[callID] = true
+				out = append(out, map[string]any{"type": "function_call", "call_id": callID, "name": name, "arguments": tc.Function.Arguments})
 			}
 		case domain.RoleTool:
+			if m.ToolCallID == "" || !validCalls[m.ToolCallID] {
+				continue
+			}
 			out = append(out, map[string]any{"type": "function_call_output", "call_id": m.ToolCallID, "output": m.Content})
 		}
 	}

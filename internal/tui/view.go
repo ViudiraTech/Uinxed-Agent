@@ -253,7 +253,7 @@ func (m *Model) renderSidebar(t Theme, w, h int) []string {
 			elapsed := formatSubagentElapsed(a, m.activityFrame)
 			head := fmt.Sprintf("  %s %s · %s", iStyle.Render(icon), terminalutil.SanitizeText(a.AgentID), stateLabel)
 			if elapsed != "" {
-				head += lipgloss.NewStyle().Foreground(t.Muted).Render(" · "+elapsed)
+				head += lipgloss.NewStyle().Foreground(t.Muted).Render(" · " + elapsed)
 			}
 			if prog.Tools > 0 {
 				head += lipgloss.NewStyle().Foreground(t.Muted).Render(fmt.Sprintf(" · %d tools", prog.Tools))
@@ -563,6 +563,9 @@ func (m *Model) busyIndicator(t Theme) string {
 	}
 	if m.toast != "" {
 		return lipgloss.NewStyle().Foreground(t.Accent).Render(terminalutil.SanitizeText(m.toast))
+	}
+	if m.errorText != "" {
+		return lipgloss.NewStyle().Foreground(t.Error).Render("× " + terminalutil.SanitizeText(m.errorText))
 	}
 	if m.statusCmdText != "" {
 		return lipgloss.NewStyle().Foreground(t.Muted).Render(m.statusCmdText)

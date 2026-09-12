@@ -149,3 +149,49 @@ func TestEscapeLikeLiteralWildcards(t *testing.T) {
 		t.Fatalf("escapeLike=%q", got)
 	}
 }
+
+func TestLoadSessionSanitizesGhostCallsAndOrphanTools(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "ux-agent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	s := testSession()
+	s.ID = "s-corrupted"
+	s.Messages = []domain.Message{
+		{ID: "m1", Role: domain.RoleUser, Content: "hi"},
+		{
+			ID:   "m2",
+			Role: domain.RoleAssistant,
+			ToolCalls: []domain.ToolCall{
+				{Index: 0, ID: "", Type: "function", Function: domain.ToolCallFunction{Name: ""}},
+				{Index: 1, ID: "c1", Type: "function", Function: domain.ToolCallFunction{Name: "web_search", Arguments: `{"query":"go"}`}},
+			},
+		},
+		{ID: "m3", Role: domain.RoleTool, ToolCallID: "", Content: `{"error":"unknown tool \"\""}`},
+		{ID: "m4", Role: domain.RoleTool, ToolCallID: "c1", Content: "results"},
+	}
+
+	if err := db.SaveSession(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := db.LoadSession(ctx, "s-corrupted")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should prune ghost tool calls and orphan tool results:
+	// m1 (user), m2 (assistant with 1 valid tool call), m4 (tool with c1)
+	if len(loaded.Messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d: %#v", len(loaded.Messages), loaded.Messages)
+	}
+	if len(loaded.Messages[1].ToolCalls) != 1 || loaded.Messages[1].ToolCalls[0].ID != "c1" {
+		t.Fatalf("expected 1 valid tool call c1: %#v", loaded.Messages[1].ToolCalls)
+	}
+	if loaded.Messages[2].ID != "m4" || loaded.Messages[2].ToolCallID != "c1" {
+		t.Fatalf("expected m4 tool message: %#v", loaded.Messages[2])
+	}
+}
