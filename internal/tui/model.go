@@ -114,7 +114,6 @@ type connectWizard struct {
 	Input   string
 	Name    string
 	BaseURL string
-	Models  string
 	Key     string
 }
 

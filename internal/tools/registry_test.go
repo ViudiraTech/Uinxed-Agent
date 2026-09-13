@@ -14,7 +14,7 @@ func TestDefaultRegistryDoesNotExposeCurrentTimeTool(t *testing.T) {
 // their category for the approval policy.
 func TestDefaultRegistryExposesPlanningTools(t *testing.T) {
 	r := DefaultRegistry()
-	for _, name := range []string{"plan_write", "switch_mode"} {
+	for _, name := range []string{"plan_write", "switch_mode", "exit_plan"} {
 		if _, ok := r.Get(name); !ok {
 			t.Fatalf("%s must be registered", name)
 		}

@@ -631,7 +631,11 @@ func (m *Model) handleApprovalKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 		case "enter":
 			reason := strings.TrimSpace(m.approvalInput)
 			if reason == "" {
-				reason = "the user declined this action"
+				if m.isPlanApproval() {
+					reason = "the user wants to keep planning"
+				} else {
+					reason = "the user declined this action"
+				}
 			}
 			return m.resolveApproval(false, false, reason), true
 		case "backspace":
@@ -643,6 +647,9 @@ func (m *Model) handleApprovalKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 			}
 			return nil, true
 		}
+	}
+	if m.isPlanApproval() {
+		return m.handlePlanApprovalKey(key)
 	}
 	switch key {
 	case "1":
@@ -687,10 +694,63 @@ func (m *Model) handleApprovalKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 	return nil, false
 }
 
+// isPlanApproval is the Claude Code-style gate: exit_plan raised while the
+// session is still in plan mode. switch_mode cannot leave plan, so this overlay
+// is always "accept the plan and start implementing".
+func (m *Model) isPlanApproval() bool {
+	return m.approval != nil && m.approval.ToolName == "exit_plan"
+}
+
+// handlePlanApprovalKey is the dedicated plan-exit dialog: auto-accept edits,
+// keep asking for each edit, or stay in plan with feedback.
+func (m *Model) handlePlanApprovalKey(key string) (tea.Cmd, bool) {
+	switch key {
+	case "1":
+		return m.resolveApprovalMode(true, false, "", "auto-edit"), true
+	case "2":
+		return m.resolveApprovalMode(true, false, "", "read-only"), true
+	case "3":
+		m.approvalFeedback = true
+		m.approvalInput = ""
+		return nil, true
+	case "up", "k":
+		m.approvalChoice = max(0, m.approvalChoice-1)
+		return nil, true
+	case "down", "j":
+		m.approvalChoice = min(2, m.approvalChoice+1)
+		return nil, true
+	case "enter":
+		switch m.approvalChoice {
+		case 0:
+			return m.resolveApprovalMode(true, false, "", "auto-edit"), true
+		case 1:
+			return m.resolveApprovalMode(true, false, "", "read-only"), true
+		default:
+			m.approvalFeedback = true
+			m.approvalInput = ""
+			return nil, true
+		}
+	case "esc":
+		return m.resolveApproval(false, false, "the user wants to keep planning"), true
+	case "ctrl+c":
+		m.resolveApproval(false, false, "the user interrupted the session")
+		if m.busy && m.ctrl.Cancel(m.session.ID) {
+			m.showToast("cancelling…")
+			return nil, true
+		}
+		return tea.Quit, true
+	}
+	return nil, false
+}
+
 // resolveApproval hands the decision to the runtime and clears the prompt. The
 // response travels by direct method call, never as an event: the event stream
 // is batched and reordered, and a lost answer would hang the tool round.
 func (m *Model) resolveApproval(allow, always bool, reason string) tea.Cmd {
+	return m.resolveApprovalMode(allow, always, reason, "")
+}
+
+func (m *Model) resolveApprovalMode(allow, always bool, reason, mode string) tea.Cmd {
 	a := m.approval
 	if a == nil {
 		return nil
@@ -700,7 +760,7 @@ func (m *Model) resolveApproval(allow, always bool, reason string) tea.Cmd {
 	m.approvalInput = ""
 	m.overlay = overlayNone
 	m.setFocus(FocusPrompt)
-	d := agent.Decision{Allow: allow, Always: always, Reason: reason}
+	d := agent.Decision{Allow: allow, Always: always, Reason: reason, Mode: mode}
 	reqID := a.ID
 	return func() tea.Msg {
 		if !m.ctrl.ResolveApproval(a.RunID, reqID, d) {

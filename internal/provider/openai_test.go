@@ -190,6 +190,28 @@ func TestResponsesInputPreservesFunctionCallID(t *testing.T) {
 	}
 }
 
+func TestModelsUsesOpenAIEndpointAndAuth(t *testing.T) {
+	var gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"model-a"},{"id":"model-b","name":"Model B"},{"id":"model-a"}]}`))
+	}))
+	defer srv.Close()
+	p := NewOpenAICompatible(config.Provider{ID: "router", BaseURL: srv.URL + "/v1"}, func() (string, error) { return "router-key", nil })
+	models, err := p.Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1/models" || gotAuth != "Bearer router-key" {
+		t.Fatalf("request path=%q auth=%q", gotPath, gotAuth)
+	}
+	want := []string{"model-a", "model-b"}
+	if fmt.Sprint(models) != fmt.Sprint(want) {
+		t.Fatalf("models=%v want %v", models, want)
+	}
+}
+
 func TestProviderKeyErrorIsNotSilentlyIgnored(t *testing.T) {
 	p := NewOpenAICompatible(config.Provider{ID: "test", BaseURL: "http://127.0.0.1:1"}, func() (string, error) {
 		return "", fmt.Errorf("decrypt failed")

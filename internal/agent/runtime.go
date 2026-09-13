@@ -446,21 +446,34 @@ func (r *Runtime) executeCalls(ctx context.Context, st *turnState, runID string,
 			args = []byte("{}")
 		}
 		verdict, reason := approval.Evaluate(mode, call.Function.Name, cat, grants)
-		// switch_mode and plan_write carry their own policy beyond the
-		// category matrix, so they are decided here rather than in Evaluate:
-		//   - switch_mode: entering/leaving plan is direct, sideways switches
-		//     ask, and subagents cannot switch at all (a child must not be able
-		//     to escape the parent's plan mode on its own);
+		// switch_mode, exit_plan and plan_write carry their own policy beyond
+		// the category matrix, so they are decided here rather than in Evaluate:
+		//   - switch_mode: entering plan is direct, leaving plan is refused
+		//     (use exit_plan instead), sideways switches ask, and subagents
+		//     cannot switch at all;
+		//   - exit_plan: the Claude-style plan-approval gate. Only in plan
+		//     mode, always asks, never skipped by a session grant;
 		//   - plan_write: the plan belongs to plan mode, so outside plan mode it
 		//     is refused outright instead of running and erroring later.
-		if call.Function.Name == "switch_mode" {
+		switch call.Function.Name {
+		case "switch_mode":
 			if parentID != "" {
 				verdict, reason = approval.Deny, "subagents cannot switch modes"
 			} else {
 				verdict, reason = approval.EvaluateModeSwitch(mode, switchModeTarget(args), grants)
 			}
-		} else if call.Function.Name == "plan_write" && mode != approval.ModePlan {
-			verdict, reason = approval.Deny, "plan_write is only available in plan mode"
+		case "exit_plan":
+			if parentID != "" {
+				verdict, reason = approval.Deny, "subagents cannot switch modes"
+			} else if mode != approval.ModePlan {
+				verdict, reason = approval.Deny, "exit_plan is only available in plan mode"
+			} else {
+				verdict, reason = approval.Ask, "leaving plan mode requires plan approval"
+			}
+		case "plan_write":
+			if mode != approval.ModePlan {
+				verdict, reason = approval.Deny, "plan_write is only available in plan mode"
+			}
 		}
 		if verdict == approval.Allow {
 			continue
@@ -538,6 +551,14 @@ func (r *Runtime) executeCalls(ctx context.Context, st *turnState, runID string,
 					results[i].err = fmt.Errorf("user denied: %s", reason)
 					return nil
 				}
+				if mode := strings.TrimSpace(d.Mode); mode != "" {
+					switch call.Function.Name {
+					case "switch_mode":
+						args = patchSwitchModeArgs(args, mode)
+					case "exit_plan":
+						args = patchExitPlanArgs(args, mode)
+					}
+				}
 			}
 
 			act := domain.ToolActivity{ID: r.id("tool"), CallID: call.ID, Name: call.Function.Name, Arguments: append([]byte(nil), args...), State: "running", StartedAt: time.Now()}
@@ -577,6 +598,9 @@ func (r *Runtime) executeCalls(ctx context.Context, st *turnState, runID string,
 				},
 				SwitchMode: func(c context.Context, raw json.RawMessage) (tools.Result, error) {
 					return r.switchMode(c, st, runID, raw)
+				},
+				ExitPlan: func(c context.Context, raw json.RawMessage) (tools.Result, error) {
+					return r.exitPlan(c, st, runID, raw)
 				},
 				Delegate: func(c context.Context, raw json.RawMessage) (tools.Result, error) {
 					return r.delegate(c, st, runID, raw)
@@ -763,9 +787,70 @@ func (r *Runtime) switchMode(ctx context.Context, st *turnState, runID string, r
 	return tools.Result{Content: fmt.Sprintf("session mode switched to %s", m)}, nil
 }
 
+// exitPlan is the Claude-style plan-approval gate. executeCalls already waited
+// for the user; here we persist the chosen implementation mode. Default is
+// auto-edit (auto-accept edits); the overlay may rewrite it to read-only.
+func (r *Runtime) exitPlan(ctx context.Context, st *turnState, runID string, raw json.RawMessage) (tools.Result, error) {
+	var a struct {
+		Mode    string `json:"mode"`
+		Summary string `json:"summary"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return tools.Result{}, err
+		}
+	}
+	target := approval.Normalize(a.Mode)
+	if target == approval.ModePlan {
+		target = approval.ModeAutoEdit
+	}
+	st.mu.Lock()
+	if modeFromMetadata(st.s.Metadata, r.approvalMode()) != approval.ModePlan {
+		st.mu.Unlock()
+		return tools.Result{}, errors.New("exit_plan is only available in plan mode")
+	}
+	if st.s.Metadata == nil {
+		st.s.Metadata = map[string]any{}
+	}
+	st.s.Metadata["mode"] = string(target)
+	st.s.UpdatedAt = time.Now()
+	sid := st.s.ID
+	st.mu.Unlock()
+	r.emit(ctx, domain.Event{Kind: domain.EventSessionChanged, SessionID: sid, RunID: runID, At: time.Now(), Data: domain.SessionChanged{Mode: string(target)}})
+	return tools.Result{Content: fmt.Sprintf("plan approved; session mode switched to %s", target)}, nil
+}
+
 // switchModeTarget extracts the requested mode from a switch_mode call. It is
 // used by executeCalls to decide the verdict before the call is allowed to
 // run; invalid values normalise to the configured default exactly as modeFromMetadata does.
+// patchSwitchModeArgs rewrites a switch_mode payload so the user-chosen
+// implementation mode wins over whatever the model requested.
+func patchSwitchModeArgs(raw json.RawMessage, mode string) json.RawMessage {
+	var m map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &m) != nil {
+		m = map[string]any{}
+	}
+	m["mode"] = mode
+	b, err := json.Marshal(m)
+	if err != nil {
+		return json.RawMessage(`{"mode":"auto-edit"}`)
+	}
+	return b
+}
+
+func patchExitPlanArgs(raw json.RawMessage, mode string) json.RawMessage {
+	var m map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &m) != nil {
+		m = map[string]any{}
+	}
+	m["mode"] = mode
+	b, err := json.Marshal(m)
+	if err != nil {
+		return json.RawMessage(`{"mode":"auto-edit"}`)
+	}
+	return b
+}
+
 func switchModeTarget(raw json.RawMessage) approval.Mode {
 	var a struct {
 		Mode string `json:"mode"`

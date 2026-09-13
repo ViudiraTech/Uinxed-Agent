@@ -23,6 +23,7 @@ type RuntimeCallbacks struct {
 	TodoUpdate func(ctx context.Context, raw json.RawMessage) (Result, error)
 	PlanWrite  func(ctx context.Context, raw json.RawMessage) (Result, error)
 	SwitchMode func(ctx context.Context, raw json.RawMessage) (Result, error)
+	ExitPlan   func(ctx context.Context, raw json.RawMessage) (Result, error)
 	Delegate   func(ctx context.Context, raw json.RawMessage) (Result, error)
 }
 

@@ -97,9 +97,8 @@ ux-agent
 git clone https://github.com/ViudiraTech/Uinxed-Agent.git
 cd Uinxed-Agent
 
-# Download dependencies & compile
-go mod download
-go build -trimpath -o ux-agent ./cmd/ux-agent
+# Compile (same as `make all`)
+make
 
 # Launch
 ./ux-agent
@@ -241,7 +240,7 @@ Uinxed-Agent features a hierarchical multi-agent architecture designed for auton
 - **`coding`**: Rigorous software engineer following the red-green-refactor loop: *Understand → Plan → Implement → Verify → Review*.
 - **`plan`**: Read-only strategic analysis. Formulates implementation plans without mutating workspace files.
 
-`plan_write` is gated by the session's working mode, not the active agent: it is available to every agent that can see the tool, but only while the session is in `plan` mode, and `/plan` shows the recorded steps. Every primary agent can also call `switch_mode` to propose a working-mode change: entering or leaving `plan` mode applies immediately, any other switch requires user confirmation (unless "always allow switch_mode" was granted for the session), and delegated subagents can never switch modes.
+`plan_write` is gated by the session's working mode, not the active agent: it is available to every agent that can see the tool, but only while the session is in `plan` mode, and `/plan` shows the recorded steps. When the plan is ready the model must call `exit_plan`, which opens a plan-approval dialog (auto-accept edits, approve each edit, or keep planning). Every primary agent can also call `switch_mode` to propose a working-mode change: entering `plan` mode applies immediately; leaving `plan` via `switch_mode` is refused (use `exit_plan`); any other switch requires user confirmation (unless "always allow switch_mode" was granted for the session); delegated subagents can never switch modes.
 
 ### 2. Subagents (Delegated)
 - **`explorer`**: High-speed, read-only code exploration using grep, glob, and AST inspection.
@@ -332,17 +331,12 @@ Run the benchmark suite on your machine:
 We welcome contributions! Ensure tests and formatting pass before submitting PRs:
 
 ```bash
-# Format code
-make fmt
-
-# Run all unit tests
-make test
-
-# Run race detector
-make race
-
-# Full verification gate (fmt + test + race + vet + build)
-make check
+make          # compile ./ux-agent
+make help     # list all targets
+make test     # unit tests
+make race     # race detector
+make fmt      # gofmt
+make check    # fmt + test + race + vet + build
 ```
 
 ---

@@ -598,13 +598,18 @@ func (c *Conversation) renderToolCall(tc domain.ToolCall, a domain.ToolActivity,
 	}
 
 	// Status meta stays dim and fixed-position so the spinner can animate
-	// without shifting the call text: `· running 5s`, `· 800ms`, `· failed`.
-	meta := lipgloss.NewStyle().Foreground(t.Muted).Render(" · " + toolStatusMeta(a, statusLabel))
+	// without shifting the action text. The marker already communicates motion;
+	// only elapsed time or an exceptional state needs a text label.
+	metaText := toolStatusMeta(a, statusLabel)
+	meta := ""
+	if metaText != "" {
+		meta = lipgloss.NewStyle().Foreground(t.Muted).Render(" · " + metaText)
+	}
 
 	marker := lipgloss.NewStyle().Foreground(fg).Render(icon)
 	line := " " + marker + " " + head + meta
 	if c.expandedTools[tc.ID] {
-		line = " " + marker + " " + head + meta + lipgloss.NewStyle().Foreground(t.Muted).Render("  (ctrl+e)")
+		line = " " + marker + " " + head + meta + lipgloss.NewStyle().Foreground(t.Muted).Render("  · details")
 	}
 
 	out := []renderLine{{Text: line, Action: ActionTool, Value: tc.ID}}
@@ -646,29 +651,66 @@ func (c *Conversation) renderToolCall(tc domain.ToolCall, a domain.ToolActivity,
 	return out
 }
 
-// renderToolHead builds the `name(args)` call text with a two-tone style: the
-// tool name carries the accent, the argument stays dim. Delegate gets its own
-// modern form `delegate ▸ agent: task` so both arguments stay visible.
+// renderToolHead turns an internal function call into a compact, human-readable
+// action. The raw function name remains available in the expanded arguments, but
+// the collapsed transcript should read like a conversation rather than a trace.
 func (c *Conversation) renderToolHead(tc domain.ToolCall, name string, t Theme, hover string, g Glyphs) string {
-	nameStyle := lipgloss.NewStyle().Foreground(t.Tool)
+	nameStyle := lipgloss.NewStyle().Foreground(t.Tool).Bold(true)
 	argStyle := lipgloss.NewStyle().Foreground(t.Muted)
 	if hover == tc.ID {
-		nameStyle = nameStyle.Bold(true)
+		nameStyle = nameStyle.Underline(true)
 	}
+
+	label := toolDisplayName(name)
 	if name == "delegate" {
 		if agent, task := parseDelegateArgs(tc.Function.Arguments); agent != "" {
-			head := nameStyle.Render(name) + argStyle.Render(" "+g.Bullet+" "+agent)
+			head := nameStyle.Render(label) + argStyle.Render(" "+g.Bullet+" "+agent)
 			if task != "" {
-				head += argStyle.Render(": " + truncWidth(singleLine(terminalutil.SanitizeText(task)), 48))
+				head += argStyle.Render(" · " + truncWidth(singleLine(terminalutil.SanitizeText(task)), 48))
 			}
 			return head
 		}
 	}
 	summary := toolSummary(name, terminalutil.SanitizeText(tc.Function.Arguments))
 	if summary == "" {
-		return nameStyle.Render(name)
+		return nameStyle.Render(label)
 	}
-	return nameStyle.Render(name) + argStyle.Render("("+summary+")")
+	return nameStyle.Render(label) + argStyle.Render(" · "+summary)
+}
+
+// toolDisplayName is intentionally phrased as an action. It gives every tool a
+// stable visual vocabulary while allowing newly added tools to fall back to a
+// readable title derived from their function name.
+func toolDisplayName(name string) string {
+	labels := map[string]string{
+		"bash":        "Run command",
+		"read_file":   "Read file",
+		"write_file":  "Write file",
+		"edit_file":   "Edit file",
+		"list_dir":    "List folder",
+		"grep":        "Search files",
+		"glob":        "Find files",
+		"fetch_url":   "Open webpage",
+		"web_search":  "Search web",
+		"use_skill":   "Load skill",
+		"calc":        "Calculate",
+		"delegate":    "Delegate task",
+		"todo_update": "Update task",
+	}
+	if label, ok := labels[name]; ok {
+		return label
+	}
+	parts := strings.FieldsFunc(name, func(r rune) bool { return r == '_' || r == '-' })
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	if len(parts) == 0 {
+		return "Tool"
+	}
+	return strings.Join(parts, " ")
 }
 
 func parseDelegateArgs(args string) (agent, task string) {

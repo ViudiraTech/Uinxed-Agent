@@ -28,7 +28,7 @@ func DefaultRegistry() *Registry {
 	for _, t := range []Tool{
 		&BashTool{}, &ReadFileTool{}, &WriteFileTool{}, &EditFileTool{}, &ListDirTool{}, &GrepTool{}, &GlobTool{},
 		&FetchURLTool{}, &WebSearchTool{}, &SkillTool{}, &CalcTool{},
-		&DelegateTool{}, &TodoWriteTool{}, &TodoUpdateTool{}, &PlanWriteTool{}, &SwitchModeTool{},
+		&DelegateTool{}, &TodoWriteTool{}, &TodoUpdateTool{}, &PlanWriteTool{}, &SwitchModeTool{}, &ExitPlanTool{},
 		&MultiEditTool{}, &DeleteFileTool{}, &MoveFileTool{}, &CopyFileTool{}, &MakeDirTool{},
 		&GitStatusTool{}, &GitDiffTool{}, &GitLogTool{}, &GitCommitTool{},
 		&TreeTool{},

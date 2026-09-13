@@ -208,10 +208,11 @@ func TestValidMode(t *testing.T) {
 	}
 }
 
-// TestEvaluateModeSwitch pins the switch_mode policy: plan is the only
-// boundary the model may cross on its own (in either direction), every other
+// TestEvaluateModeSwitch pins the switch_mode policy: entering plan is the
+// only boundary the model may cross on its own, leaving plan is refused
+// (that gate belongs to exit_plan, even with a session grant), every other
 // transition is gated on a user decision, and an explicit per-session grant
-// outranks the rule exactly as it does for Evaluate.
+// outranks the sideways rule exactly as it does for Evaluate.
 func TestEvaluateModeSwitch(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -219,9 +220,10 @@ func TestEvaluateModeSwitch(t *testing.T) {
 		grants      map[string]struct{}
 		want        Verdict
 	}{
-		{"leaving plan is direct", ModePlan, ModeAutoEdit, nil, Allow},
-		{"leaving plan to read-only is direct", ModePlan, ModeReadOnly, nil, Allow},
-		{"leaving plan to full-auto is direct", ModePlan, ModeFullAuto, nil, Allow},
+		{"leaving plan is refused", ModePlan, ModeAutoEdit, nil, Deny},
+		{"leaving plan to read-only is refused", ModePlan, ModeReadOnly, nil, Deny},
+		{"leaving plan to full-auto is refused", ModePlan, ModeFullAuto, nil, Deny},
+		{"grant does not skip leaving plan", ModePlan, ModeAutoEdit, map[string]struct{}{"switch_mode": {}}, Deny},
 		{"entering plan is direct", ModeAutoEdit, ModePlan, nil, Allow},
 		{"entering plan from read-only is direct", ModeReadOnly, ModePlan, nil, Allow},
 		{"entering plan from full-auto is direct", ModeFullAuto, ModePlan, nil, Allow},
@@ -245,13 +247,17 @@ func TestEvaluateModeSwitch(t *testing.T) {
 	}
 }
 
-// TestEvaluateModeSwitchNeverDenies pins that the plan-mode escape hatch cannot
-// deny: a switch is either applied directly or confirmed, never refused by the
-// mode itself. Subagent denial lives in the runtime, not this policy.
-func TestEvaluateModeSwitchNeverDenies(t *testing.T) {
+// TestEvaluateModeSwitchDeniesOnlyLeavingPlan pins that switch_mode cannot
+// leave plan (that gate is exit_plan). Every other pair is Allow or Ask.
+func TestEvaluateModeSwitchDeniesOnlyLeavingPlan(t *testing.T) {
 	for _, cur := range Modes() {
 		for _, target := range Modes() {
-			if got, _ := EvaluateModeSwitch(cur, target, nil); got == Deny {
+			got, _ := EvaluateModeSwitch(cur, target, nil)
+			leaving := cur == ModePlan && target != ModePlan
+			if leaving && got != Deny {
+				t.Errorf("EvaluateModeSwitch(%q, %q) = %v, want Deny", cur, target, got)
+			}
+			if !leaving && got == Deny {
 				t.Errorf("EvaluateModeSwitch(%q, %q) = Deny", cur, target)
 			}
 		}

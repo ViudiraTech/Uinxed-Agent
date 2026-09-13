@@ -118,7 +118,7 @@ type SwitchModeTool struct{}
 
 func (*SwitchModeTool) Name() string { return "switch_mode" }
 func (*SwitchModeTool) Description() string {
-	return "提议切换当前会话的工作模式；进入或退出 plan 模式直接生效，其余切换需用户确认。子智能体无权切换。"
+	return "提议切换当前会话的工作模式；进入 plan 模式直接生效，退出 plan 必须改用 exit_plan，其余切换需用户确认。子智能体无权切换。"
 }
 func (*SwitchModeTool) Category() Category { return CategoryState }
 func (*SwitchModeTool) Schema() map[string]any {
@@ -129,6 +129,26 @@ func (*SwitchModeTool) Execute(ctx context.Context, raw json.RawMessage, env Exe
 		return Result{}, errors.New("mode switch unavailable")
 	}
 	return env.Callbacks.SwitchMode(ctx, raw)
+}
+
+type ExitPlanTool struct{}
+
+func (*ExitPlanTool) Name() string { return "exit_plan" }
+func (*ExitPlanTool) Description() string {
+	return "计划写完后提交给用户审批；仅 plan 模式可用。用户批准后才会离开 plan 并开始实现，拒绝则继续规划。"
+}
+func (*ExitPlanTool) Category() Category { return CategoryState }
+func (*ExitPlanTool) Schema() map[string]any {
+	return obj(map[string]any{
+		"summary": strp("给用户看的计划摘要（可选）"),
+		"mode":    map[string]any{"type": "string", "enum": []string{"read-only", "auto-edit", "full-auto"}, "description": "用户选择的实现模式；模型无需填写"},
+	})
+}
+func (*ExitPlanTool) Execute(ctx context.Context, raw json.RawMessage, env ExecutionContext) (Result, error) {
+	if env.Callbacks.ExitPlan == nil {
+		return Result{}, errors.New("exit_plan unavailable")
+	}
+	return env.Callbacks.ExitPlan(ctx, raw)
 }
 
 type TodoUpdateTool struct{}

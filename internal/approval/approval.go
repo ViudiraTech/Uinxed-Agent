@@ -140,20 +140,23 @@ func Evaluate(mode Mode, tool string, cat tools.Category, sessionAlways map[stri
 // because a mode switch changes how much authority the model has from the very
 // next round, so the user must be in the loop for most transitions.
 //
-// Entering and leaving plan mode are always allowed: plan mode exists to force
-// a plan out of the model, and the tool's whole point is that the model can
-// propose to start or finish planning without friction. Every other transition
-// (between read-only, auto-edit and full-auto) asks the user first, exactly as
-// the category matrix asks for mutating calls.
+// Entering plan mode is frictionless so the model can start researching on its
+// own. Leaving plan mode is refused here: that gate belongs to exit_plan, which
+// shows the recorded plan and lets the user pick how implementation should run.
+// A session grant for switch_mode does not skip that. Every other transition
+// (between read-only, auto-edit and full-auto) asks unless that grant is set.
 func EvaluateModeSwitch(cur, target Mode, sessionAlways map[string]struct{}) (Verdict, string) {
-	if _, ok := sessionAlways["switch_mode"]; ok {
-		return Allow, "allowed for this session"
-	}
 	curN, tgtN := Normalize(string(cur)), Normalize(string(target))
 	if curN == tgtN {
 		return Allow, ""
 	}
-	if curN == ModePlan || tgtN == ModePlan {
+	if curN == ModePlan {
+		return Deny, "use exit_plan to submit the plan for approval"
+	}
+	if _, ok := sessionAlways["switch_mode"]; ok {
+		return Allow, "allowed for this session"
+	}
+	if tgtN == ModePlan {
 		return Allow, ""
 	}
 	return Ask, "mode switches require user confirmation"

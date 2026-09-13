@@ -10,6 +10,7 @@ import (
 	"github.com/ViudiraTech/Uinxed-Agent/internal/config"
 	ctxutil "github.com/ViudiraTech/Uinxed-Agent/internal/context"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
+	"github.com/ViudiraTech/Uinxed-Agent/internal/provider"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/skills"
 )
 
@@ -685,16 +686,20 @@ func (m *Model) handleConnectKey(k tea.KeyPressMsg) tea.Cmd {
 		m.connect.BaseURL = strings.TrimRight(v, "/")
 		m.connect.Step = 2
 	case 2:
-		m.connect.Models = v
-		m.connect.Step = 3
-	case 3:
 		m.connect.Key = v
-		p := config.Provider{Name: m.connect.Name, BaseURL: m.connect.BaseURL, Models: splitCSV(m.connect.Models)}
-		if len(p.Models) == 0 {
-			p.Models = []string{"default"}
-		}
-		p.DefaultModel = p.Models[0]
 		return asyncOp("connect", func() (any, error) {
+			// Discover models before persisting the provider. This keeps the
+			// configuration authoritative and avoids a hand-maintained model list.
+			p := config.Provider{Name: m.connect.Name, BaseURL: m.connect.BaseURL}
+			probe := provider.NewOpenAICompatible(p, func() (string, error) {
+				return m.connect.Key, nil
+			})
+			models, err := probe.Models(m.ctx)
+			if err != nil {
+				return nil, err
+			}
+			p.Models = models
+			p.DefaultModel = models[0]
 			if err := m.ctrl.Config.UpsertProvider(p, m.connect.Key); err != nil {
 				return nil, err
 			}
@@ -718,16 +723,6 @@ func (m *Model) handleConnectKey(k tea.KeyPressMsg) tea.Cmd {
 		})
 	}
 	return nil
-}
-func splitCSV(s string) []string {
-	var out []string
-	for _, x := range strings.Split(s, ",") {
-		x = strings.TrimSpace(x)
-		if x != "" {
-			out = append(out, x)
-		}
-	}
-	return out
 }
 
 func (m *Model) handleConfirmKey(k tea.KeyPressMsg) tea.Cmd {

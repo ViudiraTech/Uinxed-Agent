@@ -150,20 +150,82 @@ func TestRuntimePlanWriteDeniedOutsidePlan(t *testing.T) {
 	}
 }
 
-// TestRuntimeSwitchModeExitsPlanWithoutPrompt pins the user-settled exception:
-// leaving plan mode is applied immediately, with no approval round-trip.
-func TestRuntimeSwitchModeExitsPlanWithoutPrompt(t *testing.T) {
-	p := &toolCallScript{tool: "switch_mode", args: `{"mode":"auto-edit","reason":"ready to implement"}`}
-	r, st := startSession(t, "s-exit", "plan", "plan", p)
-	startID(t, r, "s-exit", "wrap up")
-	finishedWithoutPrompts(t, r, "s-exit")
+// TestRuntimeExitPlanRequiresApproval pins the Claude-style plan-approval
+// gate: exit_plan always prompts, even though entering plan is frictionless.
+func TestRuntimeExitPlanRequiresApproval(t *testing.T) {
+	t.Run("allow defaults to auto-edit", func(t *testing.T) {
+		p := &toolCallScript{tool: "exit_plan", args: `{"summary":"ready to implement"}`}
+		r, st := startSession(t, "s-exit", "plan", "plan", p)
+		runID := startID(t, r, "s-exit", "wrap up")
+		req := approvalEvent(t, r, runID)
+		if req.ToolName != "exit_plan" {
+			t.Fatalf("tool name = %q", req.ToolName)
+		}
+		if !strings.Contains(req.Summary, "ready to implement") {
+			t.Fatalf("summary should carry the plan summary, got %q", req.Summary)
+		}
+		r.ResolveApproval(runID, req.ID, Decision{Allow: true})
+		finishedWithoutPrompts(t, r, "s-exit")
+		got, err := st.LoadSession(context.Background(), "s-exit")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v, _ := got.Metadata["mode"].(string); v != "auto-edit" {
+			t.Fatalf("mode after approved exit = %q, want auto-edit", v)
+		}
+	})
+	t.Run("user-chosen mode overrides the default", func(t *testing.T) {
+		p := &toolCallScript{tool: "exit_plan", args: `{"summary":"ship it"}`}
+		r, st := startSession(t, "s-override", "plan", "plan", p)
+		runID := startID(t, r, "s-override", "wrap up")
+		req := approvalEvent(t, r, runID)
+		r.ResolveApproval(runID, req.ID, Decision{Allow: true, Mode: "read-only"})
+		finishedWithoutPrompts(t, r, "s-override")
+		got, _ := st.LoadSession(context.Background(), "s-override")
+		if v, _ := got.Metadata["mode"].(string); v != "read-only" {
+			t.Fatalf("mode after override = %q, want read-only", v)
+		}
+	})
+	t.Run("deny stays in plan", func(t *testing.T) {
+		p := &toolCallScript{tool: "exit_plan", args: `{}`}
+		r, st := startSession(t, "s-keep", "plan", "plan", p)
+		runID := startID(t, r, "s-keep", "wrap up")
+		req := approvalEvent(t, r, runID)
+		r.ResolveApproval(runID, req.ID, Decision{Allow: false, Reason: "revise the plan"})
+		finishedWithoutPrompts(t, r, "s-keep")
+		got, _ := st.LoadSession(context.Background(), "s-keep")
+		if v, _ := got.Metadata["mode"].(string); v != "plan" {
+			t.Fatalf("mode after denied exit = %q, want plan", v)
+		}
+		if res := lastToolResult(t, st, "s-keep"); !strings.Contains(res, "user denied") {
+			t.Fatalf("model did not see the denial: %s", res)
+		}
+	})
+}
 
-	got, err := st.LoadSession(context.Background(), "s-exit")
-	if err != nil {
-		t.Fatal(err)
+// TestRuntimeSwitchModeCannotLeavePlan pins that switch_mode is no longer the
+// plan-approval gate: leaving plan that way is refused with no prompt.
+func TestRuntimeSwitchModeCannotLeavePlan(t *testing.T) {
+	p := &toolCallScript{tool: "switch_mode", args: `{"mode":"auto-edit","reason":"ready to implement"}`}
+	r, st := startSession(t, "s-noexit", "plan", "plan", p)
+	startID(t, r, "s-noexit", "wrap up")
+	finishedWithoutPrompts(t, r, "s-noexit")
+	got, _ := st.LoadSession(context.Background(), "s-noexit")
+	if v, _ := got.Metadata["mode"].(string); v != "plan" {
+		t.Fatalf("mode after refused switch = %q, want plan", v)
 	}
-	if v, _ := got.Metadata["mode"].(string); v != "auto-edit" {
-		t.Fatalf("mode after exit = %q, want auto-edit", v)
+	if res := lastToolResult(t, st, "s-noexit"); !strings.Contains(res, "exit_plan") {
+		t.Fatalf("model did not see the exit_plan hint: %s", res)
+	}
+}
+
+func TestRuntimeExitPlanDeniedOutsidePlan(t *testing.T) {
+	p := &toolCallScript{tool: "exit_plan", args: `{}`}
+	r, st := startSession(t, "s-exitout", "build", "auto-edit", p)
+	startID(t, r, "s-exitout", "try to exit")
+	finishedWithoutPrompts(t, r, "s-exitout")
+	if res := lastToolResult(t, st, "s-exitout"); !strings.Contains(res, "exit_plan is only available in plan mode") {
+		t.Fatalf("model did not see the plan-mode denial: %s", res)
 	}
 }
 
@@ -283,5 +345,19 @@ func TestSwitchModeTargetParsing(t *testing.T) {
 	}
 	if got := switchModeTarget(json.RawMessage(`{"mode":"yolo"}`)); got != "auto-edit" {
 		t.Errorf("invalid mode = %q, want the default mode", got)
+	}
+}
+
+func TestPatchSwitchModeArgs(t *testing.T) {
+	got := patchSwitchModeArgs(json.RawMessage(`{"mode":"full-auto","reason":"go"}`), "auto-edit")
+	var a struct {
+		Mode   string `json:"mode"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(got, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Mode != "auto-edit" || a.Reason != "go" {
+		t.Fatalf("patched args = %#v", a)
 	}
 }

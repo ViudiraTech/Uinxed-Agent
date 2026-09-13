@@ -337,11 +337,28 @@ func TestTranscriptIsBorderless(t *testing.T) {
 			t.Fatalf("transcript should not draw card borders, found %q in:\n%s", box, got)
 		}
 	}
-	if !strings.Contains(got, "read_file(internal/tui/view.go)") {
-		t.Fatalf("expected a collapsed one-line tool call, got:\n%s", got)
+	if !strings.Contains(got, "Read file · internal/tui/view.go") {
+		t.Fatalf("expected a readable collapsed tool call, got:\n%s", got)
+	}
+	if strings.Contains(got, "read_file(internal/tui/view.go)") {
+		t.Fatalf("internal function syntax should stay hidden in the collapsed transcript:\n%s", got)
 	}
 	if !strings.Contains(got, "❯ hello there") {
 		t.Fatalf("expected the user gutter marker, got:\n%s", got)
+	}
+}
+
+func TestToolDisplayNamesReadAsActions(t *testing.T) {
+	cases := map[string]string{
+		"bash":          "Run command",
+		"read_file":     "Read file",
+		"web_search":    "Search web",
+		"new_tool_name": "New Tool Name",
+	}
+	for name, want := range cases {
+		if got := toolDisplayName(name); got != want {
+			t.Fatalf("toolDisplayName(%q) = %q, want %q", name, got, want)
+		}
 	}
 }
 
@@ -491,6 +508,52 @@ func TestSessionChangedEventPatchesModeWithoutReload(t *testing.T) {
 	}
 	if m.streamContent != "in-flight" {
 		t.Fatalf("mode event must not clear streaming buffers, got %q", m.streamContent)
+	}
+}
+
+func TestPlanApprovalOverlayRendersStepsAndChoices(t *testing.T) {
+	m := newMouseTestModel(t)
+	m.width, m.height = 80, 28
+	m.session.Metadata = map[string]any{
+		"mode": "plan",
+		"plan": `[{"id":"p1","subject":"Wire plan approval","details":"show the recorded steps","status":"pending"},{"id":"p2","subject":"Leave plan only after the user accepts"}]`,
+	}
+	m.approval = &domain.ApprovalRequest{ID: "a1", ToolName: "exit_plan", Summary: "ready to implement"}
+	m.overlay = overlayApproval
+	m.setFocus(FocusOverlay)
+	plain := stripANSI(m.renderOverlay(ThemeByName("uinxed")))
+	for _, want := range []string{
+		"Ready to implement?",
+		"Wire plan approval",
+		"show the recorded steps",
+		"Leave plan only after the user accepts",
+		"Auto-accept edits",
+		"Manually approve edits",
+		"Keep planning",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("plan approval overlay missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "Always allow") {
+		t.Fatalf("plan approval must not reuse the generic always-allow copy:\n%s", plain)
+	}
+}
+
+func TestPlanApprovalKeysPickImplementationMode(t *testing.T) {
+	m := newMouseTestModel(t)
+	m.session.Metadata = map[string]any{"mode": "plan"}
+	m.approval = &domain.ApprovalRequest{ID: "a1", ToolName: "exit_plan", RunID: "r1"}
+	m.overlay = overlayApproval
+	cmd, handled := m.handlePlanApprovalKey("1")
+	if !handled {
+		t.Fatal("option 1 should be handled")
+	}
+	if cmd == nil {
+		t.Fatal("option 1 should produce a resolve cmd")
+	}
+	if m.approval != nil || m.overlay != overlayNone {
+		t.Fatal("plan approval should close after auto-accept")
 	}
 }
 

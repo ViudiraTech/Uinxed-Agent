@@ -8,7 +8,7 @@ import (
 
 func TestPlanAgentExposesPlanningTools(t *testing.T) {
 	plan := Get("plan")
-	for _, tool := range []string{"plan_write", "switch_mode"} {
+	for _, tool := range []string{"plan_write", "exit_plan", "switch_mode"} {
 		if !plan.ToolAllowed(tool) {
 			t.Errorf("plan agent must expose %s", tool)
 		}
@@ -16,8 +16,11 @@ func TestPlanAgentExposesPlanningTools(t *testing.T) {
 	if Get("explorer").ToolAllowed("switch_mode") {
 		t.Error("explorer must not expose switch_mode")
 	}
+	if Get("explorer").ToolAllowed("exit_plan") {
+		t.Error("explorer must not expose exit_plan")
+	}
 	prompt := SystemPromptMode(plan, "test-model", "", "", "plan")
-	for _, want := range []string{"plan_write", "switch_mode", "Ready to implement"} {
+	for _, want := range []string{"plan_write", "exit_plan", "Ready to implement", "plan-approval"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("plan-mode prompt missing %q", want)
 		}

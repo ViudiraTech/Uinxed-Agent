@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,10 @@ type Decision struct {
 	// stops prompting for the rest of the session.
 	Always bool
 	Reason string
+	// Mode, when set on an allowed exit_plan (or switch_mode), overrides the
+	// model's requested target. The plan-approval overlay uses this so the user
+	// can pick auto-accept edits vs manual approval independently of the model.
+	Mode string
 }
 
 // request is one pending tool call. resp is buffered with capacity 1 so the
@@ -335,6 +340,15 @@ func summarizeApproval(tool string, args json.RawMessage) string {
 			return "switch mode to " + a.Mode
 		}
 		return "switch mode"
+	}
+	if tool == "exit_plan" {
+		var a struct {
+			Summary string `json:"summary"`
+		}
+		if json.Unmarshal(args, &a) == nil && strings.TrimSpace(a.Summary) != "" {
+			return strings.TrimSpace(a.Summary)
+		}
+		return "submit the plan for approval"
 	}
 	var m map[string]any
 	if len(args) == 0 || json.Unmarshal(args, &m) != nil {

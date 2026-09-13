@@ -72,9 +72,8 @@ func BuiltinProviders() []Provider {
 		},
 		{
 			ID: "router", Name: "Router", BaseURL: "https://api.hcnsec.cn/v1",
-			Models:       []string{"DeepSeek-V4-Pro", "step-3.7-flash", "step-3.5-flash-2603"},
-			DefaultModel: "step-3.7-flash", Builtin: true,
-			SupportsThinking: true, SupportsEffort: true,
+			// Router models are discovered from its OpenAI-compatible /models endpoint.
+			Builtin: true, SupportsThinking: true, SupportsEffort: true,
 		},
 	}
 }

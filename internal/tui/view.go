@@ -499,6 +499,10 @@ func (m *Model) renderOverlay(t Theme) string {
 	if m.height < 12 {
 		h = max(5, m.height-2)
 	}
+	if m.overlay == overlayApproval && m.isPlanApproval() {
+		w = min(max(40, m.width-6), m.width)
+		h = min(max(16, m.height-4), m.height)
+	}
 	m.layout.overlay = Rect{max(0, (m.width-w)/2), max(0, (m.height-h)/2), w, h}
 	var lines []string
 	var regs []Region
@@ -565,7 +569,7 @@ func (m *Model) renderOverlay(t Theme) string {
 		}
 		lines = append(lines, "", lipgloss.NewStyle().Foreground(t.Muted).Render("↑/↓ to move · enter to insert · esc to close"))
 	case overlayConnect:
-		labels := []string{"Provider name", "Base URL (include /v1)", "Models (comma separated)", "API Key (optional)"}
+		labels := []string{"Provider name", "Base URL (include /v1)", "API Key (optional)"}
 		step := m.connect.Step
 		if step < 0 || step >= len(labels) {
 			step = 0
@@ -607,7 +611,7 @@ func (m *Model) renderOverlay(t Theme) string {
 		lines = append(lines, wrapPlain(m.infoText, max(10, w-4))...)
 	}
 	innerH := max(3, h-2)
-	scrollable := m.overlay == overlayHelp || m.overlay == overlayTodos || m.overlay == overlayPlan || m.overlay == overlayContext || m.overlay == overlayInfo
+	scrollable := m.overlay == overlayHelp || m.overlay == overlayTodos || m.overlay == overlayPlan || m.overlay == overlayContext || m.overlay == overlayInfo || (m.overlay == overlayApproval && m.isPlanApproval())
 	if scrollable && len(lines) > innerH {
 		maxOff := max(0, len(lines)-innerH)
 		if m.overlayScroll > maxOff {
@@ -666,6 +670,9 @@ func (m *Model) renderApproval(t Theme, w int) ([]string, []Region) {
 	if a == nil {
 		return []string{"No pending approval."}, nil
 	}
+	if m.isPlanApproval() {
+		return m.renderPlanApproval(t, w), nil
+	}
 	inner := max(10, w-4)
 	title := lipgloss.NewStyle().Bold(true).Foreground(t.Warning).Render("Approval required")
 	tool := lipgloss.NewStyle().Bold(true).Foreground(t.Tool).Render("⚡ " + terminalutil.SanitizeText(a.ToolName))
@@ -697,6 +704,65 @@ func (m *Model) renderApproval(t Theme, w int) ([]string, []Region) {
 	}
 	lines = append(lines, "", lipgloss.NewStyle().Foreground(t.Muted).Render("1/2/3 to choose · esc to deny"))
 	return lines, nil
+}
+
+// renderPlanApproval is the Claude Code-style gate out of plan mode: the
+// recorded plan, then auto-accept / manual / keep-planning.
+func (m *Model) renderPlanApproval(t Theme, w int) []string {
+	inner := max(10, w-4)
+	title := lipgloss.NewStyle().Bold(true).Foreground(t.Warning).Render("Ready to implement?")
+	hint := lipgloss.NewStyle().Foreground(t.Muted).Render("Review the plan, then choose how edits should run.")
+	lines := []string{title, hint, ""}
+	if a := m.approval; a != nil && a.Summary != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(t.Muted).Render(truncWidth(terminalutil.SanitizeText(a.Summary), inner)), "")
+	}
+	steps := domain.PlanFromMetadata(m.session.Metadata)
+	if len(steps) == 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(t.Muted).Render("No structured plan recorded — the transcript above is the plan."), "")
+	} else {
+		const maxSteps = 8
+		shown := steps
+		extra := 0
+		if len(shown) > maxSteps {
+			extra = len(shown) - maxSteps
+			shown = shown[:maxSteps]
+		}
+		for i, x := range shown {
+			row := fmt.Sprintf("  %d. %s", i+1, terminalutil.SanitizeText(x.Subject))
+			lines = append(lines, lipgloss.NewStyle().Foreground(t.Text).Render(truncWidth(row, inner)))
+			if x.Details != "" {
+				for _, d := range wrapPlain("     "+terminalutil.SanitizeText(x.Details), inner) {
+					lines = append(lines, lipgloss.NewStyle().Foreground(t.Muted).Render(d))
+				}
+			}
+		}
+		if extra > 0 {
+			lines = append(lines, lipgloss.NewStyle().Foreground(t.Muted).Render(fmt.Sprintf("  …and %d more (/plan to review)", extra)))
+		}
+		lines = append(lines, "")
+	}
+	if m.approvalFeedback {
+		return append(lines,
+			lipgloss.NewStyle().Bold(true).Foreground(t.Text).Render("What should change in the plan?"),
+			lipgloss.NewStyle().Foreground(t.Primary).Render("> "+terminalutil.SanitizeText(m.approvalInput))+t.Glyphs.Cursor,
+			"",
+			lipgloss.NewStyle().Foreground(t.Muted).Render("enter to keep planning with this note · esc to go back"),
+		)
+	}
+	options := []string{
+		"Auto-accept edits",
+		"Manually approve edits",
+		"Keep planning, and tell the model what to change",
+	}
+	for i, o := range options {
+		marker, style := "  ", lipgloss.NewStyle().Foreground(t.Text)
+		if i == m.approvalChoice {
+			marker, style = t.Glyphs.Bullet+" ", lipgloss.NewStyle().Bold(true).Foreground(t.Primary)
+		}
+		lines = append(lines, style.Render(fmt.Sprintf("%s%d. %s", marker, i+1, o)))
+	}
+	lines = append(lines, "", lipgloss.NewStyle().Foreground(t.Muted).Render("1 auto-accept · 2 approve each edit · 3 keep planning · esc to stay in plan"))
+	return lines
 }
 
 func maskConnectInput(s string, step int) string {

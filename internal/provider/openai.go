@@ -597,16 +597,15 @@ func (p *OpenAICompatible) parseNonStreamResponses(ctx context.Context, resp *ht
 	return emit(ctx, out, Event{Kind: EventDone, FinishReason: finish, Model: str(data["model"])})
 }
 
+// Models discovers model IDs through the standard OpenAI-compatible GET /models
+// endpoint. Configured models are only a legacy fallback for an unavailable
+// endpoint; they are never used for a successful discovery response.
 func (p *OpenAICompatible) Models(ctx context.Context) ([]string, error) {
 	cfg := p.Config()
-	if cfg.ID != "ux-gateway" {
-		return append([]string(nil), cfg.Models...), nil
-	}
-	base, err := url.Parse(cfg.BaseURL)
+	base, err := url.Parse(strings.TrimRight(cfg.BaseURL, "/") + "/models")
 	if err != nil {
 		return nil, err
 	}
-	base.Path = strings.TrimSuffix(base.Path, "/v1") + "/api/models"
 	key, keyErr := p.key()
 	if keyErr != nil {
 		return nil, fmt.Errorf("load provider key: %w", keyErr)
@@ -620,31 +619,44 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]string, error) {
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return append([]string(nil), cfg.Models...), nil
+		return nil, fmt.Errorf("fetch models: %w", err)
 	}
 	defer resp.Body.Close()
 	if !success(resp.StatusCode) {
-		return append([]string(nil), cfg.Models...), nil
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("models endpoint returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	var data struct {
+		Data []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"data"`
 		Models []struct {
 			ID   string `json:"id"`
 			Name string `json:"name"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&data); err != nil {
-		return append([]string(nil), cfg.Models...), nil
+		return nil, fmt.Errorf("decode models response: %w", err)
 	}
-	var out []string
-	for _, m := range data.Models {
-		if m.ID != "" {
-			out = append(out, m.ID)
-		} else if m.Name != "" {
-			out = append(out, m.Name)
+	items := data.Data
+	if len(items) == 0 {
+		items = data.Models
+	}
+	out := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for _, m := range items {
+		id := m.ID
+		if id == "" {
+			id = m.Name
+		}
+		if id != "" && !seen[id] {
+			out = append(out, id)
+			seen[id] = true
 		}
 	}
 	if len(out) == 0 {
-		return append([]string(nil), cfg.Models...), nil
+		return nil, errors.New("models endpoint returned no models")
 	}
 	return out, nil
 }

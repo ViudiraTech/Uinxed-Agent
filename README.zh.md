@@ -97,9 +97,8 @@ ux-agent
 git clone https://github.com/ViudiraTech/Uinxed-Agent.git
 cd Uinxed-Agent
 
-# 下载依赖并编译构建
-go mod download
-go build -trimpath -o ux-agent ./cmd/ux-agent
+# 编译（等同于 `make all`）
+make
 
 # 启动体验
 ./ux-agent
@@ -241,7 +240,7 @@ Uinxed-Agent 采用分层多智能体架构，专为自主化、闭环验证的�
 - **`coding`**：严谨的软件工程师模式，严格遵循红绿重构开发闭环：*需求理解 → 方案规划 → 编码实现 → 测试验证 → 代码审查*。
 - **`plan`**：只读规划架构师模式，专注于设计系统架构与落地实施方案，不会修改任何工作区文件。
 
-`plan_write` 的门禁跟随会话的工作模式，而不是当前智能体：任何能看到该工具的 agent 都可以调用，但只有会话处于 `plan` 模式时才会放行，`/plan` 用于查看已记录的步骤。所有主智能体均可调用 `switch_mode` 提议切换工作模式：进入/退出 `plan` 模式直接生效；其余切换需用户确认（除非本会话已授予“总是允许 switch_mode”）；被委派的子智能体一律无权切换模式。
+`plan_write` 的门禁跟随会话的工作模式，而不是当前智能体：任何能看到该工具的 agent 都可以调用，但只有会话处于 `plan` 模式时才会放行，`/plan` 用于查看已记录的步骤。计划写完后模型必须调用 `exit_plan`，才会弹出计划审批（自动接受编辑、逐条确认编辑、或继续规划）。所有主智能体均可调用 `switch_mode` 提议切换工作模式：进入 `plan` 模式直接生效；用 `switch_mode` 退出 `plan` 会被拒绝（应改用 `exit_plan`）；其余切换需用户确认（除非本会话已授予“总是允许 switch_mode”）；被委派的子智能体一律无权切换模式。
 
 ### 2. 子智能体 (异步委托)
 - **`explorer`**：极速只读检索代理，善于通过 grep、glob 及 AST 结构遍历代码库。
@@ -332,17 +331,12 @@ Uinxed-Agent 在展现层、调度层与执行层之间保持清晰的解耦边�
 欢迎参与 Uinxed-Agent 的开源共建！在提交 Pull Request 前，请确保通过全套质量校验：
 
 ```bash
-# 格式化代码
-make fmt
-
-# 运行所有单元测试
-make test
-
-# 运行数据竞争检测
-make race
-
-# 全量质量门禁校验 (fmt + test + race + vet + build)
-make check
+make          # 编译 ./ux-agent
+make help     # 列出全部目标
+make test     # 单元测试
+make race     # 数据竞争检测
+make fmt      # gofmt
+make check    # fmt + test + race + vet + build
 ```
 
 ---
