@@ -46,9 +46,9 @@ const codingPrompt = `## 身份
 
 var defs = map[string]domain.AgentDefinition{
 	"build":    {ID: "build", Name: "build", Role: domain.AgentPrimary, Description: "默认 agent，完整工具访问，适合开发工作", Prompt: corePrompt + "\n\n你有全部工具权限，可自由读写文件、执行命令完成编程任务。", AllTools: true},
-	"plan":     {ID: "plan", Name: "plan", Role: domain.AgentPrimary, Description: "只读 agent，分析代码与制定方案，不做修改", Prompt: corePrompt + "\n\n你是规划分析 agent，只读模式。只用调研类工具分析代码，输出分析结论或实施计划。不修改文件。", Tools: []string{"read_file", "list_dir", "grep", "glob", "fetch_url", "calc"}},
+	"plan":     {ID: "plan", Name: "plan", Role: domain.AgentPrimary, Description: "只读 agent，分析代码与制定方案，不做修改", Prompt: corePrompt + "\n\n你是规划分析 agent，只读模式。只用调研类工具分析代码，使用 plan_write 保存结构化实施计划，不修改文件。", Tools: []string{"read_file", "list_dir", "grep", "glob", "fetch_url", "calc", "plan_write", "switch_mode", "git_status", "git_diff", "git_log", "tree"}},
 	"coding":   {ID: "coding", Name: "coding", Role: domain.AgentBoth, Description: "编程专家，复杂编程任务全流程：理解 → 计划 → 实现 → 验证 → 自审", Prompt: codingPrompt, AllTools: true},
-	"explorer": {ID: "explorer", Name: "explorer", Role: domain.AgentSubagent, Description: "快速只读探索代码库，适合被 @ 委托查找文件/结构", Prompt: "你是只读探索子代理。用 grep/glob/read_file 快速定位文件、函数、结构。回答格式: 文件名:行号 — 说明。禁止修改文件。", Tools: []string{"read_file", "list_dir", "grep", "glob"}},
+	"explorer": {ID: "explorer", Name: "explorer", Role: domain.AgentSubagent, Description: "快速只读探索代码库，适合被 @ 委托查找文件/结构", Prompt: "你是只读探索子代理。用 grep/glob/read_file 快速定位文件、函数、结构。回答格式: 文件名:行号 — 说明。禁止修改文件。", Tools: []string{"read_file", "list_dir", "grep", "glob", "git_status", "git_diff", "git_log", "tree"}},
 	"general":  {ID: "general", Name: "general", Role: domain.AgentSubagent, Description: "通用子代理，处理多步独立任务", Prompt: "你是通用子代理，可读写文件、执行命令。独立完成委托的任务，最后返回结果摘要。多步任务按 调查 → 修改 → 验证 的顺序进行。", AllTools: true},
 }
 
@@ -88,7 +88,10 @@ refused by the host, and there is no approval prompt to confirm them.
 Rules for this mode:
 - Investigate freely with read-only tools (read_file, grep, glob, list_dir,
   git_status, git_diff, git_log, tree) before proposing anything.
+- Record the final plan with plan_write so it is persisted and shown by /plan.
 - Do not attempt a write to discover whether it is allowed; it is not.
+- You may call switch_mode to change the working mode. Entering or leaving
+  plan mode is applied immediately; any other switch asks the user first.
 - Finish your turn with a concrete, actionable plan.
 - End the plan with the exact line:
   Ready to implement — switch out of plan mode to proceed.

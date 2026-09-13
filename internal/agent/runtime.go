@@ -414,6 +414,7 @@ func (r *Runtime) executeCalls(ctx context.Context, st *turnState, runID string,
 	// Resolve the session's mode and existing grants once for the whole round.
 	st.mu.Lock()
 	sessionID := st.s.ID
+	parentID := st.s.ParentID
 	mode := modeFromMetadata(st.s.Metadata, r.approvalMode())
 	st.mu.Unlock()
 	rootID := r.rootSessionID(ctx, sessionID)
@@ -440,13 +441,29 @@ func (r *Runtime) executeCalls(ctx context.Context, st *turnState, runID string,
 		if !ok {
 			continue
 		}
-		verdict, reason := approval.Evaluate(mode, call.Function.Name, cat, grants)
-		if verdict == approval.Allow {
-			continue
-		}
 		args := json.RawMessage(call.Function.Arguments)
 		if len(args) == 0 {
 			args = []byte("{}")
+		}
+		verdict, reason := approval.Evaluate(mode, call.Function.Name, cat, grants)
+		// switch_mode and plan_write carry their own policy beyond the
+		// category matrix, so they are decided here rather than in Evaluate:
+		//   - switch_mode: entering/leaving plan is direct, sideways switches
+		//     ask, and subagents cannot switch at all (a child must not be able
+		//     to escape the parent's plan mode on its own);
+		//   - plan_write: the plan belongs to plan mode, so outside plan mode it
+		//     is refused outright instead of running and erroring later.
+		if call.Function.Name == "switch_mode" {
+			if parentID != "" {
+				verdict, reason = approval.Deny, "subagents cannot switch modes"
+			} else {
+				verdict, reason = approval.EvaluateModeSwitch(mode, switchModeTarget(args), grants)
+			}
+		} else if call.Function.Name == "plan_write" && mode != approval.ModePlan {
+			verdict, reason = approval.Deny, "plan_write is only available in plan mode"
+		}
+		if verdict == approval.Allow {
+			continue
 		}
 		req := &request{
 			ID:        r.id("approval"),
@@ -555,6 +572,12 @@ func (r *Runtime) executeCalls(ctx context.Context, st *turnState, runID string,
 				TodoUpdate: func(c context.Context, raw json.RawMessage) (tools.Result, error) {
 					return r.todoUpdate(c, st, runID, raw)
 				},
+				PlanWrite: func(c context.Context, raw json.RawMessage) (tools.Result, error) {
+					return r.planWrite(c, st, runID, raw)
+				},
+				SwitchMode: func(c context.Context, raw json.RawMessage) (tools.Result, error) {
+					return r.switchMode(c, st, runID, raw)
+				},
 				Delegate: func(c context.Context, raw json.RawMessage) (tools.Result, error) {
 					return r.delegate(c, st, runID, raw)
 				},
@@ -661,6 +684,96 @@ func (r *Runtime) todoUpdate(ctx context.Context, st *turnState, runID string, r
 	sid := st.s.ID
 	r.emit(ctx, domain.Event{Kind: domain.EventTodoChanged, SessionID: sid, RunID: runID, At: time.Now(), Data: copyTodos})
 	return tools.Result{Content: "todo updated"}, nil
+}
+
+// planWrite persists a structured plan on the session. It is the plan-mode
+// counterpart of todo_write: instead of a progress list it records the
+// implementation plan itself, stored under metadata["plan"] so it survives
+// both storage backends and is shown by the /plan overlay. The plan-mode gate
+// is enforced twice: here (defence in depth, for any caller) and in
+// executeCalls (a hard denial with a reason fed back to the model).
+func (r *Runtime) planWrite(ctx context.Context, st *turnState, runID string, raw json.RawMessage) (tools.Result, error) {
+	var a struct {
+		Steps []struct {
+			Subject string            `json:"subject"`
+			Details string            `json:"details"`
+			Status  domain.TodoStatus `json:"status"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return tools.Result{}, err
+	}
+	st.mu.Lock()
+	if modeFromMetadata(st.s.Metadata, r.approvalMode()) != approval.ModePlan {
+		st.mu.Unlock()
+		return tools.Result{}, errors.New("plan_write is only available in plan mode")
+	}
+	now := time.Now()
+	var steps []domain.PlanStep
+	for _, s := range a.Steps {
+		if strings.TrimSpace(s.Subject) == "" {
+			continue
+		}
+		if s.Status == "" {
+			s.Status = domain.TodoPending
+		}
+		steps = append(steps, domain.PlanStep{ID: r.id("plan"), Subject: s.Subject, Details: s.Details, Status: s.Status, UpdatedAt: now})
+	}
+	if st.s.Metadata == nil {
+		st.s.Metadata = map[string]any{}
+	}
+	if len(steps) == 0 {
+		st.s.Metadata["plan"] = ""
+	} else if b, err := json.Marshal(steps); err == nil {
+		st.s.Metadata["plan"] = string(b)
+	}
+	st.s.UpdatedAt = now
+	sid := st.s.ID
+	st.mu.Unlock()
+	r.emit(ctx, domain.Event{Kind: domain.EventPlanChanged, SessionID: sid, RunID: runID, At: now, Data: append([]domain.PlanStep(nil), steps...)})
+	return tools.Result{Content: fmt.Sprintf("%d plan steps", len(steps))}, nil
+}
+
+// switchMode applies an AI-proposed mode switch. Whether the call is allowed
+// at all was decided earlier in executeCalls (EvaluateModeSwitch, or the
+// subagent denial); here the chosen mode is persisted to session metadata,
+// where the next round's system prompt and approval policy read it.
+func (r *Runtime) switchMode(ctx context.Context, st *turnState, runID string, raw json.RawMessage) (tools.Result, error) {
+	var a struct {
+		Mode   string `json:"mode"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return tools.Result{}, err
+	}
+	m := approval.Normalize(a.Mode)
+	st.mu.Lock()
+	if modeFromMetadata(st.s.Metadata, r.approvalMode()) == m {
+		st.mu.Unlock()
+		return tools.Result{Content: fmt.Sprintf("already in mode %s", m)}, nil
+	}
+	if st.s.Metadata == nil {
+		st.s.Metadata = map[string]any{}
+	}
+	st.s.Metadata["mode"] = string(m)
+	st.s.UpdatedAt = time.Now()
+	sid := st.s.ID
+	st.mu.Unlock()
+	r.emit(ctx, domain.Event{Kind: domain.EventSessionChanged, SessionID: sid, RunID: runID, At: time.Now(), Data: domain.SessionChanged{Mode: string(m)}})
+	return tools.Result{Content: fmt.Sprintf("session mode switched to %s", m)}, nil
+}
+
+// switchModeTarget extracts the requested mode from a switch_mode call. It is
+// used by executeCalls to decide the verdict before the call is allowed to
+// run; invalid values normalise to the configured default exactly as modeFromMetadata does.
+func switchModeTarget(raw json.RawMessage) approval.Mode {
+	var a struct {
+		Mode string `json:"mode"`
+	}
+	if len(raw) > 0 && json.Unmarshal(raw, &a) == nil && a.Mode != "" {
+		return approval.Normalize(a.Mode)
+	}
+	return approval.DefaultMode
 }
 
 func (r *Runtime) delegate(ctx context.Context, parent *turnState, parentRunID string, raw json.RawMessage) (tools.Result, error) {
