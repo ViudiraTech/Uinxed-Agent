@@ -207,3 +207,53 @@ func TestValidMode(t *testing.T) {
 		}
 	}
 }
+
+// TestEvaluateModeSwitch pins the switch_mode policy: plan is the only
+// boundary the model may cross on its own (in either direction), every other
+// transition is gated on a user decision, and an explicit per-session grant
+// outranks the rule exactly as it does for Evaluate.
+func TestEvaluateModeSwitch(t *testing.T) {
+	cases := []struct {
+		name        string
+		cur, target Mode
+		grants      map[string]struct{}
+		want        Verdict
+	}{
+		{"leaving plan is direct", ModePlan, ModeAutoEdit, nil, Allow},
+		{"leaving plan to read-only is direct", ModePlan, ModeReadOnly, nil, Allow},
+		{"leaving plan to full-auto is direct", ModePlan, ModeFullAuto, nil, Allow},
+		{"entering plan is direct", ModeAutoEdit, ModePlan, nil, Allow},
+		{"entering plan from read-only is direct", ModeReadOnly, ModePlan, nil, Allow},
+		{"entering plan from full-auto is direct", ModeFullAuto, ModePlan, nil, Allow},
+		{"staying in plan is a no-op", ModePlan, ModePlan, nil, Allow},
+		{"sideways auto-edit to full-auto asks", ModeAutoEdit, ModeFullAuto, nil, Ask},
+		{"sideways full-auto to auto-edit asks", ModeFullAuto, ModeAutoEdit, nil, Ask},
+		{"sideways read-only to auto-edit asks", ModeReadOnly, ModeAutoEdit, nil, Ask},
+		{"sideways auto-edit to read-only asks", ModeAutoEdit, ModeReadOnly, nil, Ask},
+		{"grant rescues a sideways switch", ModeAutoEdit, ModeFullAuto, map[string]struct{}{"switch_mode": {}}, Allow},
+		{"corrupt current mode normalizes to default", Mode("corrupt"), ModeAutoEdit, nil, Allow},
+		{"corrupt target normalizes to default", ModeReadOnly, Mode("garbage"), nil, Ask},
+	}
+	for _, c := range cases {
+		got, reason := EvaluateModeSwitch(c.cur, c.target, c.grants)
+		if got != c.want {
+			t.Errorf("%s: EvaluateModeSwitch(%q, %q) = %v (%s), want %v", c.name, c.cur, c.target, got, reason, c.want)
+		}
+		if c.want == Ask && reason == "" {
+			t.Errorf("%s: Ask with an empty reason", c.name)
+		}
+	}
+}
+
+// TestEvaluateModeSwitchNeverDenies pins that the plan-mode escape hatch cannot
+// deny: a switch is either applied directly or confirmed, never refused by the
+// mode itself. Subagent denial lives in the runtime, not this policy.
+func TestEvaluateModeSwitchNeverDenies(t *testing.T) {
+	for _, cur := range Modes() {
+		for _, target := range Modes() {
+			if got, _ := EvaluateModeSwitch(cur, target, nil); got == Deny {
+				t.Errorf("EvaluateModeSwitch(%q, %q) = Deny", cur, target)
+			}
+		}
+	}
+}

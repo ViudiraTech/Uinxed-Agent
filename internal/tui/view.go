@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/ViudiraTech/Uinxed-Agent/internal/agent"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
 	terminalutil "github.com/ViudiraTech/Uinxed-Agent/internal/terminal"
 	"github.com/charmbracelet/x/ansi"
@@ -67,6 +68,7 @@ func (m *Model) renderBase(t Theme) string {
 	}
 
 	sugg := m.renderSuggestions(t, chatW)
+	chips, chipRegs := m.renderFileChips(t, chatW)
 	promptH := m.prompt.Height()
 	if promptH < 1 {
 		promptH = 1
@@ -77,17 +79,18 @@ func (m *Model) renderBase(t Theme) string {
 	statusH := 1
 	promptFrameH := promptH + 2 // one rule above, one below
 	spacerH := 1                // breathing room between transcript and composer
-	chatH := height - statusH - promptFrameH - spacerH - len(sugg)
+	chipH := len(chips)
+	chatH := height - statusH - promptFrameH - spacerH - len(sugg) - chipH
 	if chatH < 4 {
 		chatH = 4
 	}
-	if total := statusH + promptFrameH + spacerH + len(sugg) + chatH; total > height {
+	if total := statusH + promptFrameH + spacerH + len(sugg) + chipH + chatH; total > height {
 		chatH = max(1, chatH-(total-height))
 	}
 
 	m.layout.chat = Rect{chatX, 0, chatW, chatH}
 	m.layout.sidebar = Rect{0, 0, sidebarW, max(0, height-statusH)}
-	m.layout.prompt = Rect{chatX, chatH + spacerH + len(sugg), chatW, promptFrameH}
+	m.layout.prompt = Rect{chatX, chatH + spacerH + len(sugg) + chipH, chatW, promptFrameH}
 	m.layout.status = Rect{0, height - 1, width, 1}
 	m.layout.chatX = chatX
 
@@ -120,6 +123,11 @@ func (m *Model) renderBase(t Theme) string {
 	rule := func() string {
 		return ruleStyle.Render(strings.Repeat(t.Glyphs.Rule, max(1, chatW)))
 	}
+	// Chips sit directly on the composer's top rule so "attached" reads as
+	// part of the input rather than as transcript content.
+	for _, chip := range chips {
+		chatLines = append(chatLines, chip)
+	}
 	chatLines = append(chatLines, rule())
 
 	prefixStyle := lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
@@ -140,6 +148,14 @@ func (m *Model) renderBase(t Theme) string {
 
 	m.regions = append(m.regions, Region{Rect: Rect{chatX, m.layout.prompt.Y, chatW, promptFrameH}, Kind: ActionPrompt, Value: "prompt"})
 	m.regions = append(m.regions, Region{Rect: m.layout.chat, Kind: ActionChat, Value: "chat"})
+	// Chip regions were computed in chip-local coordinates; shift them to the
+	// rows they were rendered into.
+	chipY := m.layout.prompt.Y - 1
+	for _, r := range chipRegs {
+		r.Rect.Y += chipY
+		r.Rect.X += chatX
+		m.regions = append(m.regions, r)
+	}
 
 	// ==================== 3. Status row ====================
 	statusText, statusRegs := m.statusLine(t, width)
@@ -411,6 +427,69 @@ func (m *Model) renderSuggestions(t Theme, w int) []string {
 	return out
 }
 
+// fileRefsIn extracts the @path references a turn would attach, mirroring the
+// recognition rules of Runtime.expandFileReferences: any @token that is not an
+// agent mention or a @skill: reference, deduplicated and capped. The chips row
+// and the runtime injection must agree, so this is kept in one place.
+func fileRefsIn(text string, isAgent func(string) bool) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range strings.Fields(text) {
+		if !strings.HasPrefix(f, "@") {
+			continue
+		}
+		ref := strings.Trim(strings.TrimPrefix(f, "@"), "`'\".,;:()[]{}")
+		if ref == "" || strings.HasPrefix(ref, "skill:") || isAgent(ref) {
+			continue
+		}
+		if seen[ref] || len(out) >= 8 {
+			continue
+		}
+		seen[ref] = true
+		out = append(out, ref)
+	}
+	return out
+}
+
+// removeFileRef drops one @token from the composer text, used when a chip is
+// clicked. Field-wise rebuild keeps the surrounding spacing sane.
+func removeFileRef(text, ref string) string {
+	fields := strings.Fields(text)
+	var keep []string
+	for _, f := range fields {
+		stripped := strings.Trim(strings.TrimPrefix(f, "@"), "`'\".,;:()[]{}")
+		if strings.HasPrefix(f, "@") && stripped == ref {
+			continue
+		}
+		keep = append(keep, f)
+	}
+	return strings.Join(keep, " ")
+}
+
+// renderFileChips draws the recognized @path references directly above the
+// composer, so the user can see what will actually be attached and remove one
+// by clicking its chip.
+func (m *Model) renderFileChips(t Theme, w int) ([]string, []Region) {
+	refs := fileRefsIn(m.prompt.Value(), func(id string) bool {
+		d := agent.Get(id)
+		return d.ID == id && d.CanSubagent()
+	})
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	label := lipgloss.NewStyle().Foreground(t.Muted).Render(t.Glyphs.Result + " ")
+	var chips []Region
+	line := " " + label
+	for _, ref := range refs {
+		chip := lipgloss.NewStyle().Foreground(t.Tool).Render("@"+terminalutil.SanitizeText(ref)) +
+			lipgloss.NewStyle().Foreground(t.Muted).Render(" ×")
+		// Record where the clickable part (including the removal mark) starts.
+		chips = append(chips, Region{Rect: Rect{lipgloss.Width(line), 0, lipgloss.Width(chip), 1}, Kind: ActionFileChip, Value: ref})
+		line += chip + "  "
+	}
+	return []string{fitLine(line, w)}, chips
+}
+
 func (m *Model) renderOverlay(t Theme) string {
 	w := min(max(30, m.width-8), 100)
 	h := min(max(8, m.height-6), 28)
@@ -445,6 +524,46 @@ func (m *Model) renderOverlay(t Theme) string {
 				regs = append(regs, Region{Rect: Rect{0, len(lines) - 1, max(1, w-4), 1}, Kind: ActionTodo, Value: x.ID})
 			}
 		}
+	case overlayPlan:
+		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(t.Secondary).Render("Plan"), "")
+		steps := domain.PlanFromMetadata(m.session.Metadata)
+		if len(steps) == 0 {
+			lines = append(lines, lipgloss.NewStyle().Foreground(t.Muted).Render("  No plan recorded for this session."))
+		} else {
+			for _, x := range steps {
+				icon, iStyle := t.Glyphs.TodoOpen, lipgloss.NewStyle().Foreground(t.Muted)
+				if x.Status == "completed" {
+					icon, iStyle = t.Glyphs.TodoDone, lipgloss.NewStyle().Foreground(t.Success)
+				} else if x.Status == "in_progress" {
+					icon, iStyle = t.Glyphs.Bullet, lipgloss.NewStyle().Foreground(t.Warning)
+				}
+				row := fmt.Sprintf("  %s %s  [%s]", iStyle.Render(icon), terminalutil.SanitizeText(x.Subject), terminalutil.SanitizeText(string(x.Status)))
+				lines = append(lines, row)
+				if x.Details != "" {
+					lines = append(lines, lipgloss.NewStyle().Foreground(t.Muted).Render("      "+terminalutil.SanitizeText(x.Details)))
+				}
+			}
+		}
+	case overlayHistory:
+		title := lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render("History search")
+		query := lipgloss.NewStyle().Foreground(t.Primary).Render(t.Glyphs.User+" ") +
+			lipgloss.NewStyle().Foreground(t.Text).Bold(true).Render(terminalutil.SanitizeText(m.historyQuery)) +
+			lipgloss.NewStyle().Foreground(t.Muted).Render(t.Glyphs.Cursor)
+		lines = append(lines, title, query, "")
+		if len(m.historyMatches) == 0 {
+			lines = append(lines, lipgloss.NewStyle().Foreground(t.Muted).Render("  no matches"))
+		} else {
+			visible := max(1, min(8, h-6))
+			for i := 0; i < visible && i < len(m.historyMatches); i++ {
+				entry := terminalutil.SanitizeText(singleLine(m.historyMatches[i]))
+				row := lipgloss.NewStyle().Foreground(t.Text).Render("   " + truncWidth(entry, max(10, w-6)))
+				if i == m.historySel {
+					row = lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render(" " + t.Glyphs.Bullet + " " + truncWidth(entry, max(10, w-6)))
+				}
+				lines = append(lines, row)
+			}
+		}
+		lines = append(lines, "", lipgloss.NewStyle().Foreground(t.Muted).Render("↑/↓ to move · enter to insert · esc to close"))
 	case overlayConnect:
 		labels := []string{"Provider name", "Base URL (include /v1)", "Models (comma separated)", "API Key (optional)"}
 		step := m.connect.Step
@@ -488,7 +607,7 @@ func (m *Model) renderOverlay(t Theme) string {
 		lines = append(lines, wrapPlain(m.infoText, max(10, w-4))...)
 	}
 	innerH := max(3, h-2)
-	scrollable := m.overlay == overlayHelp || m.overlay == overlayTodos || m.overlay == overlayContext || m.overlay == overlayInfo
+	scrollable := m.overlay == overlayHelp || m.overlay == overlayTodos || m.overlay == overlayPlan || m.overlay == overlayContext || m.overlay == overlayInfo
 	if scrollable && len(lines) > innerH {
 		maxOff := max(0, len(lines)-innerH)
 		if m.overlayScroll > maxOff {

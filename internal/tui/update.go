@@ -11,6 +11,7 @@ import (
 	"github.com/ViudiraTech/Uinxed-Agent/internal/agent"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/approval"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
+	"github.com/ViudiraTech/Uinxed-Agent/internal/storage"
 )
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -122,6 +123,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.overlay == overlayPicker {
 			m.picker.SetQuery(m.picker.Query + x.Content)
+			return m, nil
+		}
+		if m.overlay == overlayHistory {
+			m.setHistoryQuery(m.historyQuery + x.Content)
 			return m, nil
 		}
 	case tea.KeyPressMsg:
@@ -240,6 +245,33 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 		if e.SessionID == m.session.ID {
 			if ts, ok := e.Data.([]domain.Todo); ok {
 				m.session.Todos = append([]domain.Todo(nil), ts...)
+			}
+		}
+	case domain.EventPlanChanged:
+		if e.SessionID == m.session.ID {
+			if steps, ok := e.Data.([]domain.PlanStep); ok {
+				// The plan lives in session metadata so it survives both
+				// storage backends; mirror the live copy there.
+				if m.session.Metadata == nil {
+					m.session.Metadata = map[string]any{}
+				}
+				if len(steps) == 0 {
+					m.session.Metadata["plan"] = ""
+				} else if b, err := json.Marshal(steps); err == nil {
+					m.session.Metadata["plan"] = string(b)
+				}
+			}
+		}
+	case domain.EventSessionChanged:
+		if e.SessionID == m.session.ID {
+			// Mid-turn updates (a switch_mode applied by the model) must not
+			// reload the session: setSession clears the streaming buffers and
+			// would blank the message being rendered. Patch metadata only.
+			if d, ok := e.Data.(domain.SessionChanged); ok && d.Mode != "" {
+				if m.session.Metadata == nil {
+					m.session.Metadata = map[string]any{}
+				}
+				m.session.Metadata["mode"] = d.Mode
 			}
 		}
 	case domain.EventCompaction:
@@ -467,6 +499,9 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.closeOverlay()
 		return nil, true
 	}
+	if m.overlay == overlayHistory {
+		return m.handleHistoryKey(k), true
+	}
 	if m.overlay == overlayConnect {
 		return m.handleConnectKey(k), true
 	}
@@ -555,6 +590,9 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 		return nil, false
 	case "shift+enter", "alt+enter":
 		m.prompt.InsertString("\n")
+		return nil, true
+	case "ctrl+r":
+		m.openHistorySearch()
 		return nil, true
 	case "alt+up":
 		m.historyMove(-1)
@@ -689,6 +727,63 @@ func (m *Model) currentMode() string {
 	return m.cfg.ApprovalMode
 }
 
+// openHistorySearch starts a Ctrl+R reverse search over the prompt history.
+// Matches are ordered newest first so the default selection is the last thing
+// typed, mirroring shell history search expectations.
+func (m *Model) openHistorySearch() {
+	m.historyQuery = ""
+	m.historyMatches = nil
+	for i := len(m.history) - 1; i >= 0; i-- {
+		m.historyMatches = append(m.historyMatches, m.history[i])
+	}
+	m.historySel = 0
+	m.overlay = overlayHistory
+	m.setFocus(FocusOverlay)
+}
+
+func (m *Model) handleHistoryKey(k tea.KeyPressMsg) tea.Cmd {
+	key := k.String()
+	switch key {
+	case "esc":
+		m.closeOverlay()
+	case "enter":
+		if m.historySel >= 0 && m.historySel < len(m.historyMatches) {
+			m.prompt.SetValue(m.historyMatches[m.historySel])
+		}
+		m.closeOverlay()
+	case "up", "ctrl+k", "ctrl+p":
+		m.historySel = max(0, m.historySel-1)
+	case "down", "ctrl+j", "ctrl+n":
+		m.historySel = min(len(m.historyMatches)-1, m.historySel+1)
+	case "backspace":
+		m.setHistoryQuery(removeLastRune(m.historyQuery))
+	default:
+		if k.Text != "" {
+			m.setHistoryQuery(m.historyQuery + k.Text)
+		}
+	}
+	return nil
+}
+
+func (m *Model) setHistoryQuery(q string) {
+	m.historyQuery = q
+	m.historyMatches = filterHistory(m.history, q)
+	m.historySel = 0
+}
+
+// filterHistory returns the history entries containing the query, newest
+// first. An empty query matches everything.
+func filterHistory(history []string, query string) []string {
+	q := strings.ToLower(strings.TrimSpace(query))
+	var out []string
+	for i := len(history) - 1; i >= 0; i-- {
+		if q == "" || strings.Contains(strings.ToLower(history[i]), q) {
+			out = append(out, history[i])
+		}
+	}
+	return out
+}
+
 func (m *Model) submitPrompt() tea.Cmd {
 	text := strings.TrimSpace(m.prompt.Value())
 	if text == "" {
@@ -803,6 +898,11 @@ func (m *Model) handleMouseClick(mouse tea.Mouse, r Region, ok bool) tea.Cmd {
 				break
 			}
 		}
+	case ActionFileChip:
+		// Clicking a chip removes that reference from the composer, matching
+		// the × affordance drawn next to it.
+		m.prompt.SetValue(removeFileRef(m.prompt.Value(), r.Value))
+		m.ensurePromptFocus()
 	case ActionPrompt, ActionChat, ActionSidebar:
 		m.setFocus(FocusPrompt)
 	}
@@ -924,6 +1024,32 @@ func (m *Model) handleOp(x opMsg) tea.Cmd {
 			m.setSession(s)
 			m.showToast("✓ new session")
 			return m.refreshSessions()
+		}
+	case "search_sessions":
+		ss, _ := x.value.([]domain.Session)
+		if len(ss) == 0 {
+			m.showToast("no sessions matched")
+			return nil
+		}
+		items := make([]PickerItem, 0, len(ss))
+		for _, s := range ss {
+			desc := storage.SearchSnippet(s)
+			if desc == "" {
+				desc = s.AgentID + " · " + formatAgo(s.UpdatedAt)
+			}
+			if s.ID == m.session.ID {
+				desc = "current · " + desc
+			}
+			items = append(items, PickerItem{s.ID, s.Name, desc, ""})
+		}
+		m.picker.Reset("Search Results", ActionSession, items)
+		m.pickerPurpose = "search"
+		m.overlay = overlayPicker
+		m.setFocus(FocusPicker)
+	case "export":
+		path, _ := x.value.(string)
+		if path != "" {
+			m.showToast("✓ exported to " + path)
 		}
 	case "storage":
 		m.cfg = m.ctrl.Config.Snapshot()

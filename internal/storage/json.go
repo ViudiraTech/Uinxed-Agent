@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -59,18 +58,27 @@ func (j *JSONStore) ListSessions(ctx context.Context) ([]domain.Session, error) 
 }
 
 func (j *JSONStore) SearchSessions(ctx context.Context, q string, limit int) ([]domain.Session, error) {
-	ss, err := j.ListSessions(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	j.mu.Lock()
+	ss, _, err := j.all()
+	j.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	q = strings.ToLower(strings.TrimSpace(q))
+	if limit <= 0 {
+		limit = 30
+	}
+	sort.Slice(ss, func(i, k int) bool { return ss[i].UpdatedAt.After(ss[k].UpdatedAt) })
 	var out []domain.Session
 	for _, s := range ss {
-		if q == "" || strings.Contains(strings.ToLower(s.Name), q) {
-			out = append(out, s)
-			if limit > 0 && len(out) >= limit {
-				break
-			}
+		if !sessionMatches(s, q) {
+			continue
+		}
+		out = append(out, attachSearchSnippet(s, q))
+		if len(out) >= limit {
+			break
 		}
 	}
 	return out, nil

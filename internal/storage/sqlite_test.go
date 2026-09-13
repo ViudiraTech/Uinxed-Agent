@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +40,16 @@ func TestSQLiteRoundTripSearchDelete(t *testing.T) {
 	ss, err := db.SearchSessions(ctx, "scheduler", 10)
 	if err != nil || len(ss) != 1 {
 		t.Fatalf("search=%d err=%v", len(ss), err)
+	}
+	if got := SearchSnippet(ss[0]); !strings.Contains(got, "scheduler") {
+		t.Fatalf("name snippet=%q", got)
+	}
+	byBody, err := db.SearchSessions(ctx, "hello", 10)
+	if err != nil || len(byBody) != 1 {
+		t.Fatalf("body search=%d err=%v", len(byBody), err)
+	}
+	if got := SearchSnippet(byBody[0]); !strings.Contains(got, "hello") {
+		t.Fatalf("body snippet=%q", got)
 	}
 	if err := db.DeleteSession(ctx, want.ID); err != nil {
 		t.Fatal(err)

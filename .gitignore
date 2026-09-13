@@ -12,6 +12,9 @@
 *.test
 *.out
 
+# Local Go toolchain caches (keep dependency downloads warm between shells)
+/.gocache/
+
 # Go test / coverage / profiling output
 /coverage.out
 /coverage-*.out

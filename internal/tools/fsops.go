@@ -24,7 +24,7 @@ func (*MultiEditTool) Category() Category { return CategoryWrite }
 func (*MultiEditTool) Schema() map[string]any {
 	return obj(map[string]any{
 		"path":  strp("文件路径"),
-		"edits": arr(map[string]any{"old_string": strp("要替换的原文"), "new_string": strp("替换后的内容")}, "按顺序应用的替换列表"),
+		"edits": arr(map[string]any{"old_string": strp("要替换的原文"), "new_string": strp("替换后的内容")}, "按顺序应用的替换列表", "old_string", "new_string"),
 	}, "path", "edits")
 }
 
@@ -215,15 +215,14 @@ func (*MakeDirTool) Execute(ctx context.Context, raw json.RawMessage, env Execut
 }
 
 // arr builds a JSON-schema array-of-objects property.
-func arr(items map[string]any, desc string) map[string]any {
-	return map[string]any{
-		"type":        "array",
-		"description": desc,
-		"items": map[string]any{
-			"type":                 "object",
-			"properties":           items,
-			"required":             []string{"old_string", "new_string"},
-			"additionalProperties": false,
-		},
+func arr(items map[string]any, desc string, required ...string) map[string]any {
+	item := map[string]any{
+		"type":                 "object",
+		"properties":           items,
+		"additionalProperties": false,
 	}
+	if len(required) > 0 {
+		item["required"] = required
+	}
+	return map[string]any{"type": "array", "description": desc, "items": item}
 }

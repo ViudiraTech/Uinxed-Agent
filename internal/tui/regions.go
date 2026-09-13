@@ -21,6 +21,7 @@ const (
 	ActionPrompt   ActionKind = "prompt"
 	ActionChat     ActionKind = "chat"
 	ActionButton   ActionKind = "button"
+	ActionFileChip ActionKind = "file_chip"
 )
 
 type Region struct {

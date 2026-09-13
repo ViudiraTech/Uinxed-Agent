@@ -29,6 +29,10 @@ const (
 	// batches, which cannot safely carry a response.
 	EventApprovalRequested EventKind = "approval.requested"
 	EventApprovalResolved  EventKind = "approval.resolved"
+
+	// EventPlanChanged carries the session's plan steps after plan_write ran,
+	// so the UI can refresh its plan view without reloading the conversation.
+	EventPlanChanged EventKind = "plan.changed"
 )
 
 type Event struct {
@@ -93,6 +97,13 @@ type ApprovalResolved struct {
 	ID      string `json:"id"`
 	Allowed bool   `json:"allowed"`
 	Reason  string `json:"reason,omitempty"`
+}
+
+// SessionChanged reports a lightweight in-turn session-scope change (a mode
+// switch applied by switch_mode) so the UI can update the mode pill in place
+// without reloading the whole conversation mid-stream.
+type SessionChanged struct {
+	Mode string `json:"mode"`
 }
 
 func NewEvent(kind EventKind, sessionID string, data any) Event {

@@ -21,6 +21,8 @@ func (r Result) JSON() string {
 type RuntimeCallbacks struct {
 	TodoWrite  func(ctx context.Context, raw json.RawMessage) (Result, error)
 	TodoUpdate func(ctx context.Context, raw json.RawMessage) (Result, error)
+	PlanWrite  func(ctx context.Context, raw json.RawMessage) (Result, error)
+	SwitchMode func(ctx context.Context, raw json.RawMessage) (Result, error)
 	Delegate   func(ctx context.Context, raw json.RawMessage) (Result, error)
 }
 

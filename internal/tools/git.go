@@ -153,7 +153,7 @@ func (*GitCommitTool) Category() Category { return CategoryWrite }
 func (*GitCommitTool) Schema() map[string]any {
 	return obj(map[string]any{
 		"message": strp("提交信息"),
-		"paths":   arr(map[string]any{"path": strp("要提交的文件或目录")}, "要 add 的路径列表"),
+		"paths":   arr(map[string]any{"path": strp("要提交的文件或目录")}, "要 add 的路径列表", "path"),
 	}, "message", "paths")
 }
 

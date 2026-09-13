@@ -6,6 +6,24 @@ import (
 	"time"
 )
 
+func TestPlanAgentExposesPlanningTools(t *testing.T) {
+	plan := Get("plan")
+	for _, tool := range []string{"plan_write", "switch_mode"} {
+		if !plan.ToolAllowed(tool) {
+			t.Errorf("plan agent must expose %s", tool)
+		}
+	}
+	if Get("explorer").ToolAllowed("switch_mode") {
+		t.Error("explorer must not expose switch_mode")
+	}
+	prompt := SystemPromptMode(plan, "test-model", "", "", "plan")
+	for _, want := range []string{"plan_write", "switch_mode", "Ready to implement"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("plan-mode prompt missing %q", want)
+		}
+	}
+}
+
 func TestSystemPromptInjectsAuthoritativeRuntimeDate(t *testing.T) {
 	loc := time.FixedZone("CST", 8*60*60)
 	now := time.Date(2026, time.August, 17, 14, 36, 12, 0, loc)

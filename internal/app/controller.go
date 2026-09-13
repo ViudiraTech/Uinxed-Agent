@@ -132,6 +132,19 @@ func (c *Controller) resolveProvider(id string) (provider.Provider, error) {
 func (c *Controller) ListSessions(ctx context.Context) ([]domain.Session, error) {
 	return c.Store.ListSessions(ctx)
 }
+
+// SearchSessions is the facade behind /search. The store implementations decide
+// what counts as a match; the controller only bounds the result set.
+func (c *Controller) SearchSessions(ctx context.Context, query string, limit int) ([]domain.Session, error) {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 30
+	}
+	return c.Store.SearchSessions(ctx, q, limit)
+}
 func (c *Controller) LoadSession(ctx context.Context, id string) (domain.Session, error) {
 	return c.Store.LoadSession(ctx, id)
 }
@@ -408,6 +421,91 @@ func (c *Controller) RenameSession(ctx context.Context, id, name string) error {
 
 func (c *Controller) Compact(ctx context.Context, id string) error {
 	return c.Runtime.Compact(ctx, id)
+}
+
+// ExportSession writes the conversation to path as Markdown, or to a
+// name-derived file in the session's working directory when path is empty.
+// The returned string is the file the transcript was written to.
+func (c *Controller) ExportSession(ctx context.Context, id, path string) (string, error) {
+	s, err := c.Store.LoadSession(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(path) == "" {
+		name := strings.TrimSpace(s.Name)
+		if name == "" {
+			name = "session"
+		}
+		var b strings.Builder
+		for _, r := range name {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+				b.WriteRune(r)
+			default:
+				b.WriteByte('-')
+			}
+		}
+		path = filepath.Join(s.CWD, strings.Trim(b.String(), "-")+".md")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(s.CWD, path)
+	}
+	if dir := filepath.Dir(path); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", err
+		}
+	}
+	if err := os.WriteFile(path, []byte(sessionMarkdown(s)), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// sessionMarkdown renders a transcript as plain Markdown: a title, then one
+// section per message. Bodies are fenced so model output containing tables or
+// headings cannot restructure the export.
+func sessionMarkdown(s domain.Session) string {
+	var b strings.Builder
+	b.WriteString("# " + strings.TrimSpace(s.Name) + "\n\n")
+	fmt.Fprintf(&b, "- Session: %s\n- Agent: %s\n- Model: %s\n- Exported: %s\n\n",
+		s.ID, s.AgentID, s.Model, time.Now().Format("2006-01-02 15:04:05"))
+	fenceFor := func(content string) string {
+		// Pick a fence longer than any run of backticks in the content so
+		// fenced model output cannot terminate its own block.
+		longest := 0
+		cur := 0
+		for _, r := range content {
+			if r == '`' {
+				cur++
+				if cur > longest {
+					longest = cur
+				}
+			} else {
+				cur = 0
+			}
+		}
+		return strings.Repeat("`", max(3, longest+1))
+	}
+	for _, m := range s.Messages {
+		switch m.Role {
+		case domain.RoleUser:
+			b.WriteString("## user\n\n")
+		case domain.RoleAssistant:
+			b.WriteString("## assistant\n\n")
+		case domain.RoleTool:
+			fmt.Fprintf(&b, "## tool · %s\n\n", m.Name)
+		default:
+			continue
+		}
+		body := strings.TrimSpace(m.Content)
+		if body == "" {
+			b.WriteString("_(no content)_\n\n")
+			continue
+		}
+		f := fenceFor(body)
+		b.WriteString(f + "\n" + body + "\n" + f + "\n\n")
+	}
+	return b.String()
 }
 
 // titleInstruction drives AutoTitleSession. Asking for a bare title keeps the

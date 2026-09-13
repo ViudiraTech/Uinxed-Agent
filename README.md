@@ -204,9 +204,12 @@ Type `/` in the prompt or press `Ctrl+P` to access commands:
 | `/agent` | Agent | Switch primary agent (`build`, `coding`, `plan`) |
 | `/diff` | Git | Open interactive visual diff viewer with per-file navigation |
 | `/todos` | Tasks | View task progress and checklist items |
+| `/plan` | Tasks | View the structured plan recorded by `plan_write` |
 | `/context` | Context | Inspect token budget and context window utilization |
 | `/compact` | Context | Trigger intelligent LLM-driven context compaction |
 | `/sessions` | Session | Browse and switch between saved conversation sessions |
+| `/search` | Session | Search session names and message text, then jump to a match |
+| `/export` | Session | Export the current session to Markdown |
 | `/new` | Session | Create a new isolated session |
 | `/theme` | Interface | Switch active color palette (`tokyonight`, `nord`, `catppuccin`, etc.) |
 | `/mouse` | Interface | Toggle mouse capture (`/mouse on`, `/mouse off`) |
@@ -237,6 +240,8 @@ Uinxed-Agent features a hierarchical multi-agent architecture designed for auton
 - **`build`** *(Default)*: Full tool access, interactive development, shell commands, and code editing.
 - **`coding`**: Rigorous software engineer following the red-green-refactor loop: *Understand → Plan → Implement → Verify → Review*.
 - **`plan`**: Read-only strategic analysis. Formulates implementation plans without mutating workspace files.
+
+`plan_write` is gated by the session's working mode, not the active agent: it is available to every agent that can see the tool, but only while the session is in `plan` mode, and `/plan` shows the recorded steps. Every primary agent can also call `switch_mode` to propose a working-mode change: entering or leaving `plan` mode applies immediately, any other switch requires user confirmation (unless "always allow switch_mode" was granted for the session), and delegated subagents can never switch modes.
 
 ### 2. Subagents (Delegated)
 - **`explorer`**: High-speed, read-only code exploration using grep, glob, and AST inspection.

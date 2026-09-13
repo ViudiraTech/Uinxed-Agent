@@ -367,6 +367,22 @@ func TestModernRenderBaseLayout(t *testing.T) {
 	}
 }
 
+func TestRenderBaseShowsFileChips(t *testing.T) {
+	m := newMouseTestModel(t)
+	m.width, m.height = 100, 30
+	m.prompt.SetValue("look at @README.md and @general")
+	m.renderBase(ThemeByName("uinxed"))
+	var chips []string
+	for _, r := range m.regions {
+		if r.Kind == ActionFileChip {
+			chips = append(chips, r.Value)
+		}
+	}
+	if len(chips) != 1 || chips[0] != "README.md" {
+		t.Fatalf("file chips = %#v, want only README.md", chips)
+	}
+}
+
 // TestStatusLineDropsLowValueSegments keeps the status row to one line on a
 // narrow terminal by discarding the least important segments first.
 func TestStatusLineDropsLowValueSegments(t *testing.T) {
@@ -420,6 +436,61 @@ func TestToggleSidebar(t *testing.T) {
 	m.toggleSidebar()
 	if m.cfg.Sidebar != "on" {
 		t.Fatalf("expected sidebar to be on, got %s", m.cfg.Sidebar)
+	}
+}
+
+func TestPlanOverlayRendersRecordedSteps(t *testing.T) {
+	m := newMouseTestModel(t)
+	m.width, m.height = 80, 24
+	m.session.Metadata = map[string]any{
+		"plan": `[{"id":"p1","subject":"Wire plan_write","details":"persist to metadata","status":"in_progress"},{"id":"p2","subject":"Open /plan overlay","status":"pending"}]`,
+	}
+	m.overlay = overlayPlan
+	m.setFocus(FocusTodos)
+	plain := stripANSI(m.renderOverlay(ThemeByName("uinxed")))
+	for _, want := range []string{"Plan", "Wire plan_write", "persist to metadata", "Open /plan overlay", "in_progress", "pending"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("plan overlay missing %q:\n%s", want, plain)
+		}
+	}
+}
+
+func TestPlanCommandOpensOverlay(t *testing.T) {
+	m := newMouseTestModel(t)
+	m.executeCommand("/plan")
+	if m.overlay != overlayPlan {
+		t.Fatalf("overlay = %v, want overlayPlan", m.overlay)
+	}
+}
+
+func TestPlanChangedEventMirrorsMetadata(t *testing.T) {
+	m := newMouseTestModel(t)
+	m.handleRuntime(domain.Event{
+		Kind:      domain.EventPlanChanged,
+		SessionID: m.session.ID,
+		Data: []domain.PlanStep{
+			{ID: "p1", Subject: "Ship it", Status: domain.TodoPending},
+		},
+	})
+	steps := domain.PlanFromMetadata(m.session.Metadata)
+	if len(steps) != 1 || steps[0].Subject != "Ship it" {
+		t.Fatalf("plan after event = %#v", steps)
+	}
+}
+
+func TestSessionChangedEventPatchesModeWithoutReload(t *testing.T) {
+	m := newMouseTestModel(t)
+	m.streamContent = "in-flight"
+	m.handleRuntime(domain.Event{
+		Kind:      domain.EventSessionChanged,
+		SessionID: m.session.ID,
+		Data:      domain.SessionChanged{Mode: "plan"},
+	})
+	if got := m.session.Metadata["mode"]; got != "plan" {
+		t.Fatalf("mode after event = %#v, want plan", got)
+	}
+	if m.streamContent != "in-flight" {
+		t.Fatalf("mode event must not clear streaming buffers, got %q", m.streamContent)
 	}
 }
 

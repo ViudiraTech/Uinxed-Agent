@@ -135,6 +135,30 @@ func Evaluate(mode Mode, tool string, cat tools.Category, sessionAlways map[stri
 	return Ask, "unrecognised mode requires confirmation"
 }
 
+// EvaluateModeSwitch resolves the verdict for an AI-proposed mode switch (the
+// switch_mode tool). It is evaluated separately from the category matrix
+// because a mode switch changes how much authority the model has from the very
+// next round, so the user must be in the loop for most transitions.
+//
+// Entering and leaving plan mode are always allowed: plan mode exists to force
+// a plan out of the model, and the tool's whole point is that the model can
+// propose to start or finish planning without friction. Every other transition
+// (between read-only, auto-edit and full-auto) asks the user first, exactly as
+// the category matrix asks for mutating calls.
+func EvaluateModeSwitch(cur, target Mode, sessionAlways map[string]struct{}) (Verdict, string) {
+	if _, ok := sessionAlways["switch_mode"]; ok {
+		return Allow, "allowed for this session"
+	}
+	curN, tgtN := Normalize(string(cur)), Normalize(string(target))
+	if curN == tgtN {
+		return Allow, ""
+	}
+	if curN == ModePlan || tgtN == ModePlan {
+		return Allow, ""
+	}
+	return Ask, "mode switches require user confirmation"
+}
+
 func readOnly(cat tools.Category) bool {
 	return cat == tools.CategoryRead || cat == tools.CategoryState
 }

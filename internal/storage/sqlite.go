@@ -259,6 +259,9 @@ func (s *SQLite) ListSessions(ctx context.Context) ([]domain.Session, error) {
 }
 
 func (s *SQLite) SearchSessions(ctx context.Context, query string, limit int) ([]domain.Session, error) {
+	if strings.TrimSpace(query) == "" {
+		return nil, nil
+	}
 	if limit <= 0 {
 		limit = 30
 	}
@@ -267,7 +270,10 @@ func (s *SQLite) SearchSessions(ctx context.Context, query string, limit int) ([
 	}
 	q := "%" + escapeLike(strings.TrimSpace(query)) + "%"
 	rows, err := s.db.QueryContext(ctx, `SELECT id,name,created_at,updated_at,provider_id,model,agent_id,cwd,parent_id,metadata
-		FROM sessions WHERE name LIKE ? ESCAPE '\' ORDER BY updated_at DESC LIMIT ?`, q, limit)
+		FROM sessions
+		WHERE name LIKE ? ESCAPE '\'
+		   OR id IN (SELECT session_id FROM messages WHERE content LIKE ? ESCAPE '\')
+		ORDER BY updated_at DESC LIMIT ?`, q, q, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +284,10 @@ func (s *SQLite) SearchSessions(ctx context.Context, query string, limit int) ([
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, ss)
+		if err := s.loadMessages(ctx, &ss); err != nil {
+			return nil, err
+		}
+		out = append(out, attachSearchSnippet(ss, query))
 	}
 	return out, rows.Err()
 }

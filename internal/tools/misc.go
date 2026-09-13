@@ -97,6 +97,40 @@ func (*TodoWriteTool) Execute(ctx context.Context, raw json.RawMessage, env Exec
 	return env.Callbacks.TodoWrite(ctx, raw)
 }
 
+type PlanWriteTool struct{}
+
+func (*PlanWriteTool) Name() string { return "plan_write" }
+func (*PlanWriteTool) Description() string {
+	return "在 plan 工作模式中创建或重置结构化实施计划；不修改工作区，结果可用 /plan 查看。"
+}
+func (*PlanWriteTool) Category() Category { return CategoryState }
+func (*PlanWriteTool) Schema() map[string]any {
+	return obj(map[string]any{"steps": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"subject": strp("计划步骤"), "details": strp("实现细节"), "status": map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed"}}}, "required": []string{"subject"}}}}, "steps")
+}
+func (*PlanWriteTool) Execute(ctx context.Context, raw json.RawMessage, env ExecutionContext) (Result, error) {
+	if env.Callbacks.PlanWrite == nil {
+		return Result{}, errors.New("plan callback unavailable")
+	}
+	return env.Callbacks.PlanWrite(ctx, raw)
+}
+
+type SwitchModeTool struct{}
+
+func (*SwitchModeTool) Name() string { return "switch_mode" }
+func (*SwitchModeTool) Description() string {
+	return "提议切换当前会话的工作模式；进入或退出 plan 模式直接生效，其余切换需用户确认。子智能体无权切换。"
+}
+func (*SwitchModeTool) Category() Category { return CategoryState }
+func (*SwitchModeTool) Schema() map[string]any {
+	return obj(map[string]any{"mode": map[string]any{"type": "string", "enum": []string{"plan", "read-only", "auto-edit", "full-auto"}}, "reason": strp("切换原因")}, "mode")
+}
+func (*SwitchModeTool) Execute(ctx context.Context, raw json.RawMessage, env ExecutionContext) (Result, error) {
+	if env.Callbacks.SwitchMode == nil {
+		return Result{}, errors.New("mode switch unavailable")
+	}
+	return env.Callbacks.SwitchMode(ctx, raw)
+}
+
 type TodoUpdateTool struct{}
 
 func (*TodoUpdateTool) Name() string        { return "todo_update" }

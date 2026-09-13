@@ -33,10 +33,13 @@ var commandDefs = []commandDef{
 	{"/context", "Show context usage and compaction thresholds", ""},
 	{"/compact", "Compact the context now", ""},
 	{"/todos", "Show the todo list", "Ctrl+O"},
+	{"/plan", "Show the current plan", ""},
 	{"/cd", "Change the working directory", ""},
 	{"/pwd", "Print the working directory", ""},
 	{"/new", "Start a new session", ""},
 	{"/sessions", "Switch session", ""},
+	{"/search", "Search sessions by text", ""},
+	{"/export", "Export this session to Markdown", ""},
 	{"/rename", "Rename the current session", ""},
 	{"/parent", "Return to the parent agent session", ""},
 	{"/delete", "Delete a session", ""},
@@ -147,6 +150,10 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 		m.overlay = overlayTodos
 		m.overlayScroll = 0
 		m.setFocus(FocusTodos)
+	case "/plan":
+		m.overlay = overlayPlan
+		m.overlayScroll = 0
+		m.setFocus(FocusTodos)
 	case "/pwd":
 		m.openInfo("Working Directory", m.session.CWD, overlayInfo)
 	case "/cd":
@@ -167,6 +174,15 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 		return asyncOp("new_session", func() (any, error) { return m.ctrl.NewSession(m.ctx, name) })
 	case "/sessions":
 		m.openSessionPicker()
+	case "/search":
+		if arg == "" {
+			m.openInfo("Search", "Usage: /search <query>", overlayInfo)
+			return nil
+		}
+		q := arg
+		return asyncOp("search_sessions", func() (any, error) { return m.ctrl.SearchSessions(m.ctx, q, 30) })
+	case "/export":
+		return asyncOp("export", func() (any, error) { return m.ctrl.ExportSession(m.ctx, sid, arg) })
 	case "/rename":
 		newName := strings.TrimSpace(arg)
 		if newName == "" {
@@ -279,6 +295,8 @@ func helpText() string {
 		{"Ctrl+E", "Expand or collapse tool details"},
 		{"Ctrl+B", "Toggle sidebar"},
 		{"Ctrl+D", "Open git diff"},
+		{"Ctrl+R", "Search prompt history"},
+		{"Shift+Tab", "Cycle approval mode"},
 		{"PgUp/PgDn", "Scroll the conversation"},
 		{"Esc", "Close overlay; cancel the running turn"},
 		{"Ctrl+C", "Cancel the running turn; quit when idle"},
@@ -303,6 +321,8 @@ func (m *Model) openCommandPalette() {
 	items := []PickerItem{
 		{"new", "New Session", "Start a fresh conversation", ""},
 		{"sessions", "Switch Session", "Jump to another session", ""},
+		{"search", "Search Sessions", "Find a session by name or message text", ""},
+		{"export", "Export Session", "Write this conversation as Markdown", ""},
 		{"sidebar", "Toggle Sidebar", "Show or hide the session sidebar", "Ctrl+B"},
 		{"agent", "Change Agent", "Switch the primary agent", "Tab"},
 		{"model", "Change Model", "Switch the active model", ""},
@@ -470,7 +490,7 @@ func (m *Model) choosePicker() tea.Cmd {
 		return asyncOp("set_model", func() (any, error) { return nil, m.ctrl.SetModel(m.ctx, sid, it.ID) })
 	case "provider":
 		return asyncOp("set_provider", func() (any, error) { return nil, m.ctrl.SetProvider(m.ctx, sid, it.ID) })
-	case "session":
+	case "session", "search":
 		return m.switchSessionCmd(it.ID)
 	case "delete":
 		m.confirmTarget = it.ID
@@ -503,6 +523,11 @@ func (m *Model) runPaletteAction(id string) tea.Cmd {
 		return m.executeCommand("/new")
 	case "sessions":
 		m.openSessionPicker()
+	case "search":
+		m.prompt.SetValue("/search ")
+		m.closeOverlay()
+	case "export":
+		return m.executeCommand("/export")
 	case "rename":
 		m.prompt.SetValue("/rename ")
 		m.closeOverlay()

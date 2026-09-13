@@ -56,6 +56,33 @@ type Todo struct {
 	UpdatedAt time.Time  `json:"updated_at"`
 }
 
+type PlanStep struct {
+	ID        string     `json:"id"`
+	Subject   string     `json:"subject"`
+	Details   string     `json:"details,omitempty"`
+	Status    TodoStatus `json:"status"`
+	UpdatedAt time.Time  `json:"updated_at"`
+}
+
+// PlanFromMetadata decodes the plan persisted in session metadata. The plan
+// lives under metadata["plan"] as a JSON string (rather than a Session field)
+// so it survives both storage backends without a schema change, mirroring how
+// mode/effort/thinking are already carried.
+func PlanFromMetadata(m map[string]any) []PlanStep {
+	if m == nil {
+		return nil
+	}
+	v, ok := m["plan"].(string)
+	if !ok || v == "" {
+		return nil
+	}
+	var out []PlanStep
+	if json.Unmarshal([]byte(v), &out) != nil {
+		return nil
+	}
+	return out
+}
+
 type ToolActivity struct {
 	ID        string          `json:"id"`
 	CallID    string          `json:"call_id"`

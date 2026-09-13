@@ -327,6 +327,15 @@ func (b *Broker) sessionOf(reqID string) string {
 // It is derived from the arguments rather than from the tool, so a new tool
 // needs no rendering support to be approvable.
 func summarizeApproval(tool string, args json.RawMessage) string {
+	if tool == "switch_mode" {
+		var a struct {
+			Mode string `json:"mode"`
+		}
+		if json.Unmarshal(args, &a) == nil && a.Mode != "" {
+			return "switch mode to " + a.Mode
+		}
+		return "switch mode"
+	}
 	var m map[string]any
 	if len(args) == 0 || json.Unmarshal(args, &m) != nil {
 		return ""

@@ -23,6 +23,7 @@ const (
 	overlayPicker
 	overlayHelp
 	overlayTodos
+	overlayPlan
 	overlayContext
 	overlayInfo
 	overlayDiff
@@ -30,6 +31,7 @@ const (
 	overlayConfirmRestore
 	overlayConfirmDelete
 	overlayApproval
+	overlayHistory
 )
 
 type layoutState struct {
@@ -91,6 +93,11 @@ type Model struct {
 	approvalChoice   int
 	approvalFeedback bool
 	approvalInput    string
+	// historySearch drives the Ctrl+R reverse incremental search over the
+	// prompt history. Newest match first.
+	historyQuery   string
+	historyMatches []string
+	historySel     int
 }
 
 // subagentProgress tracks live activity inside a delegate child so the sidebar
@@ -235,6 +242,9 @@ func (m *Model) closeOverlay() {
 	m.connect = connectWizard{}
 	m.confirmTarget = ""
 	m.overlayScroll = 0
+	m.historyQuery = ""
+	m.historyMatches = nil
+	m.historySel = 0
 	m.setFocus(FocusPrompt)
 }
 
