@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"github.com/ViudiraTech/Uinxed-Agent/internal/approval"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/storage"
+	terminalutil "github.com/ViudiraTech/Uinxed-Agent/internal/terminal"
 )
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -53,10 +55,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case modelsMsg:
 		if x.err != nil {
-			m.showError(x.err)
+			m.showError(fmt.Errorf("model discovery failed: %w", x.err))
+			if items := modelPickerItems(m.configuredModels(m.session.ProviderID)); len(items) > 0 {
+				m.showModelPicker("Model · configured list", items)
+			} else {
+				m.showModelPicker("Model · discovery failed", []PickerItem{{
+					ID: "", Label: "Failed to load models", Description: terminalutil.SanitizeText(x.err.Error()),
+				}})
+			}
 			return m, nil
 		}
-		m.openModelPicker(x.models)
+		if items := modelPickerItems(x.models); len(items) > 0 {
+			m.showModelPicker("Model", items)
+		} else {
+			m.showModelPicker("Model · no models returned", []PickerItem{{
+				ID: "", Label: "No models returned by the provider", Description: "Check the API key and Base URL, then try again",
+			}})
+		}
 		return m, nil
 	case diffMsg:
 		if x.err != nil {
@@ -1051,7 +1066,13 @@ func (m *Model) autoTitle() tea.Cmd {
 }
 
 func (m *Model) handleOp(x opMsg) tea.Cmd {
+	if x.op == "connect" {
+		m.connect.Submitting = false
+	}
 	if x.err != nil {
+		if x.op == "connect" {
+			m.connect.Error = terminalutil.SanitizeText(x.err.Error())
+		}
 		m.showError(x.err)
 		return nil
 	}
@@ -1165,7 +1186,22 @@ func (m *Model) resize() {
 }
 func (m *Model) fetchModels() tea.Cmd {
 	id := m.session.ProviderID
-	return func() tea.Msg { v, e := m.ctrl.Models(m.ctx, id); return modelsMsg{v, e} }
+	// Show the configured models before the request leaves: waiting on the
+	// network here is what made /model look hung for seconds on a slow or
+	// unreachable /models endpoint. Discovery replaces this list when it lands.
+	if items := modelPickerItems(m.configuredModels(id)); len(items) > 0 {
+		m.showModelPicker("Model · loading…", items)
+	} else {
+		m.showModelPicker("Model · loading…", []PickerItem{{
+			ID: "", Label: "Fetching models from the provider", Description: "GET /models · up to 12s",
+		}})
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		v, e := m.ctrl.Models(ctx, id)
+		return modelsMsg{v, e}
+	}
 }
 func (m *Model) loadDiffFile(path string) tea.Cmd {
 	cwd := m.session.CWD

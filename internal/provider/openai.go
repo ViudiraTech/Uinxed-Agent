@@ -11,7 +11,6 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,17 +20,23 @@ import (
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
 )
 
+const modelsRequestTimeout = 12 * time.Second
+
 type OpenAICompatible struct {
-	mu     sync.RWMutex
-	cfg    config.Provider
-	key    func() (string, error)
-	client *http.Client
+	mu          sync.RWMutex
+	cfg         config.Provider
+	key         func() (string, error)
+	client      *http.Client
+	metaClient  *http.Client
+	modelsCache []string
+	modelsAt    time.Time
 }
 
 func NewOpenAICompatible(cfg config.Provider, key func() (string, error)) *OpenAICompatible {
-	tr := &http.Transport{
+	dial := (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	stream := &http.Transport{
 		Proxy:             http.ProxyFromEnvironment,
-		DialContext:       (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		DialContext:       dial,
 		ForceAttemptHTTP2: true,
 		MaxIdleConns:      100, MaxIdleConnsPerHost: 16,
 		IdleConnTimeout:       90 * time.Second,
@@ -39,7 +44,23 @@ func NewOpenAICompatible(cfg config.Provider, key func() (string, error)) *OpenA
 		ExpectContinueTimeout: 1 * time.Second,
 		ResponseHeaderTimeout: 60 * time.Second,
 	}
-	return &OpenAICompatible{cfg: cfg, key: key, client: &http.Client{Transport: tr}}
+	meta := &http.Transport{
+		Proxy:             http.ProxyFromEnvironment,
+		DialContext:       dial,
+		ForceAttemptHTTP2: false,
+		MaxIdleConns:      32, MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   8 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: 8 * time.Second,
+		DisableCompression:    false,
+	}
+	return &OpenAICompatible{
+		cfg:        cfg,
+		key:        key,
+		client:     &http.Client{Transport: stream},
+		metaClient: &http.Client{Transport: meta, Timeout: modelsRequestTimeout},
+	}
 }
 
 func (p *OpenAICompatible) Update(cfg config.Provider) { p.mu.Lock(); p.cfg = cfg; p.mu.Unlock() }
@@ -598,45 +619,111 @@ func (p *OpenAICompatible) parseNonStreamResponses(ctx context.Context, resp *ht
 }
 
 // Models discovers model IDs through the standard OpenAI-compatible GET /models
-// endpoint. Configured models are only a legacy fallback for an unavailable
-// endpoint; they are never used for a successful discovery response.
+// endpoint. A discovery failure is reported rather than masked: the provider's
+// configured models are a weaker claim than a live list, so callers that want to
+// keep offering them must decide that themselves.
 func (p *OpenAICompatible) Models(ctx context.Context) ([]string, error) {
+	p.mu.RLock()
+	cached := append([]string(nil), p.modelsCache...)
+	cachedAt := p.modelsAt
+	p.mu.RUnlock()
+	if len(cached) > 0 && time.Since(cachedAt) < 30*time.Second {
+		return cached, nil
+	}
+
+	out, err := p.fetchModels(ctx)
+	if err != nil {
+		if len(cached) > 0 {
+			return cached, nil
+		}
+		return nil, err
+	}
+	p.mu.Lock()
+	p.modelsCache = append([]string(nil), out...)
+	p.modelsAt = time.Now()
+	p.mu.Unlock()
+	return out, nil
+}
+
+func (p *OpenAICompatible) fetchModels(ctx context.Context) ([]string, error) {
 	cfg := p.Config()
-	base, err := url.Parse(strings.TrimRight(cfg.BaseURL, "/") + "/models")
+	if strings.TrimSpace(cfg.BaseURL) == "" {
+		return nil, errors.New("provider base URL is empty")
+	}
+	// Discovery is a short metadata GET. Do not inherit a cancelled or
+	// long-lived app context: Ctrl-C should still stop it, but a stale
+	// deadline from elsewhere must not silently empty the picker.
+	reqCtx, cancel := context.WithTimeout(context.Background(), modelsRequestTimeout)
+	defer cancel()
+	go func() {
+		select {
+		case <-ctx.Done():
+			cancel()
+		case <-reqCtx.Done():
+		}
+	}()
+	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/models"
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "ux-agent/2.0")
 	key, keyErr := p.key()
 	if keyErr != nil {
 		return nil, fmt.Errorf("load provider key: %w", keyErr)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base.String(), nil)
-	if err != nil {
-		return nil, err
-	}
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
-	resp, err := p.client.Do(req)
+	for k, v := range cfg.Headers {
+		req.Header.Set(k, v)
+	}
+	client := p.metaClient
+	if client == nil {
+		client = p.client
+	}
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch models: %w", err)
+		return nil, classifyModelsError(reqCtx.Err(), err)
 	}
 	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, classifyModelsError(reqCtx.Err(), err)
+	}
 	if !success(resp.StatusCode) {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("models endpoint returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("models endpoint returned %s: %s", resp.Status, extractError(body))
 	}
+	out, err := parseModelIDs(body)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, errors.New("models endpoint returned no models")
+	}
+	return out, nil
+}
+
+func classifyModelsError(ctxErr, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctxErr, context.DeadlineExceeded) {
+		return fmt.Errorf("fetch models timed out after %s", modelsRequestTimeout)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(ctxErr, context.Canceled) {
+		return errors.New("fetch models canceled")
+	}
+	return fmt.Errorf("fetch models: %w", err)
+}
+
+func parseModelIDs(raw []byte) ([]string, error) {
 	var data struct {
-		Data []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"data"`
-		Models []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"models"`
+		Data   []json.RawMessage `json:"data"`
+		Models []json.RawMessage `json:"models"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&data); err != nil {
+	if err := json.Unmarshal(raw, &data); err != nil {
 		return nil, fmt.Errorf("decode models response: %w", err)
 	}
 	items := data.Data
@@ -645,20 +732,34 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]string, error) {
 	}
 	out := make([]string, 0, len(items))
 	seen := map[string]bool{}
-	for _, m := range items {
-		id := m.ID
-		if id == "" {
-			id = m.Name
-		}
+	for _, item := range items {
+		id := modelIDFromRaw(item)
 		if id != "" && !seen[id] {
 			out = append(out, id)
 			seen[id] = true
 		}
 	}
-	if len(out) == 0 {
-		return nil, errors.New("models endpoint returned no models")
-	}
 	return out, nil
+}
+
+func modelIDFromRaw(raw json.RawMessage) string {
+	var obj struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(raw, &obj) == nil {
+		if obj.ID != "" {
+			return obj.ID
+		}
+		if obj.Name != "" {
+			return obj.Name
+		}
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return strings.TrimSpace(s)
+	}
+	return ""
 }
 
 func (p *OpenAICompatible) CheckKey(ctx context.Context, key string) error {

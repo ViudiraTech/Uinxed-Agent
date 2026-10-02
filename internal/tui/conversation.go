@@ -615,6 +615,10 @@ func (c *Conversation) renderToolCall(tc domain.ToolCall, a domain.ToolActivity,
 	out := []renderLine{{Text: line, Action: ActionTool, Value: tc.ID}}
 
 	if c.expandedTools[tc.ID] {
+		if name == "delegate" {
+			out = append(out, c.renderExpandedDelegate(tc, a, t, width)...)
+			return out
+		}
 		if tc.Function.Arguments != "" {
 			for _, l := range wrapPlain(tc.Function.Arguments, max(8, width-lipgloss.Width(expandedGut)-2)) {
 				out = append(out, renderLine{Text: expandedGut + lipgloss.NewStyle().Foreground(t.Muted).Render(l)})
@@ -799,6 +803,43 @@ func formatToolDuration(d time.Duration) string {
 }
 
 const maxExpandedOutputLines = 12
+
+// renderExpandedDelegate gives delegate cards a task-oriented detail view: the
+// prompt sent to the child and the child's returned output are shown separately
+// instead of exposing the callback's implementation JSON.
+func (c *Conversation) renderExpandedDelegate(tc domain.ToolCall, a domain.ToolActivity, t Theme, width int) []renderLine {
+	bodyW := max(8, width-lipgloss.Width(expandedGut)-2)
+	var raw struct {
+		Task string `json:"task"`
+	}
+	_ = json.Unmarshal([]byte(tc.Function.Arguments), &raw)
+	label := lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
+	text := lipgloss.NewStyle().Foreground(t.Text)
+	out := []renderLine{{Text: expandedGut + label.Render("Prompt")}}
+	prompt := strings.TrimSpace(raw.Task)
+	if prompt == "" {
+		prompt = "(empty)"
+	}
+	for _, l := range wrapPlain(terminalutil.SanitizeText(prompt), bodyW) {
+		out = append(out, renderLine{Text: expandedGut + "  " + text.Render(l)})
+	}
+	out = append(out, renderLine{Text: expandedGut + label.Render("Sub-agent output")})
+	output := strings.TrimSpace(a.Output)
+	if output == "" && a.Error != "" {
+		output = a.Error
+	}
+	if output == "" {
+		output = "(no output yet)"
+	}
+	for _, l := range wrapPlain(terminalutil.SanitizeText(output), bodyW) {
+		style := text
+		if a.Error != "" && a.Output == "" {
+			style = lipgloss.NewStyle().Foreground(t.Error)
+		}
+		out = append(out, renderLine{Text: expandedGut + "  " + style.Render(l)})
+	}
+	return out
+}
 
 // renderExpandedResult shows arguments output capped to a fixed preview so one
 // large tool result cannot push the whole transcript or change the card height

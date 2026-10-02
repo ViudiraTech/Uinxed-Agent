@@ -110,11 +110,13 @@ type subagentProgress struct {
 }
 
 type connectWizard struct {
-	Step    int
-	Input   string
-	Name    string
-	BaseURL string
-	Key     string
+	Step       int
+	Input      string
+	Name       string
+	BaseURL    string
+	Key        string
+	Submitting bool
+	Error      string
 }
 
 func New(ctx context.Context, ctrl *app.Controller, session domain.Session) *Model {

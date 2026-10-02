@@ -576,14 +576,23 @@ func (m *Model) renderOverlay(t Theme) string {
 		}
 		title := lipgloss.NewStyle().Bold(true).Foreground(t.Primary).Render("Connect Provider")
 		stepInfo := lipgloss.NewStyle().Foreground(t.Muted).Render(fmt.Sprintf("Step %d of %d", step+1, len(labels)))
+		hint := "enter Next · esc Cancel"
+		if m.connect.Submitting {
+			hint = "Fetching models and saving provider… · esc Cancel"
+		}
 		lines = []string{
 			title + "  " + stepInfo,
 			"",
 			lipgloss.NewStyle().Bold(true).Foreground(t.Text).Render(labels[step]),
 			lipgloss.NewStyle().Foreground(t.Primary).Render(maskConnectInput(m.connect.Input, step)),
-			"",
-			lipgloss.NewStyle().Foreground(t.Muted).Render("enter Next · esc Cancel"),
 		}
+		if m.connect.Error != "" {
+			lines = append(lines,
+				lipgloss.NewStyle().Bold(true).Foreground(t.Error).Render("Connection failed"),
+				lipgloss.NewStyle().Foreground(t.Error).Render(truncWidth(m.connect.Error, max(10, w-4))),
+			)
+		}
+		lines = append(lines, "", lipgloss.NewStyle().Foreground(t.Muted).Render(hint))
 	case overlayConfirmRestore:
 		lines = []string{
 			lipgloss.NewStyle().Bold(true).Foreground(t.Error).Render("Restore Factory Settings"),
@@ -766,7 +775,7 @@ func (m *Model) renderPlanApproval(t Theme, w int) []string {
 }
 
 func maskConnectInput(s string, step int) string {
-	if step != 3 {
+	if step != 2 {
 		return "> " + s
 	}
 	if s == "" {

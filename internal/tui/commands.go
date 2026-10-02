@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/agent"
@@ -356,18 +358,45 @@ func (m *Model) openAgentPicker() {
 	m.overlay = overlayPicker
 	m.setFocus(FocusPicker)
 }
-func (m *Model) openModelPicker(models []string) {
-	if len(models) == 0 {
-		models = m.ctrl.Config.ActiveProvider().Models
+
+// showModelPicker renders the model chooser. Discovery is a network round trip,
+// so the caller opens this first with the provider's configured models and
+// reopens it once discovery settles; an in-flight query survives the swap.
+func (m *Model) showModelPicker(title string, items []PickerItem) {
+	var query string
+	if m.overlay == overlayPicker && m.pickerPurpose == "model" {
+		query = m.picker.Query
 	}
+	m.picker.Reset(title, ActionModel, items)
+	if query != "" {
+		m.picker.SetQuery(query)
+	}
+	m.pickerPurpose = "model"
+	m.overlay = overlayPicker
+	m.setFocus(FocusPicker)
+}
+
+func modelPickerItems(models []string) []PickerItem {
 	items := make([]PickerItem, 0, len(models))
 	for _, x := range models {
 		items = append(items, PickerItem{x, x, "", ""})
 	}
-	m.picker.Reset("Model", ActionModel, items)
-	m.pickerPurpose = "model"
-	m.overlay = overlayPicker
-	m.setFocus(FocusPicker)
+	return items
+}
+
+// configuredModels are the model IDs stored with the provider. They are the
+// only list available before discovery answers, and the only one left when the
+// /models endpoint is unreachable.
+func (m *Model) configuredModels(id string) []string {
+	if id == "" {
+		return nil
+	}
+	for _, p := range m.ctrl.Config.Snapshot().Providers {
+		if p.ID == id {
+			return append([]string(nil), p.Models...)
+		}
+	}
+	return nil
 }
 func (m *Model) openProviderPicker() {
 	cfg := m.ctrl.Config.Snapshot()
@@ -488,6 +517,9 @@ func (m *Model) choosePicker() tea.Cmd {
 	case "agent":
 		return asyncOp("set_agent", func() (any, error) { return nil, m.ctrl.SetAgent(m.ctx, sid, it.ID) })
 	case "model":
+		if strings.TrimSpace(it.ID) == "" {
+			return nil
+		}
 		return asyncOp("set_model", func() (any, error) { return nil, m.ctrl.SetModel(m.ctx, sid, it.ID) })
 	case "provider":
 		return asyncOp("set_provider", func() (any, error) { return nil, m.ctrl.SetProvider(m.ctx, sid, it.ID) })
@@ -654,16 +686,24 @@ func (m *Model) acceptAutocomplete() tea.Cmd {
 
 func (m *Model) handleConnectKey(k tea.KeyPressMsg) tea.Cmd {
 	key := k.String()
+	if m.connect.Submitting {
+		if key == "esc" {
+			m.closeOverlay()
+		}
+		return nil
+	}
 	if key == "esc" {
 		m.closeOverlay()
 		return nil
 	}
 	if key == "backspace" {
+		m.connect.Error = ""
 		m.connect.Input = removeLastRune(m.connect.Input)
 		return nil
 	}
 	if key != "enter" {
 		if k.Text != "" {
+			m.connect.Error = ""
 			m.connect.Input += k.Text
 		}
 		return nil
@@ -686,21 +726,27 @@ func (m *Model) handleConnectKey(k tea.KeyPressMsg) tea.Cmd {
 		m.connect.BaseURL = strings.TrimRight(v, "/")
 		m.connect.Step = 2
 	case 2:
+		// Once Submitting is set the guard at the top of this function returns
+		// early, so a second Enter cannot re-enter the probe here.
 		m.connect.Key = v
+		m.connect.Submitting = true
+		name, baseURL, apiKey := m.connect.Name, m.connect.BaseURL, m.connect.Key
 		return asyncOp("connect", func() (any, error) {
 			// Discover models before persisting the provider. This keeps the
 			// configuration authoritative and avoids a hand-maintained model list.
-			p := config.Provider{Name: m.connect.Name, BaseURL: m.connect.BaseURL}
+			p := config.Provider{Name: name, BaseURL: baseURL}
 			probe := provider.NewOpenAICompatible(p, func() (string, error) {
-				return m.connect.Key, nil
+				return apiKey, nil
 			})
-			models, err := probe.Models(m.ctx)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			models, err := probe.Models(ctx)
 			if err != nil {
 				return nil, err
 			}
 			p.Models = models
 			p.DefaultModel = models[0]
-			if err := m.ctrl.Config.UpsertProvider(p, m.connect.Key); err != nil {
+			if err := m.ctrl.Config.UpsertProvider(p, apiKey); err != nil {
 				return nil, err
 			}
 			cfg := m.ctrl.Config.Snapshot()
@@ -714,8 +760,8 @@ func (m *Model) handleConnectKey(k tea.KeyPressMsg) tea.Cmd {
 			if id == "" {
 				return nil, fmt.Errorf("provider created but could not resolve id")
 			}
-			if m.connect.Key != "" {
-				if err := m.ctrl.CheckKey(m.ctx, id, m.connect.Key); err != nil {
+			if apiKey != "" {
+				if err := m.ctrl.CheckKey(m.ctx, id, apiKey); err != nil {
 					return nil, err
 				}
 			}

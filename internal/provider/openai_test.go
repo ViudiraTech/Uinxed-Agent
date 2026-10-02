@@ -190,6 +190,40 @@ func TestResponsesInputPreservesFunctionCallID(t *testing.T) {
 	}
 }
 
+func TestParseModelIDsFromOpenAIAndGatewayShapes(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{"openai data", `{"object":"list","data":[{"id":"gpt-5.6-sol"},{"id":"gpt-5.6-sol"},{"id":"gpt-6-astra"}]}`, []string{"gpt-5.6-sol", "gpt-6-astra"}},
+		{"legacy models", `{"models":[{"id":"a"},{"name":"b"}]}`, []string{"a", "b"}},
+		{"string items", `{"data":["one","two"]}`, []string{"one", "two"}},
+	}
+	for _, c := range cases {
+		got, err := parseModelIDs([]byte(c.raw))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if fmt.Sprint(got) != fmt.Sprint(c.want) {
+			t.Fatalf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestModelsTimesOutHungEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+	}))
+	t.Cleanup(srv.Close)
+	p := NewOpenAICompatible(config.Provider{ID: "probe", BaseURL: srv.URL + "/v1"}, func() (string, error) { return "k", nil })
+	p.metaClient.Timeout = 20 * time.Millisecond
+	_, err := p.Models(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestModelsUsesOpenAIEndpointAndAuth(t *testing.T) {
 	var gotPath, gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -297,5 +331,17 @@ func TestResponsesInputSanitizesGhostCallsAndOrphanTools(t *testing.T) {
 	got := responsesInput(in)
 	if len(got) != 3 {
 		t.Fatalf("expected 3 items (user, function_call, function_call_output), got %d: %#v", len(got), got)
+	}
+}
+
+func TestModelsReportsDiscoveryFailureRatherThanConfiguredFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid token"}}`))
+	}))
+	defer srv.Close()
+	p := NewOpenAICompatible(config.Provider{ID: "router", BaseURL: srv.URL + "/v1", Models: []string{"configured-a"}}, func() (string, error) { return "k", nil })
+	if _, err := p.Models(context.Background()); err == nil {
+		t.Fatal("discovery failure must be reported, not masked by the configured list")
 	}
 }

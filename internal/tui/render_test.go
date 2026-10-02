@@ -212,6 +212,29 @@ func TestFormatAgoUsesEnglishUnits(t *testing.T) {
 	}
 }
 
+func TestExpandedDelegateShowsPromptAndOutput(t *testing.T) {
+	c := NewConversation()
+	c.SetSession(domain.Session{ID: "s", Messages: []domain.Message{{
+		ID: "a", Role: domain.RoleAssistant, ToolCalls: []domain.ToolCall{{
+			ID: "call-1", Function: domain.ToolCallFunction{Name: "delegate", Arguments: `{"agent":"explorer","task":"检查路由实现"}`},
+		}},
+	}}}, 80)
+	c.ToggleTool("call-1")
+	lines := c.Render(20, ThemeByName("uinxed"), RenderOptions{Activities: []domain.ToolActivity{{
+		CallID: "call-1", Name: "delegate", State: "success", Output: "发现路由使用了硬编码模型。",
+	}}})
+	plain := stripANSI(strings.Join(func() []string {
+		out := make([]string, len(lines))
+		for i, line := range lines {
+			out[i] = line.Text
+		}
+		return out
+	}(), "\n"))
+	if !strings.Contains(plain, "Prompt") || !strings.Contains(plain, "检查路由实现") || !strings.Contains(plain, "Sub-agent output") || !strings.Contains(plain, "发现路由") {
+		t.Fatalf("expanded delegate details missing: %s", plain)
+	}
+}
+
 func TestToolResultSummaryCompressesOutput(t *testing.T) {
 	cases := []struct {
 		name string
