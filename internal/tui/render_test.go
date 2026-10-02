@@ -106,7 +106,7 @@ func TestLayoutFitsEveryTerminalSize(t *testing.T) {
 // TestOverlayFitsEveryTerminalSize covers the modal path, which has its own
 // centering arithmetic in renderOverlay.
 func TestOverlayFitsEveryTerminalSize(t *testing.T) {
-	for _, overlay := range []overlayKind{overlayPicker, overlayHelp, overlayTodos, overlayInfo, overlayDiff, overlayConnect, overlayConfirmDelete} {
+	for _, overlay := range []overlayKind{overlayPicker, overlayHelp, overlayTodos, overlayInfo, overlayDiff, overlayConnect, overlayConfirmDelete, overlayEffort} {
 		for _, w := range []int{30, 50, 80, 120} {
 			for _, h := range []int{8, 16, 30} {
 				m := layoutModel(t)

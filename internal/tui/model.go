@@ -32,6 +32,7 @@ const (
 	overlayConfirmDelete
 	overlayApproval
 	overlayHistory
+	overlayEffort
 )
 
 type layoutState struct {
@@ -81,8 +82,10 @@ type Model struct {
 	connect          connectWizard
 	confirmTarget    string
 	overlayScroll    int
-	activityFrame    int
-	statusCmdText    string
+	// effortSel is the stop the effort slider is on while it is open.
+	effortSel     int
+	activityFrame int
+	statusCmdText string
 	// Working-line state. The verb is drawn once per turn so it holds still
 	// instead of reshuffling every frame, and turnUsage is the cumulative count
 	// the runtime reports for the turn (see internal/tui/working.go).

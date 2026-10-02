@@ -24,6 +24,7 @@ type Glyphs struct {
 	Bullet     string // picker / list selection marker
 	ListBullet string // Markdown bullet list marker
 	Cursor     string // text cursor drawn at the end of an active query
+	Caret      string // marks the chosen stop on the effort scale
 	TodoDone   string
 	TodoOpen   string
 	BarFull    string
@@ -45,6 +46,7 @@ var unicodeGlyphs = Glyphs{
 	Bullet:     "▸",
 	ListBullet: "•",
 	Cursor:     "▏",
+	Caret:      "▲",
 	TodoDone:   "✓",
 	TodoOpen:   "◻",
 	BarFull:    "■",
@@ -67,6 +69,7 @@ var asciiGlyphs = Glyphs{
 	Bullet:     ">",
 	ListBullet: "-",
 	Cursor:     "|",
+	Caret:      "^",
 	TodoDone:   "[x]",
 	TodoOpen:   "[ ]",
 	BarFull:    "#",

@@ -297,11 +297,41 @@ func (c *Controller) SetProvider(ctx context.Context, sessionID, id string) erro
 	s.UpdatedAt = time.Now()
 	return c.Store.SaveSession(ctx, s)
 }
-func (c *Controller) SetEffort(ctx context.Context, sessionID, effort string) error {
-	err := c.Config.Update(func(x *config.Config) error { x.Effort = effort; return nil })
-	if err != nil {
+
+// SetEffort applies a reasoning level to one session and, unless sessionOnly is
+// set, records it as the default for later ones. Claude Code draws the same line:
+// confirming in its slider saves the level, pressing s applies it here only.
+func (c *Controller) SetEffort(ctx context.Context, sessionID, effort string, sessionOnly bool) error {
+	if err := c.setSessionMetadata(ctx, sessionID, "effort", effort); err != nil {
 		return err
 	}
+	if sessionOnly {
+		return nil
+	}
+	return c.Config.Update(func(x *config.Config) error { x.Effort = effort; return nil })
+}
+
+// ClearEffort drops the session's own level so it follows the configured default
+// again, which is what /effort auto means.
+func (c *Controller) ClearEffort(ctx context.Context, sessionID string) error {
+	return c.setSessionMetadata(ctx, sessionID, "effort", "")
+}
+
+// SetSupercode turns concurrent subagent orchestration on or off. It deliberately
+// does not touch the effort level: the two answer different questions.
+func (c *Controller) SetSupercode(ctx context.Context, sessionID string, on bool, sessionOnly bool) error {
+	if err := c.setSessionMetadata(ctx, sessionID, "supercode", on); err != nil {
+		return err
+	}
+	if sessionOnly {
+		return nil
+	}
+	return c.Config.Update(func(x *config.Config) error { x.Supercode = on; return nil })
+}
+
+// setSessionMetadata writes one session metadata key. An empty value removes it,
+// so the session falls back to the configured default.
+func (c *Controller) setSessionMetadata(ctx context.Context, sessionID, key string, value any) error {
 	s, err := c.Store.LoadSession(ctx, sessionID)
 	if err != nil {
 		return err
@@ -309,7 +339,11 @@ func (c *Controller) SetEffort(ctx context.Context, sessionID, effort string) er
 	if s.Metadata == nil {
 		s.Metadata = map[string]any{}
 	}
-	s.Metadata["effort"] = effort
+	if value == "" {
+		delete(s.Metadata, key)
+	} else {
+		s.Metadata[key] = value
+	}
 	s.UpdatedAt = time.Now()
 	return c.Store.SaveSession(ctx, s)
 }

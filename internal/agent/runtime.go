@@ -252,7 +252,7 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 		st.mu.Unlock()
 		adef := Get(sess.AgentID)
 		mode := modeFromMetadata(sess.Metadata, r.approvalMode())
-		sys := SystemPromptMode(adef, sess.Model, skills.PromptBlock(sess.CWD), effortFromMetadata(sess.Metadata), string(mode))
+		sys := SystemPromptMode(adef, sess.Model, skills.PromptBlock(sess.CWD), supercodeFromMetadata(sess.Metadata), string(mode))
 		history := contextmgr.FitMessages(sess.Messages, contextmgr.HistoryBudget(sess.Model))
 		msgs := make([]domain.Message, 0, len(history)+1)
 		msgs = append(msgs, domain.Message{Role: domain.RoleSystem, Content: sys})
@@ -1036,6 +1036,16 @@ func cloneMeta(in map[string]any) map[string]any {
 	}
 	return out
 }
+
+// supercodeFromMetadata reads the concurrent-orchestration toggle. It is a
+// separate flag from the effort level, which it deliberately leaves alone —
+// Claude Code's ultracode behaves the same way, and the two answer different
+// questions: how hard to think, and whether to fan the work out.
+func supercodeFromMetadata(m map[string]any) bool {
+	v, _ := m["supercode"].(bool)
+	return v
+}
+
 func effortFromMetadata(m map[string]any) string {
 	if v, ok := m["effort"].(string); ok && v != "" {
 		return v

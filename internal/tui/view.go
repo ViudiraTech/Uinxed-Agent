@@ -371,6 +371,8 @@ func (m *Model) renderOverlay(t Theme) string {
 				regs = append(regs, Region{Rect: Rect{0, len(lines) - 1, max(1, w-4), 1}, Kind: ActionTodo, Value: x.ID})
 			}
 		}
+	case overlayEffort:
+		lines = append(lines, m.renderEffortSlider(t, w)...)
 	case overlayPlan:
 		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(t.Secondary).Render("Plan"), "")
 		steps := domain.PlanFromMetadata(m.session.Metadata)

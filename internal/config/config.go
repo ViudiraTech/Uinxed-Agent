@@ -55,6 +55,10 @@ type Config struct {
 	StatusItems            []string   `json:"status_items,omitempty"`
 	StatuslineCommand      string     `json:"statusline_command,omitempty"`
 	Debug                  bool       `json:"debug,omitempty"`
+	// Supercode turns on concurrent subagent orchestration. It is deliberately
+	// not an effort level: it answers "fan the work out", not "think harder",
+	// and it leaves the level untouched.
+	Supercode bool `json:"supercode,omitempty"`
 	// HideBanner is opt-out rather than opt-in: JSON cannot tell an absent
 	// boolean from a false one, so a `banner` key defaulting to on would switch
 	// itself off for every config written before it existed.
@@ -100,7 +104,7 @@ func Defaults() Config {
 // every extra segment competes with the transcript for attention. Agents,
 // providers and effort stay available by adding them here.
 func DefaultStatusItems() []string {
-	return []string{"model", "cwd", "context", "mode"}
+	return []string{"model", "cwd", "context", "effort", "mode"}
 }
 
 type Store struct {
@@ -408,6 +412,16 @@ func mergeDefaults(in Config) Config {
 	if in.Effort != "" {
 		d.Effort = in.Effort
 	}
+	// supercode used to be an effort level that also forced max reasoning. A
+	// config still naming it as a level keeps both halves of that behaviour:
+	// the level it implied, plus the toggle it has become.
+	if in.Effort == "supercode" {
+		d.Effort = "max"
+		d.Supercode = true
+	}
+	if in.Supercode {
+		d.Supercode = true
+	}
 	if in.CWD != "" {
 		d.CWD = in.CWD
 	}
@@ -514,6 +528,23 @@ func mergeProvider(base, override Provider) Provider {
 // Order is user-visible: "claude" leads because it is the default.
 var themeNames = []string{"claude", "uinxed", "tokyonight", "catppuccin", "gruvbox", "nord", "dracula", "dark", "light"}
 
+// EffortLevels is the reasoning scale, in order. supercode is deliberately not a
+// member: it is a separate toggle that leaves the level alone.
+var effortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+
+func EffortLevels() []string { return append([]string(nil), effortLevels...) }
+
+// ValidEffort reports whether name is a reasoning level. The slider, the /effort
+// argument and validation all consult it so they cannot drift apart.
+func ValidEffort(name string) bool {
+	for _, n := range effortLevels {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
 func Themes() []string { return append([]string(nil), themeNames...) }
 
 func ValidTheme(name string) bool {
@@ -541,9 +572,7 @@ func validate(c *Config) error {
 	if c.StreamRenderIntervalMS > 100 {
 		c.StreamRenderIntervalMS = 100
 	}
-	switch c.Effort {
-	case "low", "medium", "high", "xhigh", "max", "supercode":
-	default:
+	if !ValidEffort(c.Effort) {
 		c.Effort = "high"
 	}
 	if !ValidTheme(c.Theme) {

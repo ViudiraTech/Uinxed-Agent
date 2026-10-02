@@ -100,22 +100,22 @@ Rules for this mode:
   Ready to implement — call exit_plan to proceed.
 - Do not claim work is done. Nothing has been changed yet.`
 
-func SystemPrompt(a domain.AgentDefinition, model, skillBlock, effort string) string {
-	return systemPromptAt(a, model, skillBlock, effort, time.Now())
+func SystemPrompt(a domain.AgentDefinition, model, skillBlock string, supercode bool) string {
+	return systemPromptAt(a, model, skillBlock, supercode, time.Now())
 }
 
 // SystemPromptMode appends the active approval mode's instructions. The mode is
 // threaded in from the session so the prompt always describes the policy the
 // approval layer will actually enforce for that session.
-func SystemPromptMode(a domain.AgentDefinition, model, skillBlock, effort, mode string) string {
-	return systemPromptModeAt(a, model, skillBlock, effort, mode, time.Now())
+func SystemPromptMode(a domain.AgentDefinition, model, skillBlock string, supercode bool, mode string) string {
+	return systemPromptModeAt(a, model, skillBlock, supercode, mode, time.Now())
 }
 
-func systemPromptAt(a domain.AgentDefinition, model, skillBlock, effort string, now time.Time) string {
-	return systemPromptModeAt(a, model, skillBlock, effort, "", now)
+func systemPromptAt(a domain.AgentDefinition, model, skillBlock string, supercode bool, now time.Time) string {
+	return systemPromptModeAt(a, model, skillBlock, supercode, "", now)
 }
 
-func systemPromptModeAt(a domain.AgentDefinition, model, skillBlock, effort, mode string, now time.Time) string {
+func systemPromptModeAt(a domain.AgentDefinition, model, skillBlock string, supercode bool, mode string, now time.Time) string {
 	p := a.Prompt
 	zone, offset := now.Zone()
 	offsetSign := "+"
@@ -141,9 +141,9 @@ Timezone: %s (UTC%s%02d:%02d)
 	if mode == "plan" {
 		p += "\n\n" + planPrompt
 	}
-	if effort == "supercode" {
+	if supercode {
 		p += `\n\n## Supercode 模式
-你正处于 supercode 模式:推理 effort=max,并开启多子 agent 并发编排。
+你正处于 supercode 模式:开启多子 agent 并发编排,推理档位保持会话当前设置。
 对每个实质任务,先自主规划:把任务拆分为可并行的独立工作流(理解→实施→验证),在同一轮回复中多次并发调用 delegate 子 agent(explorer/general/coding)执行;全部返回后汇总评估、修正补做,直到任务彻底完成才结束回合。`
 	}
 	return p

@@ -183,11 +183,7 @@ func (p *OpenAICompatible) streamChat(ctx context.Context, cfg config.Provider, 
 		payload["thinking"] = map[string]any{"type": "enabled"}
 	}
 	if cfg.SupportsEffort && req.Effort != "" {
-		e := req.Effort
-		if e == "supercode" {
-			e = "max"
-		}
-		payload["reasoning_effort"] = e
+		payload["reasoning_effort"] = req.Effort
 	}
 	build := func() (io.Reader, string, error) {
 		raw, err := json.Marshal(payload)
@@ -421,11 +417,7 @@ func (p *OpenAICompatible) streamResponses(ctx context.Context, cfg config.Provi
 		payload["tools"] = tools
 	}
 	if req.Effort != "" {
-		e := req.Effort
-		if e == "supercode" {
-			e = "max"
-		}
-		payload["reasoning"] = map[string]any{"effort": e}
+		payload["reasoning"] = map[string]any{"effort": req.Effort}
 	}
 	build := func() (io.Reader, string, error) {
 		raw, err := json.Marshal(payload)

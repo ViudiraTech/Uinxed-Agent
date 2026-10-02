@@ -318,6 +318,7 @@ func TestASCIIGlyphsAreNonUnicode(t *testing.T) {
 		"Success": g.Success, "Failure": g.Failure, "Pending": g.Pending, "Bullet": g.Bullet,
 		"ListBullet": g.ListBullet, "Cursor": g.Cursor, "TodoDone": g.TodoDone, "TodoOpen": g.TodoOpen,
 		"BarFull": g.BarFull, "BarEmpty": g.BarEmpty, "Sep": g.Sep, "Rule": g.Rule, "VBar": g.VBar,
+		"Caret": g.Caret,
 	} {
 		if strings.ContainsFunc(v, func(r rune) bool { return r > 127 }) {
 			t.Fatalf("ascii glyph %s = %q contains a non-ASCII rune", name, v)

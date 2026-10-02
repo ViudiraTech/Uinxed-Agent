@@ -551,6 +551,9 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 	if m.overlay == overlayPicker {
 		return m.handlePickerKey(k), true
 	}
+	if m.overlay == overlayEffort {
+		return m.handleEffortKey(k), true
+	}
 	if m.overlay == overlayDiff {
 		switch key {
 		case "up", "k":
@@ -1159,7 +1162,18 @@ func (m *Model) handleOp(x opMsg) tea.Cmd {
 		m.cfg = m.ctrl.Config.Snapshot()
 		m.showToast(fmt.Sprintf("✓ mouse: %v", m.cfg.Mouse))
 		return nil
-	case "set_agent", "set_model", "set_provider", "set_effort", "set_thinking", "clear", "compact", "cd", "key", "connect", "delete":
+	case "set_effort":
+		level, _ := x.value.(string)
+		m.showToast("✓ effort " + level)
+		return m.reloadSession()
+	case "clear_effort":
+		m.showToast("✓ effort follows the default")
+		return m.reloadSession()
+	case "set_supercode":
+		on, _ := x.value.(bool)
+		m.showToast("✓ supercode " + onOff(on))
+		return m.reloadSession()
+	case "set_agent", "set_model", "set_provider", "set_thinking", "clear", "compact", "cd", "key", "connect", "delete":
 		m.showToast("✓ " + strings.ReplaceAll(x.op, "_", " "))
 		if x.op == "delete" {
 			m.closeOverlay()

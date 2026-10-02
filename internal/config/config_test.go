@@ -229,3 +229,24 @@ func TestLegacySessionsRoundTripFullSession(t *testing.T) {
 		t.Errorf("tool activities lost: %#v", got.ToolActivities)
 	}
 }
+
+// supercode used to be an effort level that also forced max reasoning. A config
+// still naming it as a level keeps both halves of that: the level it implied and
+// the toggle it has become. It is read as a sentinel, so no version bump is
+// needed to tell the old state from the new one.
+func TestSupercodeMigratesFromEffortLevelToToggle(t *testing.T) {
+	cfg := mergeDefaults(Config{Version: configVersion, Effort: "supercode"})
+	if cfg.Effort != "max" {
+		t.Fatalf("effort = %q, want the max level it used to imply", cfg.Effort)
+	}
+	if !cfg.Supercode {
+		t.Fatal("the orchestration toggle should have been turned on")
+	}
+
+	if cfg := mergeDefaults(Config{Version: configVersion, Effort: "low"}); cfg.Supercode {
+		t.Fatal("a plain level must not enable supercode")
+	}
+	if cfg := mergeDefaults(Config{Version: configVersion, Supercode: true}); cfg.Effort != "high" {
+		t.Fatalf("the toggle must leave the level alone, got %q", cfg.Effort)
+	}
+}

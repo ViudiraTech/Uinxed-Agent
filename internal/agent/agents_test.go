@@ -19,7 +19,7 @@ func TestPlanAgentExposesPlanningTools(t *testing.T) {
 	if Get("explorer").ToolAllowed("exit_plan") {
 		t.Error("explorer must not expose exit_plan")
 	}
-	prompt := SystemPromptMode(plan, "test-model", "", "", "plan")
+	prompt := SystemPromptMode(plan, "test-model", "", false, "plan")
 	for _, want := range []string{"plan_write", "exit_plan", "Ready to implement", "plan-approval"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("plan-mode prompt missing %q", want)
@@ -31,7 +31,7 @@ func TestSystemPromptInjectsAuthoritativeRuntimeDate(t *testing.T) {
 	loc := time.FixedZone("CST", 8*60*60)
 	now := time.Date(2026, time.August, 17, 14, 36, 12, 0, loc)
 
-	prompt := systemPromptAt(Get("build"), "test-model", "", "", now)
+	prompt := systemPromptAt(Get("build"), "test-model", "", false, now)
 
 	for _, want := range []string{
 		"Current date: 2026-08-17",

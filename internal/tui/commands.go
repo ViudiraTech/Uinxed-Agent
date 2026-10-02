@@ -29,7 +29,7 @@ var commandDefs = []commandDef{
 	{"/key", "Set the API key for the current provider", ""},
 	{"/model", "Show or switch model", ""},
 	{"/thinking", "Toggle reasoning display", "Ctrl+T"},
-	{"/effort", "Reasoning effort: low..max / supercode", ""},
+	{"/effort", "Reasoning effort slider, or /effort auto|supercode", ""},
 	{"/agent", "Show or switch the primary agent", "Tab"},
 	{"/quota", "Query gateway account and balance", ""},
 	{"/context", "Show context usage and compaction thresholds", ""},
@@ -120,16 +120,7 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 		}
 		return asyncOp("set_thinking", func() (any, error) { return nil, m.ctrl.SetThinking(m.ctx, sid, v) })
 	case "/effort":
-		if arg == "" {
-			m.openEffortPicker()
-			return nil
-		}
-		effort := strings.ToLower(strings.TrimSpace(arg))
-		if !validEffort(effort) {
-			m.showError(fmt.Errorf("effort must be low, medium, high, xhigh, max or supercode"))
-			return nil
-		}
-		return asyncOp("set_effort", func() (any, error) { return nil, m.ctrl.SetEffort(m.ctx, sid, effort) })
+		return m.handleEffortCommand(arg)
 	case "/quota":
 		pid := m.session.ProviderID
 		return asyncOp("profile", func() (any, error) { return m.ctrl.Profile(m.ctx, pid) })
@@ -275,14 +266,6 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 	return nil
 }
 
-func validEffort(v string) bool {
-	switch v {
-	case "low", "medium", "high", "xhigh", "max", "supercode":
-		return true
-	}
-	return false
-}
-
 // helpText renders the grouped shortcuts and command reference shown by /help.
 func helpText() string {
 	var b strings.Builder
@@ -408,21 +391,6 @@ func (m *Model) openProviderPicker() {
 	m.overlay = overlayPicker
 	m.setFocus(FocusPicker)
 }
-func (m *Model) openEffortPicker() {
-	vals := []string{"low", "medium", "high", "xhigh", "max", "supercode"}
-	var items []PickerItem
-	for _, v := range vals {
-		d := ""
-		if v == "supercode" {
-			d = "max reasoning with concurrent subagents"
-		}
-		items = append(items, PickerItem{v, v, d, ""})
-	}
-	m.picker.Reset("Reasoning Effort", ActionButton, items)
-	m.pickerPurpose = "effort"
-	m.overlay = overlayPicker
-	m.setFocus(FocusPicker)
-}
 func (m *Model) openSessionPicker() {
 	var items []PickerItem
 	for _, s := range m.sessions {
@@ -527,8 +495,6 @@ func (m *Model) choosePicker() tea.Cmd {
 		m.overlay = overlayConfirmDelete
 		m.setFocus(FocusOverlay)
 		return nil
-	case "effort":
-		return asyncOp("set_effort", func() (any, error) { return nil, m.ctrl.SetEffort(m.ctx, sid, it.ID) })
 	case "skill":
 		sk, ok, e := skills.Get(it.ID, m.session.CWD)
 		if e != nil {

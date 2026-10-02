@@ -161,7 +161,7 @@ func (m *Model) statusSegment(t Theme, id string) (statusSegment, bool) {
 		return statusSegment{id: id, text: st, width: lipgloss.Width(st), kind: ActionProvider, value: m.session.ProviderID}, true
 
 	case "effort":
-		st := muted.Render("effort " + m.currentEffort())
+		st := muted.Render(m.currentEffort() + " effort")
 		return statusSegment{id: id, text: st, width: lipgloss.Width(st)}, true
 
 	case "storage":
