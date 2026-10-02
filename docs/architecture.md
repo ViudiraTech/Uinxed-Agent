@@ -68,13 +68,18 @@ A referenced file is read through the regular sandboxed `read_file` tool. The cu
 
 ## TUI
 
-Layouts:
+The screen is a single full-width column at every size — there is no side panel, and
+nothing is added at a width threshold. Two surfaces do change shape:
 
-- **Large (`>=120`)**: conversation plus optional session/sidebar information.
-- **Medium (`80–119`)**: conversation-first, secondary surfaces are overlays.
-- **Small (`<80`)**: single column with reduced status information.
+- **Widths below 40**: overlays drop their wide form (see `renderOverlay`).
+- **Widths from 90**: the diff reviewer splits into a file list beside the diff pane.
 
-`FocusManager` controls Prompt/Chat/Sidebar/Overlay focus. Mouse hit regions are produced while rendering, and pointer-wheel routing uses those regions. Overlays include unified pickers, Diff, Todos, connect wizard and confirmations.
+The conversation reserves rows for the composer, the working line, the todo block and
+the status row before it renders, so nothing shifts as those appear and disappear.
+
+`FocusManager` controls Prompt/Chat/Overlay focus. Mouse hit regions are produced while
+rendering, and pointer-wheel routing uses those regions. Overlays include unified pickers,
+Diff, Todos, connect wizard and confirmations.
 
 The conversation renderer keeps lightweight block estimates for all messages but only renders the visible region plus overscan. Completed Markdown uses an LRU-style cache keyed by message ID, content version, width and theme.
 

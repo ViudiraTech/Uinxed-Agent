@@ -69,11 +69,11 @@ Fast Bubble Tea v2 TUI • Autonomous Multi-Agent Delegation • Streaming Reaso
 
 | 🚀 **Pure Go & Single Binary** | ⚡ **Real-Time Streaming** | 🤖 **Autonomous Multi-Agent** |
 |---|---|---|
-| Zero dependencies. Instant cold start. Built-in free Router provider for zero-friction trial. Pure-Go SQLite WAL. | Live SSE streaming for content and deep reasoning (`thinking_content`) with collapsible view. | Primary agents (`build`, `coding`, `plan`) + isolated parallel subagents (`explorer`, `coding`, `general`). |
+| Zero dependencies. Instant cold start. Built-in free Router provider for zero-friction trial. Pure-Go SQLite WAL. | Live SSE streaming for content and deep reasoning (`thinking_content`), with Claude Code's shimmering `✻ Verb… (elapsed · ↓ tokens)` working line. | Primary agents (`build`, `coding`, `plan`) + isolated parallel subagents (`explorer`, `coding`, `general`). |
 
 | 🛠️ **Full Developer Toolchain** | 🖱️ **Modern Bubble Tea v2 TUI** | 🔒 **Local-First Security** |
 |---|---|---|
-| Sandboxed shell, atomic file patches, AST grep/glob, web search & scrape, interactive Todos. | Responsive layout, semantic mouse support (click/wheel), `Ctrl+P` command palette, fuzzy autocomplete. | Project-root boundary sandbox, AES-256-GCM encrypted API keys, credential redaction in logs. |
+| Sandboxed shell, atomic file patches, AST grep/glob, web search & scrape, interactive Todos. | Claude Code's transcript grammar — `⏺ Tool(args)` with `⎿` results, read-only calls grouped, tasks above the composer. | Project-root boundary sandbox, AES-256-GCM encrypted API keys, credential redaction in logs. |
 
 </div>
 
@@ -165,8 +165,8 @@ The wizard guides you through naming, base URL, API key, and model selection.
 |---|---|---|
 | `Ctrl+P` | Global | Open **Command Palette** (search all commands & actions) |
 | `Ctrl+T` | Global | Expand / collapse **Reasoning (Thinking)** blocks |
-| `Ctrl+O` | Global | Toggle **Task Todos** checklist overlay |
-| `Ctrl+E` | Global | Expand / collapse **Tool Execution Details** |
+| `Ctrl+O` | Global | Expand / collapse **Tool Execution Details** (the cards advertise it) |
+| `Ctrl+E` | Global | Alias for `Ctrl+O` |
 | `Tab` | Composer | Accept `@` or `/` autocomplete; cycle primary agents if prompt is empty |
 | `PgUp` / `PgDn` | Chat / Overlay | Scroll conversation history or active overlay |
 | `Esc` | Global | Close overlay; **interrupt active agent generation** |
@@ -297,14 +297,17 @@ Switch themes anytime with `/theme <name>`:
 
 | Theme | Style & Aesthetic |
 |---|---|
-| **`tokyonight`** | Deep midnight blue with neon cyan & magenta accents |
-| **`catppuccin`** | Warm, soothing pastel palette (Mocha variant) |
-| **`nord`** | Arctic, elegant ice-blue & cool slate tones |
-| **`gruvbox`** | Earthy, retro warm grooved colors |
-| **`dracula`** | Classic high-contrast dark vampire theme |
-| **`solarized`** | Precision calibrated low-contrast palette |
-| **`monokai`** | Iconic vibrant code editor colors |
-| **`uinxed`** | Native branded terminal aesthetic |
+| **`claude`** | Claude Code's own palette — warm terracotta accent (**default**) |
+| `uinxed` | Native branded terminal aesthetic — purple and cyan neon |
+| `tokyonight` | Deep midnight blue with neon cyan & magenta accents |
+| `catppuccin` | Warm, soothing pastel palette (Mocha variant) |
+| `nord` | Arctic, elegant ice-blue & cool slate tones |
+| `gruvbox` | Earthy, retro warm grooved colors |
+| `dracula` | Classic high-contrast dark vampire theme |
+| `dark` | Neutral high-contrast dark |
+| `light` | Bright paper-like light |
+
+An existing config keeps whichever theme it names; a fresh one starts on `claude`.
 
 *Automatic terminal adaptability:*
 - Set `NO_COLOR=1` or `TERM=dumb` for automatic color stripping.

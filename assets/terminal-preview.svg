@@ -5,29 +5,40 @@
     </filter>
   </defs>
 
+  <!-- Claude Code palette: .claude is the brand accent, .shimmer the lighter
+       highlight the working line sweeps across the verb, .tool the tool-block
+       pink. -->
   <style>
     .term { font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
-    .title-text { font-size: 13px; fill: #565f89; font-weight: 500; }
-    .user-sym { font-size: 13px; fill: #7aa2f7; font-weight: bold; }
-    .user-text { font-size: 13px; fill: #c0caf5; }
-    .think-text { font-size: 13px; fill: #565f89; }
-    .asst-sym { font-size: 13px; fill: #3b4261; }
-    .asst-text { font-size: 13px; fill: #c0caf5; }
-    .tool-icon { font-size: 13px; fill: #9ece6a; }
-    .tool-name { font-size: 13px; fill: #bb9af7; }
-    .tool-meta { font-size: 13px; fill: #565f89; }
-    .tool-gut { font-size: 13px; fill: #565f89; }
-    .tool-pass { font-size: 13px; fill: #9ece6a; }
-    .rule { stroke: #292e42; stroke-width: 1; }
-    .prompt-sym { font-size: 13px; fill: #7aa2f7; font-weight: bold; }
-    .prompt-text { font-size: 13px; fill: #c0caf5; }
-    .status-text { font-size: 12px; fill: #565f89; }
-    .status-busy { font-size: 12px; fill: #e0af68; }
+    .title-text { font-size: 13px; fill: #808080; font-weight: 500; }
+    .user-sym { font-size: 13px; fill: #f59575; font-weight: bold; }
+    .user-text { font-size: 13px; fill: #dedede; }
+    .think-text { font-size: 13px; fill: #808080; }
+    .asst-sym { font-size: 13px; fill: #666666; }
+    .asst-text { font-size: 13px; fill: #dedede; }
+    .tool-icon { font-size: 13px; fill: #4eba65; }
+    .tool-name { font-size: 13px; fill: #fd5db1; font-weight: bold; }
+    .tool-meta { font-size: 13px; fill: #808080; }
+    .tool-gut { font-size: 13px; fill: #808080; }
+    .tool-pass { font-size: 13px; fill: #dedede; }
+    .rule { stroke: #4d4d4d; stroke-width: 1; }
+    .prompt-sym { font-size: 13px; fill: #d77757; font-weight: bold; }
+    .prompt-text { font-size: 13px; fill: #dedede; }
+    .status-text { font-size: 12px; fill: #808080; }
+    .todo-head { font-size: 12px; fill: #808080; font-weight: bold; }
+    .todo-done { font-size: 13px; fill: #4eba65; }
+    .todo-open { font-size: 13px; fill: #808080; }
+    .todo-doing { font-size: 13px; fill: #d7a657; }
+    .todo-text { font-size: 13px; fill: #dedede; }
+    .working-sym { font-size: 13px; fill: #d77757; font-weight: bold; }
+    .working-dim { font-size: 13px; fill: #8a5540; }
+    .working-hot { font-size: 13px; fill: #f59575; font-weight: bold; }
+    .working-meta { font-size: 13px; fill: #d77757; }
   </style>
 
   <!-- Terminal Window Background with Shadow -->
   <g filter="url(#shadow)">
-    <rect x="10" y="10" width="900" height="480" rx="10" fill="#1a1b26" stroke="#292e42" stroke-width="1.2"/>
+    <rect x="10" y="10" width="900" height="480" rx="10" fill="#1a1a1a" stroke="#4d4d4d" stroke-width="1.2"/>
   </g>
 
   <!-- Window Title Bar -->
@@ -38,41 +49,59 @@
 
   <!-- Terminal Body Content (Faithful Bubble Tea v2 Layout) -->
   <g class="term">
-    <!-- User Message -->
+    <!-- User Message: ❯ prompt at column 0, no box -->
     <text class="user-sym" x="36" y="74">❯</text>
     <text class="user-text" x="52" y="74">Implement an atomic file writer in Go with tests and verify with go test.</text>
 
-    <!-- Assistant Reasoning (Expanded Thinking) -->
-    <text class="think-text" x="36" y="112">  ✻ Thinking (ctrl+t to collapse)</text>
-    <text class="think-text" x="36" y="134">    Planning atomic temp-file write &amp; rename semantics to prevent corruption...</text>
-    <text class="think-text" x="36" y="156">    Drafting unit tests with concurrent goroutines to verify race safety.</text>
+    <!-- Assistant turn opens with a ⏺ bullet at column 0 -->
+    <text class="asst-sym" x="36" y="104">⏺</text>
+    <text class="asst-text" x="52" y="104">I'll write the writer, then run the package tests.</text>
 
-    <!-- Assistant Response Stream -->
-    <text class="asst-sym" x="36" y="190">⏺</text>
-    <text class="asst-text" x="52" y="190">I have created internal/tools/writer.go with atomic rename semantics. Running tests:</text>
+    <!-- Read-only tools group into one gerund row while they run -->
+    <text class="tool-icon" x="36" y="134"> ✓</text>
+    <text class="tool-meta" x="56" y="134">Read 2 files, searched 1 pattern</text>
 
-    <!-- Tool Call Execution -->
-    <text class="tool-icon" x="36" y="224"> ✓</text>
-    <text class="tool-name" x="56" y="224">bash("go test -v ./internal/tools")</text>
-    <text class="tool-meta" x="300" y="224"> · done · 24ms</text>
+    <!-- Tool call in Claude Code grammar: ⏺ Name(arg) with a ⎿ result subtree -->
+    <text class="tool-icon" x="36" y="164"> ✓</text>
+    <text class="tool-name" x="56" y="164">Bash</text>
+    <text class="tool-meta" x="90" y="164">(go test -v ./internal/tools)</text>
+    <text class="tool-meta" x="316" y="164"> · 24ms</text>
 
-    <!-- Tool Call Result Output -->
-    <text class="tool-gut" x="36" y="246">   ⎿  </text>
-    <text class="tool-pass" x="72" y="246">PASS: TestAtomicFileWriter (0.02s) · PASS</text>
+    <text class="tool-gut" x="50" y="186">⎿  </text>
+    <text class="tool-pass" x="80" y="186">ok  internal/tools  0.42s</text>
+    <text class="tool-meta" x="266" y="186"> (ctrl+o to expand)</text>
 
-    <!-- Assistant Response Conclusion -->
-    <text class="asst-text" x="36" y="286">  All unit tests passed cleanly! The implementation ensures atomic writes and crash resilience.</text>
+    <text class="asst-sym" x="36" y="216">⏺</text>
+    <text class="asst-text" x="52" y="216">Tests pass. The write is temp-file + fsync + rename.</text>
 
-    <!-- Composer: The Only Bordered Element in Real TUI -->
-    <line class="rule" x1="36" y1="360" x2="884" y2="360"/>
-    <text class="prompt-sym" x="36" y="386">❯</text>
-    <text class="prompt-text" x="52" y="386">Refactor cache key serialization to use xxhash64</text>
-    <!-- Cursor -->
-    <rect x="424" y="373" width="8" height="17" fill="#7aa2f7" opacity="0.85"/>
+    <!-- Task list: above the composer, where Claude Code keeps it -->
+    <text class="todo-head" x="36" y="300"> TODOS 1/3</text>
+    <text class="todo-done" x="50" y="322">✓</text>
+    <text class="todo-text" x="68" y="322">Write the atomic writer</text>
+    <text class="todo-doing" x="50" y="344">▸</text>
+    <text class="todo-text" x="68" y="344">Run the package tests</text>
+    <text class="todo-open" x="50" y="366">◻</text>
+    <text class="todo-text" x="68" y="366">Add a crash-recovery test</text>
+
+    <!-- Working line: transcript tail, just above the input. The highlight is
+         mid-sweep across the verb, which is why the two halves differ. -->
+    <text class="working-sym" x="36" y="394">✻</text>
+    <text class="working-dim" x="52" y="394">Her</text>
+    <text class="working-hot" x="76" y="394">di</text>
+    <text class="working-dim" x="92" y="394">ng…</text>
+    <text class="working-meta" x="130" y="394"> (8m 39s · ↓ 834 tokens · thinking)</text>
+
+    <!-- Composer: the only ruled element -->
     <line class="rule" x1="36" y1="412" x2="884" y2="412"/>
+    <text class="prompt-sym" x="36" y="438">❯</text>
+    <text class="prompt-text" x="52" y="438">Refactor cache key serialization to use xxhash64</text>
+    <!-- Cursor -->
+    <rect x="424" y="425" width="8" height="17" fill="#d77757" opacity="0.85"/>
+    <line class="rule" x1="36" y1="462" x2="884" y2="462"/>
 
-    <!-- Status Line (Single dim row at bottom) -->
-    <text class="status-text" x="36" y="458"> step-3.7-flash · ~/workspace · 14% ctx · build · router · effort high</text>
-    <text class="status-busy" x="884" y="458" text-anchor="end">⠋ Working 1.4s · esc to interrupt</text>
+    <!-- Status Line (single dim row): the working pill is gone, only the
+         interrupt hint remains, right-aligned. -->
+    <text class="status-text" x="36" y="484"> step-3.7-flash · ~/workspace · 14% ctx · ⏵⏵ auto-edit</text>
+    <text class="status-text" x="884" y="484" text-anchor="end">esc to interrupt</text>
   </g>
 </svg>
