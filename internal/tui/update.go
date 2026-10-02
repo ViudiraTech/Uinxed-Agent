@@ -246,7 +246,7 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 			}
 		} else if d, ok := e.Data.(domain.ToolEvent); ok {
 			// Child-session tool activity belongs to a delegate subagent.
-			// Mirror only start/finish (not every output chunk) so the sidebar
+			// Mirror only start/finish (not every output chunk) so the rows
 			// stays live without re-rendering on every streamed byte.
 			if d.Activity.Name != "" {
 				m.trackSubagentTool(e.RunID, e.SessionID, d.Activity, e.Kind == domain.EventToolStarted)
@@ -262,7 +262,7 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 			}
 		}
 		// Deliberately ignored for subagents: output chunks arrive at byte
-		// granularity and would repaint the sidebar far more often than the
+		// granularity and would repaint far more often than the
 		// 125ms spinner tick, which is what made it look like flicker.
 	case domain.EventTodoChanged:
 		if e.SessionID == m.session.ID {
@@ -320,7 +320,7 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 }
 
 // upsertSubagent inserts or updates a background run and keeps the list bounded
-// so the sidebar height stays stable instead of growing with every delegate.
+// so the rendered height stays stable instead of growing with every delegate.
 func (m *Model) upsertSubagent(run domain.AgentRun) {
 	if run.ID == "" {
 		return
@@ -492,7 +492,7 @@ func (m *Model) settleMessage(msg domain.Message) {
 }
 
 func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
-	// There is no standalone keyboard mode for chat/sidebar. If no modal is
+	// There is no standalone keyboard mode for chat. If no modal is
 	// active, typing must always belong to the prompt. This prevents mouse
 	// clicks, resizes, or async UI updates from leaving the textarea stranded.
 	m.ensurePromptFocus()
@@ -581,7 +581,6 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 	}
 	switch key {
 	case "ctrl+b":
-		return m.toggleSidebar(), true
 	case "ctrl+d":
 		return m.executeCommand("/diff"), true
 	case "ctrl+p":
@@ -995,7 +994,7 @@ func (m *Model) handleMouseClick(mouse tea.Mouse, r Region, ok bool) tea.Cmd {
 		// the × affordance drawn next to it.
 		m.prompt.SetValue(removeFileRef(m.prompt.Value(), r.Value))
 		m.ensurePromptFocus()
-	case ActionPrompt, ActionChat, ActionSidebar:
+	case ActionPrompt, ActionChat:
 		m.setFocus(FocusPrompt)
 	}
 	return nil
@@ -1038,18 +1037,6 @@ func (m *Model) handleMouseWheel(mouse tea.Mouse, layout layoutState) tea.Cmd {
 			m.conv.ScrollUp(-d)
 		} else {
 			m.conv.ScrollDown(d)
-		}
-		m.ensurePromptFocus()
-		return nil
-	}
-	if layout.sidebar.Contains(mouse.X, mouse.Y) {
-		m.sidebarOffset += d
-		if m.sidebarOffset < 0 {
-			m.sidebarOffset = 0
-		}
-		maxOff := max(0, len(m.sessions)-layout.sidebar.H+2)
-		if m.sidebarOffset > maxOff {
-			m.sidebarOffset = maxOff
 		}
 		m.ensurePromptFocus()
 		return nil
@@ -1193,10 +1180,6 @@ func (m *Model) handleOp(x opMsg) tea.Cmd {
 
 func (m *Model) resize() {
 	chatW := m.width
-	if m.width >= 96 && m.cfg.Sidebar != "off" {
-		sidebarW := min(32, max(24, m.width/4))
-		chatW -= (sidebarW + 1)
-	}
 	if chatW < 30 {
 		chatW = max(20, m.width)
 	}

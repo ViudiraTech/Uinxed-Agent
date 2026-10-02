@@ -19,7 +19,7 @@ func stripANSI(s string) string { return ansi.Strip(s) }
 
 // layoutModel builds a Model with enough content to exercise every render path:
 // user and assistant turns, reasoning, tool calls in all three states, todos
-// and a populated session list for the sidebar.
+// and a populated session list for /sessions.
 func layoutModel(t *testing.T) *Model {
 	t.Helper()
 	store, err := config.NewStore(t.TempDir())
@@ -72,32 +72,29 @@ func layoutModel(t *testing.T) *Model {
 
 // TestLayoutFitsEveryTerminalSize is the guard for the hand-rolled height and
 // width arithmetic in renderBase: the view must be exactly h lines of exactly w
-// columns, for every theme, glyph mode, sidebar state and terminal size.
+// columns, for every theme, glyph mode, terminal size and todo-list length.
 func TestLayoutFitsEveryTerminalSize(t *testing.T) {
 	for _, themeName := range config.Themes() {
 		for _, glyphMode := range []string{"unicode", "ascii"} {
-			for _, sidebar := range []string{"off", "on"} {
-				for _, w := range []int{40, 60, 80, 100, 140} {
-					for _, h := range []int{10, 24, 40} {
-						m := layoutModel(t)
-						m.cfg.Theme = themeName
-						m.cfg.Glyphs = glyphMode
-						m.cfg.Sidebar = sidebar
-						m.width, m.height = w, h
-						m.prompt.SetValue("next instruction")
-						m.resize() // View() does this before renderBase
+			for _, w := range []int{40, 60, 80, 100, 140} {
+				for _, h := range []int{10, 24, 40} {
+					m := layoutModel(t)
+					m.cfg.Theme = themeName
+					m.cfg.Glyphs = glyphMode
+					m.width, m.height = w, h
+					m.prompt.SetValue("next instruction")
+					m.resize() // View() does this before renderBase
 
-						out := m.renderBase(themeFor(m.cfg))
-						lines := strings.Split(out, "\n")
-						if len(lines) != h {
-							t.Fatalf("%s/%s/sidebar=%s %dx%d: got %d lines, want %d",
-								themeName, glyphMode, sidebar, w, h, len(lines), h)
-						}
-						for i, l := range lines {
-							if got := lipgloss.Width(l); got != w {
-								t.Fatalf("%s/%s/sidebar=%s %dx%d line %d: width %d, want %d\n%q",
-									themeName, glyphMode, sidebar, w, h, i, got, w, stripANSI(l))
-							}
+					out := m.renderBase(themeFor(m.cfg))
+					lines := strings.Split(out, "\n")
+					if len(lines) != h {
+						t.Fatalf("%s/%s %dx%d: got %d lines, want %d",
+							themeName, glyphMode, w, h, len(lines), h)
+					}
+					for i, l := range lines {
+						if got := lipgloss.Width(l); got != w {
+							t.Fatalf("%s/%s %dx%d line %d: width %d, want %d\n%q",
+								themeName, glyphMode, w, h, i, got, w, stripANSI(l))
 						}
 					}
 				}
@@ -135,16 +132,34 @@ func TestOverlayFitsEveryTerminalSize(t *testing.T) {
 	}
 }
 
-// TestSidebarShowsSessionsAndTodos pins what Ctrl+B actually surfaces.
-func TestSidebarShowsSessionsAndTodos(t *testing.T) {
+// The task list sits above the composer, where Claude Code keeps it. Sessions
+// deliberately do not appear: with no side panel they live behind /sessions.
+func TestTodoBlockAboveComposer(t *testing.T) {
 	m := layoutModel(t)
-	m.cfg.Sidebar = "on"
 	m.width, m.height = 110, 32
+	m.resize()
 	out := stripANSI(m.renderBase(themeFor(m.cfg)))
-	for _, want := range []string{"SESSIONS", "auth refactor", "docs pass", "TODOS 1/2", "Read existing auth code"} {
+	for _, want := range []string{"TODOS 1/2", "Read existing auth code", "Extract session handling"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("sidebar missing %q:\n%s", want, out)
+			t.Errorf("todo block missing %q:\n%s", want, out)
 		}
+	}
+	for _, gone := range []string{"SESSIONS", "docs pass"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("the removed sidebar still renders %q:\n%s", gone, out)
+		}
+	}
+}
+
+// The block is not permanent chrome: a session with no plan must not reserve a
+// row for one.
+func TestTodoBlockDisappearsWithoutTodos(t *testing.T) {
+	m := layoutModel(t)
+	m.session.Todos = nil
+	m.width, m.height = 100, 30
+	m.resize()
+	if strings.Contains(stripANSI(m.renderBase(themeFor(m.cfg))), "TODOS") {
+		t.Fatal("an empty task list should render no block at all")
 	}
 }
 
@@ -369,7 +384,6 @@ func layoutModelB(b *testing.B) *Model {
 func TestLiveStreamShowsReasoningText(t *testing.T) {
 	m := layoutModel(t)
 	m.width, m.height = 90, 24
-	m.cfg.Sidebar = "off"
 	m.resize()
 	m.streamReasoning = "先确认认证模块的边界在哪里，再决定 token 校验的位置"
 	m.streamContent = ""
@@ -402,7 +416,6 @@ func TestLiveStreamShowsReasoningText(t *testing.T) {
 func TestCompletedTurnCollapsesReasoning(t *testing.T) {
 	m := layoutModel(t)
 	m.width, m.height = 90, 30
-	m.cfg.Sidebar = "off"
 	m.resize()
 
 	out := stripANSI(m.renderBase(themeFor(m.cfg)))
@@ -420,7 +433,6 @@ func TestCompletedTurnCollapsesReasoning(t *testing.T) {
 func TestSettleMessageEndsTheStreamingRound(t *testing.T) {
 	m := layoutModel(t)
 	m.width, m.height = 90, 30
-	m.cfg.Sidebar = "off"
 	m.resize()
 	m.streamContent = "partial answer"
 	m.streamReasoning = "partial thinking"

@@ -48,7 +48,6 @@ type Config struct {
 	Theme                  string     `json:"theme"`
 	Mouse                  bool       `json:"mouse"`
 	ScrollSpeed            int        `json:"scroll_speed"`
-	Sidebar                string     `json:"sidebar"`
 	Animations             bool       `json:"animations"`
 	StreamRenderIntervalMS int        `json:"stream_render_interval_ms"`
 	Glyphs                 string     `json:"glyphs,omitempty"`
@@ -87,7 +86,7 @@ func Defaults() Config {
 		Version: configVersion, BaseURL: DefaultBaseURL, Model: DefaultModel, Storage: "db",
 		Providers: BuiltinProviders(), ActiveProvider: "ux-gateway",
 		Thinking: true, Effort: "high", Theme: "claude", Mouse: true,
-		ScrollSpeed: 3, Sidebar: "off", Animations: true, StreamRenderIntervalMS: 16,
+		ScrollSpeed: 3, Animations: true, StreamRenderIntervalMS: 16,
 		Glyphs: "auto", ApprovalMode: "auto-edit", StatusItems: DefaultStatusItems(),
 	}
 }
@@ -420,9 +419,6 @@ func mergeDefaults(in Config) Config {
 	}
 	if in.ScrollSpeed != 0 {
 		d.ScrollSpeed = in.ScrollSpeed
-	}
-	if in.Sidebar != "" {
-		d.Sidebar = in.Sidebar
 	}
 	if in.Glyphs != "" {
 		d.Glyphs = in.Glyphs

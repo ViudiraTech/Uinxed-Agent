@@ -465,19 +465,6 @@ func TestToolSummaryPrefersSalientArgument(t *testing.T) {
 	}
 }
 
-func TestToggleSidebar(t *testing.T) {
-	m := newMouseTestModel(t)
-	m.cfg.Sidebar = "on"
-	m.toggleSidebar()
-	if m.cfg.Sidebar != "off" {
-		t.Fatalf("expected sidebar to be off, got %s", m.cfg.Sidebar)
-	}
-	m.toggleSidebar()
-	if m.cfg.Sidebar != "on" {
-		t.Fatalf("expected sidebar to be on, got %s", m.cfg.Sidebar)
-	}
-}
-
 func TestPlanOverlayRendersRecordedSteps(t *testing.T) {
 	m := newMouseTestModel(t)
 	m.width, m.height = 80, 24
@@ -582,7 +569,7 @@ func TestPlanApprovalKeysPickImplementationMode(t *testing.T) {
 func TestModernPickerRender(t *testing.T) {
 	var p Picker
 	p.Reset("Commands", ActionCommand, []PickerItem{
-		{ID: "sidebar", Label: "Toggle Sidebar", Description: "Show or hide the sidebar", Shortcut: "Ctrl+B"},
+		{ID: "theme", Label: "Change Theme", Description: "Pick a color theme"},
 	})
 	lines, regs := p.Render(80, 20, ThemeByName("uinxed"), "")
 	if len(lines) == 0 || len(regs) == 0 {
@@ -593,7 +580,7 @@ func TestModernPickerRender(t *testing.T) {
 		b.WriteString(stripANSI(l))
 		b.WriteByte('\n')
 	}
-	if !strings.Contains(b.String(), "Commands") || !strings.Contains(b.String(), "Toggle Sidebar") {
+	if !strings.Contains(b.String(), "Commands") || !strings.Contains(b.String(), "Change Theme") {
 		t.Fatalf("missing picker content:\n%s", b.String())
 	}
 }

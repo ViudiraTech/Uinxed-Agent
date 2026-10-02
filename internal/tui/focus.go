@@ -5,7 +5,6 @@ type Focus int
 const (
 	FocusPrompt Focus = iota
 	FocusChat
-	FocusSidebar
 	FocusModal
 	FocusCommandPalette
 	FocusDiff

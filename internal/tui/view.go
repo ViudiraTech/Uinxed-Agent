@@ -51,21 +51,10 @@ func (m *Model) View() tea.View {
 // live in the status row so vertical space goes to the conversation.
 func (m *Model) renderBase(t Theme) string {
 	width, height := m.width, m.height
-	sidebarW := 0
-	if width >= 96 && m.cfg.Sidebar != "off" {
-		sidebarW = min(32, max(24, width/4))
-	}
-	chatX := 0
+	// The transcript owns the full width. Claude Code has no side panel, so
+	// anything that used to live there is either inline in the transcript or a
+	// block above the composer.
 	chatW := width
-	if sidebarW > 0 {
-		chatX = sidebarW + 1
-		chatW = width - chatX
-	}
-	if chatW < 24 {
-		sidebarW = 0
-		chatX = 0
-		chatW = width
-	}
 
 	sugg := m.renderSuggestions(t, chatW)
 	chips, chipRegs := m.renderFileChips(t, chatW)
@@ -88,19 +77,22 @@ func (m *Model) renderBase(t Theme) string {
 	if m.workingLineVisible() {
 		workH = 1
 	}
-	chatH := height - statusH - promptFrameH - spacerH - len(sugg) - chipH - workH
+	todoH := m.todoBlockHeight()
+	chatH := height - statusH - promptFrameH - spacerH - len(sugg) - chipH - workH - todoH
 	if chatH < 4 {
 		chatH = 4
 	}
-	if total := statusH + promptFrameH + spacerH + len(sugg) + chipH + workH + chatH; total > height {
+	if total := statusH + promptFrameH + spacerH + len(sugg) + chipH + workH + todoH + chatH; total > height {
 		chatH = max(1, chatH-(total-height))
 	}
 
-	m.layout.chat = Rect{chatX, 0, chatW, chatH}
-	m.layout.sidebar = Rect{0, 0, sidebarW, max(0, height-statusH)}
-	m.layout.prompt = Rect{chatX, chatH + spacerH + len(sugg) + chipH + workH, chatW, promptFrameH}
+	// Rows stack in this order; every offset below is derived from it.
+	//   transcript(chatH) → suggestions → chips → todos → working → rule/prompt/rule → status
+	todoY := chatH + spacerH + len(sugg) + chipH
+	workY := todoY + todoH
+	m.layout.chat = Rect{0, 0, chatW, chatH}
+	m.layout.prompt = Rect{0, workY + workH, chatW, promptFrameH}
 	m.layout.status = Rect{0, height - 1, width, 1}
-	m.layout.chatX = chatX
 
 	// ==================== 1. Conversation ====================
 	var chatLines []string
@@ -115,7 +107,7 @@ func (m *Model) renderBase(t Theme) string {
 	for row, line := range convLines {
 		chatLines = append(chatLines, fitLine(line.Text, chatW))
 		if line.Action != "" {
-			m.regions = append(m.regions, Region{Rect: Rect{chatX, row, chatW, 1}, Kind: line.Action, Value: line.Value})
+			m.regions = append(m.regions, Region{Rect: Rect{0, row, chatW, 1}, Kind: line.Action, Value: line.Value})
 		}
 	}
 	chatLines = append(chatLines, sugg...)
@@ -136,6 +128,7 @@ func (m *Model) renderBase(t Theme) string {
 	for _, chip := range chips {
 		chatLines = append(chatLines, chip)
 	}
+	chatLines = append(chatLines, m.renderTodoBlock(t, chatW, todoY)...)
 	if workH > 0 {
 		chatLines = append(chatLines, fitLine(m.renderWorkingLine(t), chatW))
 	}
@@ -157,14 +150,13 @@ func (m *Model) renderBase(t Theme) string {
 	}
 	chatLines = append(chatLines, rule())
 
-	m.regions = append(m.regions, Region{Rect: Rect{chatX, m.layout.prompt.Y, chatW, promptFrameH}, Kind: ActionPrompt, Value: "prompt"})
+	m.regions = append(m.regions, Region{Rect: Rect{0, m.layout.prompt.Y, chatW, promptFrameH}, Kind: ActionPrompt, Value: "prompt"})
 	m.regions = append(m.regions, Region{Rect: m.layout.chat, Kind: ActionChat, Value: "chat"})
 	// Chip regions were computed in chip-local coordinates; shift them to the
 	// rows they were rendered into.
 	chipY := m.layout.prompt.Y - 1
 	for _, r := range chipRegs {
 		r.Rect.Y += chipY
-		r.Rect.X += chatX
 		m.regions = append(m.regions, r)
 	}
 
@@ -173,153 +165,15 @@ func (m *Model) renderBase(t Theme) string {
 	m.regions = append(m.regions, statusRegs...)
 
 	// ==================== 4. Compose ====================
-	if sidebarW == 0 {
-		var all []string
-		all = append(all, chatLines...)
-		all = append(all, fitLine(statusText, width))
-		return clampLines(all, width, height)
-	}
-
-	sideLines := m.renderSidebar(t, sidebarW, height-statusH)
-	bodyH := height - statusH
 	var all []string
-	for y := 0; y < bodyH; y++ {
-		sl, cl := "", ""
-		if y < len(sideLines) {
-			sl = sideLines[y]
-		}
-		if y < len(chatLines) {
-			cl = chatLines[y]
-		}
-		all = append(all, fitLine(sl, sidebarW)+lipgloss.NewStyle().Foreground(t.Border).Render(t.Glyphs.VBar)+fitLine(cl, chatW))
-	}
+	all = append(all, chatLines...)
 	all = append(all, fitLine(statusText, width))
 	return clampLines(all, width, height)
 }
 
-func (m *Model) renderSidebar(t Theme, w, h int) []string {
-	if w <= 0 || h <= 0 {
-		return nil
-	}
-	g := t.Glyphs
-	var out []string
-	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(t.Muted)
-
-	out = append(out, fitLine(" "+sectionStyle.Render("SESSIONS"), w))
-	start := m.sidebarOffset
-	if start < 0 {
-		start = 0
-	}
-	maxSess := max(1, min(len(m.sessions), h/3))
-	end := min(len(m.sessions), start+maxSess)
-	for i := start; i < end; i++ {
-		s := m.sessions[i]
-		isCur := s.ID == m.session.ID
-		mark := "  "
-		nameStyle := lipgloss.NewStyle().Foreground(t.Text)
-		if isCur {
-			mark = g.Bullet + " "
-			nameStyle = lipgloss.NewStyle().Bold(true).Foreground(t.Primary)
-		}
-		rowLeft := mark + terminalutil.SanitizeText(s.Name)
-		line := padBetween(nameStyle.Render(rowLeft), lipgloss.NewStyle().Foreground(t.Muted).Render(formatAgo(s.UpdatedAt)), w-1)
-		out = append(out, fitLine(line, w))
-		m.regions = append(m.regions, Region{Rect: Rect{0, len(out) - 1, w, 1}, Kind: ActionSession, Value: s.ID})
-	}
-
-	if len(out) < h-3 {
-		done := 0
-		for _, x := range m.session.Todos {
-			if x.Status == "completed" {
-				done++
-			}
-		}
-		out = append(out, "")
-		out = append(out, fitLine(" "+sectionStyle.Render(fmt.Sprintf("TODOS %d/%d", done, len(m.session.Todos))), w))
-		if len(m.session.Todos) == 0 {
-			out = append(out, fitLine(lipgloss.NewStyle().Foreground(t.Muted).Render("  none"), w))
-		} else {
-			for _, x := range m.session.Todos {
-				icon, iStyle := g.TodoOpen, lipgloss.NewStyle().Foreground(t.Muted)
-				if x.Status == "completed" {
-					icon, iStyle = g.TodoDone, lipgloss.NewStyle().Foreground(t.Success)
-				} else if x.Status == "in_progress" {
-					icon, iStyle = g.Bullet, lipgloss.NewStyle().Foreground(t.Warning)
-				}
-				line := "  " + iStyle.Render(icon) + " " + terminalutil.SanitizeText(x.Subject)
-				out = append(out, fitLine(line, w))
-				m.regions = append(m.regions, Region{Rect: Rect{0, len(out) - 1, w, 1}, Kind: ActionTodo, Value: x.ID})
-				if len(out) >= h-2 {
-					break
-				}
-			}
-		}
-	}
-
-	if len(m.subagents) > 0 && len(out) < h-3 {
-		out = append(out, "")
-		out = append(out, fitLine(" "+sectionStyle.Render("SUBAGENTS"), w))
-		for _, a := range m.sortedSubagents() {
-			icon, iStyle := g.Pending, lipgloss.NewStyle().Foreground(t.Muted)
-			stateLabel := terminalutil.SanitizeText(a.State)
-			if stateLabel == "" {
-				stateLabel = "pending"
-			}
-			switch a.State {
-			case "running":
-				// Spinner frame makes a live subagent visibly tick without
-				// changing row order or count, which is what previously read
-				// as flicker when the map order shuffled every frame.
-				icon, iStyle = g.spinner(m.activityFrame), lipgloss.NewStyle().Foreground(t.Warning)
-			case "done", "completed":
-				icon, iStyle = g.Success, lipgloss.NewStyle().Foreground(t.Success)
-			case "failed", "cancelled":
-				icon, iStyle = g.Failure, lipgloss.NewStyle().Foreground(t.Error)
-			}
-			prog := m.subagentProgress[a.ID]
-			elapsed := formatSubagentElapsed(a, m.activityFrame)
-			head := fmt.Sprintf("  %s %s · %s", iStyle.Render(icon), terminalutil.SanitizeText(a.AgentID), stateLabel)
-			if elapsed != "" {
-				head += lipgloss.NewStyle().Foreground(t.Muted).Render(" · " + elapsed)
-			}
-			if prog.Tools > 0 {
-				head += lipgloss.NewStyle().Foreground(t.Muted).Render(fmt.Sprintf(" · %d tools", prog.Tools))
-			}
-			out = append(out, fitLine(head, w))
-			if a.SessionID != "" {
-				m.regions = append(m.regions, Region{Rect: Rect{0, len(out) - 1, w, 1}, Kind: ActionSession, Value: a.SessionID})
-			}
-			if len(out) >= h-1 {
-				break
-			}
-			// Second dim line carries the task / last-tool so progress is
-			// visible at a glance. It is always rendered (possibly empty) so
-			// a running subagent never changes the sidebar height mid-turn.
-			detail := m.subagentDetail(a, prog)
-			if detail != "" {
-				dim := lipgloss.NewStyle().Foreground(t.Muted).Render("    " + detail)
-				out = append(out, fitLine(dim, w))
-			} else {
-				out = append(out, fitLine("", w))
-			}
-			if len(out) >= h {
-				break
-			}
-		}
-	}
-
-	for len(out) < h {
-		out = append(out, "")
-	}
-	if len(out) > h {
-		out = out[:h]
-	}
-	return out
-}
-
 // sortedSubagents returns background runs in a stable order. Go map iteration
-// is randomized, so rendering the map directly reshuffles the sidebar on every
-// 125ms spinner frame — the flicker this fixes. Running runs come first so a
+// is randomized, so rendering the map directly reshuffles the rows on every
+// spinner frame — the flicker this fixes. Running runs come first so a
 // finishing run never jumps above an active one mid-turn.
 func (m *Model) sortedSubagents() []domain.AgentRun {
 	if len(m.subagents) == 0 {

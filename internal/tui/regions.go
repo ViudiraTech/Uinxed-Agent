@@ -17,7 +17,6 @@ const (
 	ActionDiffFile ActionKind = "diff_file"
 	ActionTodo     ActionKind = "todo"
 	ActionThinking ActionKind = "thinking"
-	ActionSidebar  ActionKind = "sidebar"
 	ActionPrompt   ActionKind = "prompt"
 	ActionChat     ActionKind = "chat"
 	ActionButton   ActionKind = "button"
@@ -53,7 +52,7 @@ func findRegion(rs []Region, x, y int) (Region, bool) {
 
 func regionPriority(kind ActionKind) int {
 	switch kind {
-	case ActionChat, ActionSidebar:
+	case ActionChat:
 		return 0
 	case ActionPrompt:
 		return 1

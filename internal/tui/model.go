@@ -36,11 +36,9 @@ const (
 
 type layoutState struct {
 	chat    Rect
-	sidebar Rect
 	prompt  Rect
 	status  Rect
 	overlay Rect
-	chatX   int
 }
 
 type Model struct {
@@ -73,7 +71,6 @@ type Model struct {
 	regions             []Region
 	hover               string
 	layout              layoutState
-	sidebarOffset       int
 	history             []string
 	historyIndex        int
 	commandMatches      []PickerItem
@@ -108,8 +105,8 @@ type Model struct {
 	historySel     int
 }
 
-// subagentProgress tracks live activity inside a delegate child so the sidebar
-// can show something more useful than a static "running" label. It is keyed by
+// subagentProgress tracks live activity inside a delegate child so the
+// transcript can show something more useful than a static "running" label. It is keyed by
 // the child run ID, matching Model.subagents.
 type subagentProgress struct {
 	Tools     int
@@ -219,7 +216,7 @@ func (m *Model) setSession(s domain.Session) {
 	}
 	// Subagent runs belong to the session that spawned them. Keeping the
 	// previous session's entries would show stale rows that never update and,
-	// because Go map iteration is random, shuffle the sidebar every frame.
+	// because Go map iteration is random, shuffle the rendered rows every frame.
 	if m.subagents == nil {
 		m.subagents = map[string]domain.AgentRun{}
 	} else {

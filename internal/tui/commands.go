@@ -24,7 +24,6 @@ type commandDef struct {
 
 var commandDefs = []commandDef{
 	{"/help", "Show commands and shortcuts", "?"},
-	{"/sidebar", "Toggle the session sidebar", "Ctrl+B"},
 	{"/connect", "Add an OpenAI-compatible provider", ""},
 	{"/provider", "Show or switch provider", ""},
 	{"/key", "Set the API key for the current provider", ""},
@@ -248,8 +247,6 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 		return asyncOp("mouse", func() (any, error) {
 			return v, m.ctrl.Config.Update(func(c *config.Config) error { c.Mouse = v; return nil })
 		})
-	case "/sidebar":
-		return m.toggleSidebar()
 	case "/theme":
 		v := strings.ToLower(strings.TrimSpace(arg))
 		if v == "" {
@@ -296,7 +293,6 @@ func helpText() string {
 		{"Ctrl+O", "Expand or collapse tool details"},
 		{"Ctrl+T", "Expand or collapse reasoning"},
 		{"Ctrl+E", "Expand or collapse tool details"},
-		{"Ctrl+B", "Toggle sidebar"},
 		{"Ctrl+D", "Open git diff"},
 		{"Ctrl+R", "Search prompt history"},
 		{"Shift+Tab", "Cycle approval mode"},
@@ -326,7 +322,6 @@ func (m *Model) openCommandPalette() {
 		{"sessions", "Switch Session", "Jump to another session", ""},
 		{"search", "Search Sessions", "Find a session by name or message text", ""},
 		{"export", "Export Session", "Write this conversation as Markdown", ""},
-		{"sidebar", "Toggle Sidebar", "Show or hide the session sidebar", "Ctrl+B"},
 		{"agent", "Change Agent", "Switch the primary agent", "Tab"},
 		{"model", "Change Model", "Switch the active model", ""},
 		{"provider", "Change Provider", "Switch the active provider", ""},
@@ -575,8 +570,6 @@ func (m *Model) runPaletteAction(id string) tea.Cmd {
 		m.openProviderPicker()
 	case "compact":
 		return m.executeCommand("/compact")
-	case "sidebar":
-		return m.toggleSidebar()
 	case "thinking":
 		m.conv.ToggleAllThinking()
 		m.closeOverlay()
@@ -799,19 +792,4 @@ func (m *Model) resolveSession(v string) *domain.Session {
 		}
 	}
 	return nil
-}
-
-func (m *Model) toggleSidebar() tea.Cmd {
-	next := "off"
-	if m.cfg.Sidebar == "off" {
-		next = "on"
-	}
-	m.cfg.Sidebar = next
-	m.resize()
-	return asyncOp("sidebar", func() (any, error) {
-		return next, m.ctrl.Config.Update(func(c *config.Config) error {
-			c.Sidebar = next
-			return nil
-		})
-	})
 }
