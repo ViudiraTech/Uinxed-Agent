@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
 )
@@ -156,5 +157,75 @@ func TestGroupingInvalidatesTheRenderCache(t *testing.T) {
 	if len(opened) <= len(closed) {
 		t.Fatalf("opening the group returned %d lines against %d collapsed; the cache served a stale block",
 			len(opened), len(closed))
+	}
+}
+
+func renderConversation(c *Conversation, o RenderOptions) string {
+	var b strings.Builder
+	for _, l := range c.Render(40, ThemeByName("claude"), o) {
+		b.WriteString(stripANSI(l.Text))
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// A running delegate shows what its child is doing. The run holds the agent id
+// and the task text but nothing pointing back at the call that spawned it, so
+// those two fields are the match.
+func TestRunningDelegateCardShowsChildProgress(t *testing.T) {
+	c := NewConversation()
+	c.SetSession(domain.Session{ID: "s", Messages: []domain.Message{{
+		ID: "a", Role: domain.RoleAssistant,
+		ToolCalls: []domain.ToolCall{{ID: "c0", Function: domain.ToolCallFunction{
+			Name: "delegate", Arguments: `{"agent":"explorer","task":"find the router"}`,
+		}}},
+	}}}, 80)
+
+	run := domain.AgentRun{
+		ID: "run1", SessionID: "child", AgentID: "explorer", Task: "find the router",
+		State: "running", StartedAt: time.Now().Add(-30 * time.Second),
+	}
+	opts := RenderOptions{
+		Activities:       []domain.ToolActivity{{CallID: "c0", Name: "delegate", State: "running"}},
+		Subagents:        []domain.AgentRun{run},
+		SubagentProgress: map[string]subagentProgress{"run1": {Tools: 3, LastTool: "grep"}},
+	}
+
+	out := renderConversation(c, opts)
+	for _, want := range []string{"30s", "3 tools", "↳ grep"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("the running delegate card should carry the child's progress (%q missing):\n%s", want, out)
+		}
+	}
+	if n := strings.Count(out, "Task("); n != 1 {
+		t.Fatalf("the delegate rendered %d cards; attaching progress must not add a second row:\n%s", n, out)
+	}
+
+	// A run working on something else must not be attributed to this call.
+	opts.Subagents[0].Task = "a different job entirely"
+	if out := renderConversation(c, opts); strings.Contains(out, "3 tools") {
+		t.Fatalf("an unrelated run leaked its progress onto this card:\n%s", out)
+	}
+}
+
+// A settled child must not keep reporting progress on a call that has finished.
+func TestSettledSubagentDoesNotAttach(t *testing.T) {
+	c := NewConversation()
+	c.SetSession(domain.Session{ID: "s", Messages: []domain.Message{{
+		ID: "a", Role: domain.RoleAssistant,
+		ToolCalls: []domain.ToolCall{{ID: "c0", Function: domain.ToolCallFunction{
+			Name: "delegate", Arguments: `{"agent":"explorer","task":"find the router"}`,
+		}}},
+	}}}, 80)
+	opts := RenderOptions{
+		Activities: []domain.ToolActivity{{CallID: "c0", Name: "delegate", State: "success", Output: "done"}},
+		Subagents: []domain.AgentRun{{
+			ID: "run1", SessionID: "child", AgentID: "explorer", Task: "find the router",
+			State: "done", StartedAt: time.Now().Add(-time.Minute),
+		}},
+		SubagentProgress: map[string]subagentProgress{"run1": {Tools: 3, LastTool: "grep"}},
+	}
+	if out := renderConversation(c, opts); strings.Contains(out, "3 tools") {
+		t.Fatalf("a finished run should not report live progress:\n%s", out)
 	}
 }

@@ -189,3 +189,74 @@ func groupPhrase(calls []domain.ToolCall, running bool) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// liveSubagentProgress renders what a running delegate's child is doing, which is
+// information the sidebar used to carry. The tracked run holds the agent id and
+// the task text but nothing that points back at the call which spawned it, so
+// those two fields are the match. A run with an empty task is the top-level turn
+// rather than a delegate, and is skipped.
+//
+// Attaching it to the existing call card rather than emitting a separate row is
+// what keeps a background delegate from appearing twice on screen.
+func (c *Conversation) liveSubagentProgress(tc domain.ToolCall, t Theme) string {
+	text := c.liveSubagentProgressText(tc)
+	if text == "" {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(t.Muted).Render(" · " + text)
+}
+
+// liveSubagentProgressText is the unstyled form. Keeping it separate lets the
+// render cache key read exactly what the renderer draws.
+func (c *Conversation) liveSubagentProgressText(tc domain.ToolCall) string {
+	if len(c.subagents) == 0 {
+		return ""
+	}
+	agent, task := parseDelegateArgs(tc.Function.Arguments)
+	task = strings.TrimSpace(task)
+	for _, run := range c.subagents {
+		if run.State != "running" || strings.TrimSpace(run.Task) == "" {
+			continue
+		}
+		if agent != "" && run.AgentID != agent {
+			continue
+		}
+		if task != "" && strings.TrimSpace(run.Task) != task {
+			continue
+		}
+		prog := c.subagentProgress[run.ID]
+		var parts []string
+		if el := formatSubagentElapsed(run, 0); el != "" {
+			parts = append(parts, el)
+		}
+		if prog.Tools > 0 {
+			parts = append(parts, fmt.Sprintf("%d tools", prog.Tools))
+		}
+		if prog.LastTool != "" {
+			parts = append(parts, "↳ "+prog.LastTool)
+		}
+		return strings.Join(parts, " · ")
+	}
+	return ""
+}
+
+// subagentSignature captures what a running delegate card reads from its child
+// run, so a cached block cannot serve a stale status. It matters most when
+// animations are off: the frame then stops changing, and without this the card
+// would freeze on whatever progress it had when the tick last ran.
+func (c *Conversation) subagentSignature(calls []domain.ToolCall) string {
+	if len(c.subagents) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, tc := range calls {
+		if tc.Function.Name != "delegate" {
+			continue
+		}
+		if text := c.liveSubagentProgressText(tc); text != "" {
+			b.WriteString(text)
+			b.WriteByte(';')
+		}
+	}
+	return b.String()
+}

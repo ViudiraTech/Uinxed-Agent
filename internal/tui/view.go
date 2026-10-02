@@ -236,32 +236,6 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh", h)
 }
 
-// subagentDetail prefers the delegated task, falling back to the session name
-// (which embeds the task for @-started runs) and finally the last tool seen.
-func (m *Model) subagentDetail(a domain.AgentRun, prog subagentProgress) string {
-	if t := strings.TrimSpace(a.Task); t != "" {
-		return truncWidth(singleLine(terminalutil.SanitizeText(t)), 60)
-	}
-	for _, s := range m.sessions {
-		if s.ID == a.SessionID && strings.TrimSpace(s.Name) != "" {
-			name := terminalutil.SanitizeText(s.Name)
-			if i := strings.Index(name, ": "); i >= 0 {
-				name = strings.TrimSpace(name[i+2:])
-			}
-			if name != "" {
-				return truncWidth(singleLine(name), 60)
-			}
-		}
-	}
-	if prog.LastTool != "" {
-		if prog.Tools > 0 {
-			return "↳ " + prog.LastTool
-		}
-		return prog.LastTool
-	}
-	return ""
-}
-
 // renderSuggestions draws the inline command / @-mention completions as a
 // compact list directly above the composer, matching the flat transcript style
 // instead of boxing them.

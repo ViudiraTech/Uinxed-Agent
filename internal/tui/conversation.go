@@ -46,6 +46,10 @@ type Conversation struct {
 	mdKey            string
 	rendered         map[string]renderCacheEntry
 	stream           streamWrap
+	// subagents and subagentProgress are refreshed each frame by Render so a
+	// running delegate call can show the progress of the child run behind it.
+	subagents        []domain.AgentRun
+	subagentProgress map[string]subagentProgress
 }
 
 // renderCacheEntry memoizes one block's rendered lines. Streaming only mutates
@@ -67,6 +71,7 @@ type renderKey struct {
 	style   string
 	think   bool
 	toolSig string
+	subs    string
 	hover   string
 	running bool
 	// frame is only part of the key while something is animating, so an idle
@@ -93,6 +98,7 @@ func (c *Conversation) renderCached(b *convBlock, t Theme, acts map[string]domai
 		style:   c.mdKey,
 		think:   c.expandedThinking[b.ID],
 		toolSig: toolSignature(b.ToolCalls, acts, c.expandedTools),
+		subs:    c.subagentSignature(b.ToolCalls),
 		hover:   hover,
 		running: hasRunningTool(b.ToolCalls, acts),
 	}
@@ -368,6 +374,10 @@ type RenderOptions struct {
 	Model      string
 	CWD        string
 	HideBanner bool
+	// Background delegate runs, so a live delegate call can show what its child
+	// is doing. The sidebar used to carry this.
+	Subagents        []domain.AgentRun
+	SubagentProgress map[string]subagentProgress
 }
 
 func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine {
@@ -377,6 +387,10 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 	streamContent, streamReasoning := o.StreamContent, o.StreamReasoning
 	activities, hover := o.Activities, o.Hover
 	c.applyTheme(t)
+	// Refreshed per frame alongside the theme, so a running delegate call can
+	// report what its child is doing without RenderOptions being threaded
+	// through every helper below.
+	c.subagents, c.subagentProgress = o.Subagents, o.SubagentProgress
 	width := c.width
 	if width < 20 {
 		width = 20
@@ -638,6 +652,9 @@ func (c *Conversation) renderToolCall(tc domain.ToolCall, a domain.ToolActivity,
 	meta := ""
 	if metaText != "" {
 		meta = lipgloss.NewStyle().Foreground(t.Muted).Render(" · " + metaText)
+	}
+	if name == "delegate" && a.State == "running" {
+		meta += c.liveSubagentProgress(tc, t)
 	}
 
 	// The bullet sits at column 0, aligned with the assistant and user markers,
