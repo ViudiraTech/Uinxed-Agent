@@ -591,9 +591,10 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.conv.ToggleAllThinking()
 		return nil, true
 	case "ctrl+o":
-		m.overlay = overlayTodos
-		m.overlayScroll = 0
-		m.setFocus(FocusTodos)
+		// Claude Code's tool cards advertise "(ctrl+o to expand)", so this key
+		// has to mean expand. The todos overlay it used to open is reachable via
+		// /todos, and the task list itself now sits above the composer.
+		m.conv.ToggleAllTools()
 		return nil, true
 	case "ctrl+e":
 		m.conv.ToggleAllTools()

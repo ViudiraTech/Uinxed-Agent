@@ -355,8 +355,8 @@ func TestTranscriptIsBorderless(t *testing.T) {
 			t.Fatalf("transcript should not draw card borders, found %q in:\n%s", box, got)
 		}
 	}
-	if !strings.Contains(got, "Read file · internal/tui/view.go") {
-		t.Fatalf("expected a readable collapsed tool call, got:\n%s", got)
+	if !strings.Contains(got, "Read(internal/tui/view.go)") {
+		t.Fatalf("expected Claude Code's collapsed call grammar, got:\n%s", got)
 	}
 	if strings.Contains(got, "read_file(internal/tui/view.go)") {
 		t.Fatalf("internal function syntax should stay hidden in the collapsed transcript:\n%s", got)
@@ -366,12 +366,16 @@ func TestTranscriptIsBorderless(t *testing.T) {
 	}
 }
 
-func TestToolDisplayNamesReadAsActions(t *testing.T) {
+// The transcript names tools the way Claude Code does — a title-cased tool name
+// whose argument goes in the parentheses — rather than phrasing each one as an
+// action ("Run command"). An unregistered tool still has to render as something
+// readable instead of leaking its raw snake_case id.
+func TestToolDisplayNamesMatchClaudeGrammar(t *testing.T) {
 	cases := map[string]string{
-		"bash":          "Run command",
-		"read_file":     "Read file",
-		"web_search":    "Search web",
-		"new_tool_name": "New Tool Name",
+		"bash":          "Bash",
+		"read_file":     "Read",
+		"web_search":    "WebSearch",
+		"new_tool_name": "NewToolName",
 	}
 	for name, want := range cases {
 		if got := toolDisplayName(name); got != want {
@@ -591,5 +595,53 @@ func TestModernPickerRender(t *testing.T) {
 	}
 	if !strings.Contains(b.String(), "Commands") || !strings.Contains(b.String(), "Toggle Sidebar") {
 		t.Fatalf("missing picker content:\n%s", b.String())
+	}
+}
+
+// The collapsed result line states what happened rather than how many bytes came
+// back, which is what makes a transcript scannable.
+func TestToolResultClausePhrasing(t *testing.T) {
+	lines := "a\nb\nc"
+	cases := []struct {
+		name string
+		act  domain.ToolActivity
+		want string
+	}{
+		{"read counts lines", domain.ToolActivity{State: "success", Output: lines}, "Read 3 lines"},
+		{"read singular", domain.ToolActivity{State: "success", Output: "only"}, "Read 1 line"},
+		{"grep counts matches", domain.ToolActivity{State: "success", Output: lines}, "Found 3 matches"},
+		{"grep singular", domain.ToolActivity{State: "success", Output: "x"}, "Found 1 match"},
+		{"glob counts files", domain.ToolActivity{State: "success", Output: lines}, "Found 3 files"},
+		{"failure shows the error", domain.ToolActivity{State: "failed", Error: "boom\nsecond"}, "boom"},
+		{"failure without a message", domain.ToolActivity{State: "failed"}, "Failed"},
+		{"no output", domain.ToolActivity{State: "success"}, ""},
+	}
+	for _, c := range cases {
+		name := "grep"
+		switch {
+		case strings.HasPrefix(c.name, "read"):
+			name = "read_file"
+		case strings.HasPrefix(c.name, "glob"):
+			name = "glob"
+		case strings.HasPrefix(c.name, "failure"):
+			name = "bash"
+		case c.name == "no output":
+			name = "bash"
+		}
+		if got := toolResultClause(name, c.act); got != c.want {
+			t.Fatalf("%s: toolResultClause = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// The expand hint has to be honest: claiming there is more to see on a call with
+// nothing hidden would train the reader to ignore it.
+func TestToolExpandHintTracksExpandableContent(t *testing.T) {
+	call := domain.ToolCall{ID: "c", Function: domain.ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.go"}`}}
+	if !toolExpandable(call, domain.ToolActivity{State: "success", Output: "package a"}) {
+		t.Fatal("arguments and output are both expandable")
+	}
+	if toolExpandable(domain.ToolCall{ID: "c"}, domain.ToolActivity{State: "pending"}) {
+		t.Fatal("a call with no arguments and no output has nothing to expand")
 	}
 }

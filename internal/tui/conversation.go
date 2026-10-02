@@ -126,8 +126,10 @@ func hasRunningTool(calls []domain.ToolCall, acts map[string]domain.ToolActivity
 	return false
 }
 
-// toolSignature captures the per-call state a tool line depends on: its status
-// glyph, how much output it has, and whether it is expanded.
+// toolSignature captures the per-call state a tool line depends on: which tool
+// it is, its status glyph, how much output it has, and whether it is expanded.
+// The name belongs in the key because it drives both the rendered label and the
+// read-only grouping, either of which can change while a block stays cached.
 func toolSignature(calls []domain.ToolCall, acts map[string]domain.ToolActivity, expanded map[string]bool) string {
 	calls = sanitizeToolCalls(calls)
 	if len(calls) == 0 {
@@ -136,7 +138,7 @@ func toolSignature(calls []domain.ToolCall, acts map[string]domain.ToolActivity,
 	var b strings.Builder
 	for _, tc := range calls {
 		a := acts[tc.ID]
-		fmt.Fprintf(&b, "%s|%s|%d|%d|%t;", tc.ID, a.State, len(a.Output), len(a.Error), expanded[tc.ID])
+		fmt.Fprintf(&b, "%s|%s|%s|%d|%d|%t;", tc.ID, tc.Function.Name, a.State, len(a.Output), len(a.Error), expanded[tc.ID])
 	}
 	return b.String()
 }
@@ -432,11 +434,12 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 	return lines
 }
 
-// Tool results are indented under their call; expanded argument and output
-// bodies use a deeper gutter so the tree stays readable.
-const expandedGut = "      "
+// Tool results hang two columns under their call — the indent Claude Code uses
+// for its `⎿` subtree — and expanded argument and output bodies step in further
+// still so the tree stays readable.
+const expandedGut = "    "
 
-func resultGutter(g Glyphs) string { return "   " + g.Result + "  " }
+func resultGutter(g Glyphs) string { return "  " + g.Result + "  " }
 
 func (c *Conversation) renderBlock(b convBlock, t Theme, acts map[string]domain.ToolActivity, hover string, frame int) []renderLine {
 	var out []renderLine
@@ -606,10 +609,12 @@ func (c *Conversation) renderToolCall(tc domain.ToolCall, a domain.ToolActivity,
 		meta = lipgloss.NewStyle().Foreground(t.Muted).Render(" · " + metaText)
 	}
 
+	// The bullet sits at column 0, aligned with the assistant and user markers,
+	// the way Claude Code indents an entire turn off one left edge.
 	marker := lipgloss.NewStyle().Foreground(fg).Render(icon)
-	line := " " + marker + " " + head + meta
+	line := marker + " " + head + meta
 	if c.expandedTools[tc.ID] {
-		line = " " + marker + " " + head + meta + lipgloss.NewStyle().Foreground(t.Muted).Render("  · details")
+		line = marker + " " + head + meta + lipgloss.NewStyle().Foreground(t.Muted).Render("  · details")
 	}
 
 	out := []renderLine{{Text: line, Action: ActionTool, Value: tc.ID}}
@@ -631,16 +636,16 @@ func (c *Conversation) renderToolCall(tc domain.ToolCall, a domain.ToolActivity,
 	// Collapsed: one dim result line, or the first line of the error so a
 	// failure is visible without expanding.
 	resultStyle := lipgloss.NewStyle().Foreground(t.Muted)
-	result := toolResultSummary(a)
+	result := toolResultClause(name, a)
 	if a.State == "failed" {
 		resultStyle = lipgloss.NewStyle().Foreground(t.Error)
-		if a.Error != "" {
-			result = firstLine(a.Error)
-		}
 	}
 	if result != "" {
 		if d := toolDuration(a); d != "" && a.State != "running" {
 			result += " · " + d
+		}
+		if toolExpandable(tc, a) {
+			result += " (ctrl+o to expand)"
 		}
 		gutter := resultGutter(g)
 		out = append(out, renderLine{Text: gutter + resultStyle.Render(truncWidth(result, max(6, width-lipgloss.Width(gutter))))})
@@ -655,9 +660,10 @@ func (c *Conversation) renderToolCall(tc domain.ToolCall, a domain.ToolActivity,
 	return out
 }
 
-// renderToolHead turns an internal function call into a compact, human-readable
-// action. The raw function name remains available in the expanded arguments, but
-// the collapsed transcript should read like a conversation rather than a trace.
+// renderToolHead renders Claude Code's call grammar: a bold tool name with its
+// salient argument in plain parentheses, as in Read(internal/tui/view.go). The
+// raw argument JSON stays in the expanded body — a collapsed transcript should
+// read like a conversation, not like a trace.
 func (c *Conversation) renderToolHead(tc domain.ToolCall, name string, t Theme, hover string, g Glyphs) string {
 	nameStyle := lipgloss.NewStyle().Foreground(t.Tool).Bold(true)
 	argStyle := lipgloss.NewStyle().Foreground(t.Muted)
@@ -667,41 +673,59 @@ func (c *Conversation) renderToolHead(tc domain.ToolCall, name string, t Theme, 
 
 	label := toolDisplayName(name)
 	if name == "delegate" {
+		// A delegated task is identified by its target agent and its brief, not
+		// by the JSON envelope that carried them.
 		if agent, task := parseDelegateArgs(tc.Function.Arguments); agent != "" {
-			head := nameStyle.Render(label) + argStyle.Render(" "+g.Bullet+" "+agent)
+			head := nameStyle.Render(label) + argStyle.Render("("+agent)
 			if task != "" {
 				head += argStyle.Render(" · " + truncWidth(singleLine(terminalutil.SanitizeText(task)), 48))
 			}
-			return head
+			return head + argStyle.Render(")")
 		}
 	}
 	summary := toolSummary(name, terminalutil.SanitizeText(tc.Function.Arguments))
 	if summary == "" {
 		return nameStyle.Render(label)
 	}
-	return nameStyle.Render(label) + argStyle.Render(" · "+summary)
+	return nameStyle.Render(label) + argStyle.Render("("+summary+")")
 }
 
-// toolDisplayName is intentionally phrased as an action. It gives every tool a
-// stable visual vocabulary while allowing newly added tools to fall back to a
-// readable title derived from their function name.
+// toolNames maps an internal tool id onto the name the transcript shows. Claude
+// Code names its tools in title case and leaves the argument to the parentheses,
+// so an id is never also a label. An unlisted tool falls back to a camel-cased
+// title of its id rather than going unlabelled.
+var toolNames = map[string]string{
+	"bash":        "Bash",
+	"read_file":   "Read",
+	"write_file":  "Write",
+	"edit_file":   "Edit",
+	"multi_edit":  "MultiEdit",
+	"delete_file": "Delete",
+	"move_file":   "Move",
+	"copy_file":   "Copy",
+	"make_dir":    "Mkdir",
+	"list_dir":    "LS",
+	"grep":        "Grep",
+	"glob":        "Glob",
+	"tree":        "Tree",
+	"fetch_url":   "WebFetch",
+	"web_search":  "WebSearch",
+	"use_skill":   "Skill",
+	"calc":        "Calc",
+	"delegate":    "Task",
+	"todo_write":  "TodoWrite",
+	"todo_update": "TodoUpdate",
+	"git_status":  "GitStatus",
+	"git_diff":    "GitDiff",
+	"git_log":     "GitLog",
+	"git_commit":  "GitCommit",
+	"plan_write":  "PlanWrite",
+	"switch_mode": "SwitchMode",
+	"exit_plan":   "ExitPlan",
+}
+
 func toolDisplayName(name string) string {
-	labels := map[string]string{
-		"bash":        "Run command",
-		"read_file":   "Read file",
-		"write_file":  "Write file",
-		"edit_file":   "Edit file",
-		"list_dir":    "List folder",
-		"grep":        "Search files",
-		"glob":        "Find files",
-		"fetch_url":   "Open webpage",
-		"web_search":  "Search web",
-		"use_skill":   "Load skill",
-		"calc":        "Calculate",
-		"delegate":    "Delegate task",
-		"todo_update": "Update task",
-	}
-	if label, ok := labels[name]; ok {
+	if label, ok := toolNames[name]; ok {
 		return label
 	}
 	parts := strings.FieldsFunc(name, func(r rune) bool { return r == '_' || r == '-' })
@@ -714,7 +738,57 @@ func toolDisplayName(name string) string {
 	if len(parts) == 0 {
 		return "Tool"
 	}
-	return strings.Join(parts, " ")
+	return strings.Join(parts, "")
+}
+
+// toolResultClause is the dim line under a call. Claude Code phrases these as
+// what happened — "Read 42 lines", "Found 3 matches" — rather than as a byte
+// count, so a scan of the transcript says what the agent learned.
+func toolResultClause(name string, a domain.ToolActivity) string {
+	if a.State == "failed" {
+		if a.Error != "" {
+			return firstLine(a.Error)
+		}
+		return "Failed"
+	}
+	if a.State == "running" {
+		// A live line count would tick on every frame as output streams in.
+		return toolResultSummary(a)
+	}
+	out := strings.TrimSpace(a.Output)
+	if out == "" {
+		return ""
+	}
+	lines := strings.Count(strings.TrimRight(out, "\n"), "\n") + 1
+	switch name {
+	case "read_file":
+		return fmt.Sprintf("Read %d %s", lines, plural(lines, "line", "lines"))
+	case "grep":
+		return fmt.Sprintf("Found %d %s", lines, plural(lines, "match", "matches"))
+	case "glob":
+		return fmt.Sprintf("Found %d %s", lines, plural(lines, "file", "files"))
+	case "list_dir":
+		return fmt.Sprintf("Listed %d %s", lines, plural(lines, "entry", "entries"))
+	}
+	if lines == 1 {
+		return truncWidth(singleLine(out), 60)
+	}
+	return fmt.Sprintf("%d lines", lines)
+}
+
+// toolExpandable reports whether a call has more to show than its collapsed row
+// already does, which is what keeps the "(ctrl+o to expand)" hint honest.
+func toolExpandable(tc domain.ToolCall, a domain.ToolActivity) bool {
+	return strings.TrimSpace(tc.Function.Arguments) != "" ||
+		strings.TrimSpace(a.Output) != "" ||
+		strings.TrimSpace(a.Error) != ""
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 func parseDelegateArgs(args string) (agent, task string) {

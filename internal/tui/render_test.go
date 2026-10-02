@@ -444,11 +444,11 @@ func TestSettleMessageEndsTheStreamingRound(t *testing.T) {
 	}
 
 	out := stripANSI(m.renderBase(themeFor(m.cfg)))
-	if !strings.Contains(out, "Run command · ls") {
-		t.Fatalf("the settled round's tool call should render as a readable action:\n%s", out)
+	if !strings.Contains(out, "Bash(ls)") {
+		t.Fatalf("the settled round's tool call should render in Claude Code's grammar:\n%s", out)
 	}
 	if strings.Contains(out, "bash(ls)") {
-		t.Fatalf("internal tool syntax should not be exposed in the collapsed transcript:\n%s", out)
+		t.Fatalf("the raw tool id should not be exposed in the collapsed transcript:\n%s", out)
 	}
 	if strings.Contains(out, "partial answer") {
 		t.Fatalf("settled text must replace the streaming buffer:\n%s", out)
