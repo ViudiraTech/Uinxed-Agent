@@ -138,6 +138,94 @@ func (m *Model) handleEffortCommand(arg string) tea.Cmd {
 	})
 }
 
+// rainbowRamp is the seven colors Claude Code's rainbow_* tokens name — red,
+// orange, yellow, green, blue, indigo, violet — in that order. The docs name the
+// colors without publishing values, so these are the standard hues.
+var rainbowRamp = []string{"#FF5F56", "#FFA657", "#FFD75F", "#4EBA65", "#4FA8FF", "#7B7BFF", "#B57BFF"}
+
+// rippleBand is how many columns the travelling ring is thick.
+const rippleBand = 3
+
+// rippleColor reports which rainbow color a column takes, and whether the
+// expanding ring is over it at all. The ring grows from the centre outward and
+// wraps at the edge, so the wave keeps emanating rather than stopping dead.
+func rippleColor(col, width, phase int) (int, bool) {
+	if width <= 0 {
+		return 0, false
+	}
+	d := col - width/2
+	if d < 0 {
+		d = -d
+	}
+	// The ring has to stop expanding once it reaches the edge, so the cycle is
+	// the centre-to-edge distance. Going further leaves phases lit nowhere,
+	// which reads as the ripple stalling before it restarts.
+	span := width/2 + 1
+	r := phase % span
+	if d > r || d <= r-rippleBand {
+		return 0, false
+	}
+	return (col + phase) % len(rainbowRamp), true
+}
+
+// supercodeRule draws the composer's top rule while orchestration mode is on.
+//
+// The border is the thing Claude Code animates here — promptBorder has a paired
+// promptBorderShimmer, and the ultracode tag rides on that same border via the
+// effortUltra token — so the effect belongs on the rule rather than on a badge
+// floating beside it. A rainbow ring expands from the centre, the tag riding
+// along inside it.
+func (m *Model) supercodeRule(t Theme, w int, base lipgloss.Style) string {
+	if w <= 0 {
+		return ""
+	}
+	ramp := make([]lipgloss.Style, len(rainbowRamp))
+	for i, c := range rainbowRamp {
+		ramp[i] = lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Bold(true)
+	}
+	tag := lipgloss.NewStyle().Foreground(t.Text).Bold(true)
+
+	label := " supercode "
+	labelAt := 3
+	showLabel := w > labelAt+lipgloss.Width(label)+2 && m.supercodeOn()
+
+	phase := 0
+	if m.cfg.Animations {
+		// The ring advances one column per frame, which reads as a wave at the
+		// same 120ms cadence as everything else.
+		phase = m.activityFrame
+	}
+
+	// Unlit columns all share one style, so they are flushed as a single run
+	// rather than a Render call each: at 200 columns the naive form spent more
+	// time styling this one row than the entire rest of the frame.
+	var b strings.Builder
+	pending := 0 // unlit columns not yet written
+	flush := func() {
+		if pending > 0 {
+			b.WriteString(base.Render(strings.Repeat(t.Glyphs.Rule, pending)))
+			pending = 0
+		}
+	}
+	for col := 0; col < w; {
+		if showLabel && col == labelAt {
+			flush()
+			b.WriteString(tag.Render(label))
+			col += lipgloss.Width(label)
+			continue
+		}
+		if idx, lit := rippleColor(col, w, phase); lit {
+			flush()
+			b.WriteString(ramp[idx].Render(t.Glyphs.Rule))
+		} else {
+			pending++
+		}
+		col++
+	}
+	flush()
+	return b.String()
+}
+
 // renderEffortSlider draws the reasoning scale: the stops in a row with the
 // chosen one highlighted and a caret beneath it, that stop's guide line below,
 // and the keys last.
@@ -155,10 +243,17 @@ func (m *Model) renderEffortSlider(t Theme, w int) []string {
 	guide := lipgloss.NewStyle().Foreground(t.Text)
 
 	head := title.Render("Reasoning effort")
+	var out []string
 	if m.supercodeOn() {
 		head += on.Render("   supercode on")
+		out = append(out, head)
+		// The same wave the composer border carries, so the mode reads the same
+		// whether you are looking at the slider or at the input.
+		out = append(out, m.supercodeRule(t, min(max(20, w-4), 60), lipgloss.NewStyle().Foreground(t.Border)))
+	} else {
+		out = append(out, head)
 	}
-	out := []string{head, ""}
+	out = append(out, "")
 
 	// The stops are laid out first so the caret can be placed under the chosen
 	// one by column rather than by guessing at the padding.

@@ -127,6 +127,14 @@ func (m *Model) renderBase(t Theme) string {
 	rule := func() string {
 		return ruleStyle.Render(strings.Repeat(t.Glyphs.Rule, max(1, chatW)))
 	}
+	// While supercode is on, the composer's top rule carries its tag and
+	// shimmers. That is where Claude Code puts its ultracode indicator — on the
+	// input box border, via the effortUltra token — so the state is visible
+	// without opening the slider.
+	topRule := rule
+	if m.supercodeOn() {
+		topRule = func() string { return m.supercodeRule(t, chatW, ruleStyle) }
+	}
 	// Chips sit directly on the composer's top rule so "attached" reads as
 	// part of the input rather than as transcript content.
 	for _, chip := range chips {
@@ -136,7 +144,7 @@ func (m *Model) renderBase(t Theme) string {
 	if workH > 0 {
 		chatLines = append(chatLines, fitLine(m.renderWorkingLine(t), chatW))
 	}
-	chatLines = append(chatLines, rule())
+	chatLines = append(chatLines, topRule())
 
 	prefixStyle := lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
 	pview := strings.TrimSuffix(m.prompt.View(), "\n")
