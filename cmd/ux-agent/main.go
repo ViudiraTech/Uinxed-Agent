@@ -27,7 +27,7 @@ var (
 
 type options struct {
 	key, base, model, provider, theme, session, configDir string
-	debug, noMouse, reset, showVersion                    bool
+	debug, noMouse, noBanner, reset, showVersion          bool
 }
 
 func main() {
@@ -47,6 +47,7 @@ func run() error {
 	flag.StringVar(&o.session, "session", "", "resume session by id or exact name")
 	flag.StringVar(&o.configDir, "config-dir", "", "override config directory")
 	flag.BoolVar(&o.noMouse, "no-mouse", false, "disable terminal mouse capture")
+	flag.BoolVar(&o.noBanner, "no-banner", false, "start without the welcome card on an empty session")
 	flag.BoolVar(&o.debug, "debug", false, "enable debug logging")
 	flag.BoolVar(&o.reset, "reset", false, "remove all ux-agent config and sessions")
 	flag.BoolVar(&o.showVersion, "version", false, "print version")
@@ -139,6 +140,9 @@ func applyCLI(s *config.Store, o options) error {
 		}
 		if o.noMouse {
 			c.Mouse = false
+		}
+		if o.noBanner {
+			c.HideBanner = true
 		}
 		if o.debug {
 			c.Debug = true

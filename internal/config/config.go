@@ -55,6 +55,10 @@ type Config struct {
 	StatusItems            []string   `json:"status_items,omitempty"`
 	StatuslineCommand      string     `json:"statusline_command,omitempty"`
 	Debug                  bool       `json:"debug,omitempty"`
+	// HideBanner is opt-out rather than opt-in: JSON cannot tell an absent
+	// boolean from a false one, so a `banner` key defaulting to on would switch
+	// itself off for every config written before it existed.
+	HideBanner bool `json:"hide_banner,omitempty"`
 }
 
 func BuiltinProviders() []Provider {
@@ -436,6 +440,7 @@ func mergeDefaults(in Config) Config {
 		d.StreamRenderIntervalMS = in.StreamRenderIntervalMS
 	}
 	d.Debug = in.Debug
+	d.HideBanner = in.HideBanner
 	if in.Version == 0 {
 		// Legacy files lacked these UI fields: maintain historical default-on behavior.
 		d.Mouse, d.Animations = true, true

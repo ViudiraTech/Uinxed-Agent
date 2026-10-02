@@ -103,6 +103,9 @@ func (m *Model) renderBase(t Theme) string {
 		Activities:      m.activities,
 		Hover:           m.hover,
 		Frame:           m.activityFrame,
+		Model:           m.session.Model,
+		CWD:             m.session.CWD,
+		HideBanner:      m.cfg.HideBanner,
 	})
 	for row, line := range convLines {
 		chatLines = append(chatLines, fitLine(line.Text, chatW))

@@ -387,6 +387,11 @@ func TestToolDisplayNamesMatchClaudeGrammar(t *testing.T) {
 func TestModernRenderBaseLayout(t *testing.T) {
 	m := newMouseTestModel(t)
 	m.width, m.height = 100, 30
+	// A populated session, because the invariant here is that the transcript
+	// itself is never boxed. The welcome card an empty session opens with is a
+	// deliberate exception and has its own test.
+	m.session.Messages = []domain.Message{{ID: "u1", Role: domain.RoleUser, Content: "hello"}}
+	m.conv.SetSession(m.session, 100)
 	v := m.renderBase(ThemeByName("uinxed"))
 	plain := stripANSI(v)
 	if strings.Contains(plain, "╭─") || strings.Contains(plain, "╰─") {

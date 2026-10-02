@@ -363,6 +363,11 @@ type RenderOptions struct {
 	Activities      []domain.ToolActivity
 	Hover           string
 	Frame           int
+	// Banner inputs. The conversation owns the welcome card because it is the
+	// only thing that knows whether the session is empty.
+	Model      string
+	CWD        string
+	HideBanner bool
 }
 
 func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine {
@@ -420,6 +425,13 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 		b := convBlock{ID: "__stream__", StreamID: o.StreamMessageID, Role: domain.RoleAssistant, Content: streamContent, Reasoning: streamReasoning, Estimate: streamEst, Version: len(streamContent) + len(streamReasoning)}
 		lines = append(lines, c.renderCached(&b, t, acts, hover, o.Frame)...)
 	}
+	// A session with no messages shows what to do next. The card is transcript
+	// content, so it leaves with the first message instead of holding a header
+	// row for the life of the session.
+	banner := len(lines) == 0 && len(c.blocks) == 0 && !o.HideBanner
+	if banner {
+		lines = append(lines, bannerLines(t, c.width, o.Model, o.CWD)...)
+	}
 	// Slice from bottom using actual visible line list. When scrolled far into lazily skipped blocks,
 	// estimates keep the location stable while only overscan blocks are materialized.
 	if len(lines) > height {
@@ -439,9 +451,11 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 	// the top; while scrolled back the remaining content belongs below.
 	if pad := height - len(lines); pad > 0 {
 		blank := make([]renderLine, pad)
-		if c.scroll == 0 {
+		if c.scroll == 0 && !banner {
 			lines = append(blank, lines...)
 		} else {
+			// The welcome card is top-anchored: it reads from the top of an empty
+			// screen, so the free space belongs beneath it.
 			lines = append(lines, blank...)
 		}
 	}
