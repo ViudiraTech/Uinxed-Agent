@@ -319,6 +319,25 @@ func BenchmarkRenderBaseFrame(b *testing.B) {
 	}
 }
 
+// BenchmarkRenderBaseFrameBusy is the same full repaint with a turn running.
+// The working line is rendered outside the conversation's block cache on
+// purpose — that is what keeps a 120ms animation from invalidating every cached
+// block — so it is redrawn on every frame. This is the cost that buys it.
+func BenchmarkRenderBaseFrameBusy(b *testing.B) {
+	m := layoutModelB(b)
+	m.width, m.height = 120, 40
+	m.busy, m.busySince = true, time.Now().Add(-90*time.Second)
+	m.turnVerb = workingVerbs[0]
+	m.turnUsage = domain.Usage{OutputTokens: 18300}
+	m.resize()
+	m.prompt.SetValue("把 token 校验也一起拆了")
+	t := themeFor(m.cfg)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		m.renderBase(t)
+	}
+}
+
 // layoutModelB is layoutModel for benchmarks.
 func layoutModelB(b *testing.B) *Model {
 	b.Helper()

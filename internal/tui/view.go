@@ -80,17 +80,25 @@ func (m *Model) renderBase(t Theme) string {
 	promptFrameH := promptH + 2 // one rule above, one below
 	spacerH := 1                // breathing room between transcript and composer
 	chipH := len(chips)
-	chatH := height - statusH - promptFrameH - spacerH - len(sugg) - chipH
+	// The working line sits between the chips and the composer's top rule, the
+	// way Claude Code anchors it to the input rather than to the status row. Its
+	// height is reserved before anything renders, so starting a turn does not
+	// shorten the transcript and make the view jump.
+	workH := 0
+	if m.workingLineVisible() {
+		workH = 1
+	}
+	chatH := height - statusH - promptFrameH - spacerH - len(sugg) - chipH - workH
 	if chatH < 4 {
 		chatH = 4
 	}
-	if total := statusH + promptFrameH + spacerH + len(sugg) + chipH + chatH; total > height {
+	if total := statusH + promptFrameH + spacerH + len(sugg) + chipH + workH + chatH; total > height {
 		chatH = max(1, chatH-(total-height))
 	}
 
 	m.layout.chat = Rect{chatX, 0, chatW, chatH}
 	m.layout.sidebar = Rect{0, 0, sidebarW, max(0, height-statusH)}
-	m.layout.prompt = Rect{chatX, chatH + spacerH + len(sugg) + chipH, chatW, promptFrameH}
+	m.layout.prompt = Rect{chatX, chatH + spacerH + len(sugg) + chipH + workH, chatW, promptFrameH}
 	m.layout.status = Rect{0, height - 1, width, 1}
 	m.layout.chatX = chatX
 
@@ -127,6 +135,9 @@ func (m *Model) renderBase(t Theme) string {
 	// part of the input rather than as transcript content.
 	for _, chip := range chips {
 		chatLines = append(chatLines, chip)
+	}
+	if workH > 0 {
+		chatLines = append(chatLines, fitLine(m.renderWorkingLine(t), chatW))
 	}
 	chatLines = append(chatLines, rule())
 
@@ -784,19 +795,14 @@ func maskConnectInput(s string, step int) string {
 	return "> " + strings.Repeat("*", min(48, len([]rune(s))))
 }
 
-// busyIndicator renders the right-hand side of the status row: elapsed time and
-// an explicit interrupt hint while a turn runs, a transient toast, or the
-// shortcuts hint when idle.
+// busyIndicator renders the right-hand side of the status row. While a turn
+// runs it carries just the interrupt hint — the spinner, verb, elapsed time and
+// token count moved into the transcript's working line, which is where Claude
+// Code puts them and where they sit next to the input being typed into. The
+// transient toast, error text and status-command output still surface here.
 func (m *Model) busyIndicator(t Theme) string {
 	if m.busy {
-		spin := t.Glyphs.spinner(m.activityFrame)
-		elapsed := ""
-		if !m.busySince.IsZero() {
-			if d := time.Since(m.busySince); d >= time.Second {
-				elapsed = " " + d.Round(time.Second).String()
-			}
-		}
-		return lipgloss.NewStyle().Foreground(t.Warning).Render(fmt.Sprintf("%s Working%s · esc to interrupt", spin, elapsed))
+		return lipgloss.NewStyle().Foreground(t.Muted).Render("esc to interrupt")
 	}
 	if m.toast != "" {
 		return lipgloss.NewStyle().Foreground(t.Accent).Render(terminalutil.SanitizeText(m.toast))

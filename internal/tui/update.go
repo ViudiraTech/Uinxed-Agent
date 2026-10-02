@@ -188,6 +188,7 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 				m.busy = true
 				m.busySince = time.Now()
 				m.mainRunID = a.Run.ID
+				m.beginTurn()
 				if m.cfg.Animations {
 					return animationTick()
 				}
@@ -203,6 +204,7 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 			if a.Run.SessionID == m.session.ID {
 				m.busy = false
 				m.mainRunID = ""
+				m.finishTurn()
 				return tea.Batch(m.reloadSession(), m.autoTitle())
 			}
 			m.upsertSubagent(a.Run)
@@ -212,6 +214,7 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 			if d, ok := e.Data.(domain.StreamDelta); ok {
 				m.streamMessageID = d.MessageID
 				m.streamContent += d.Text
+				m.touchActivity()
 			}
 		} else {
 			m.touchSubagentHeartbeat(e.RunID, e.SessionID)
@@ -221,6 +224,7 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 			if d, ok := e.Data.(domain.ReasoningDelta); ok {
 				m.streamMessageID = d.MessageID
 				m.streamReasoning += d.Text
+				m.touchActivity()
 			}
 		} else {
 			m.touchSubagentHeartbeat(e.RunID, e.SessionID)
@@ -238,6 +242,7 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 		if e.SessionID == m.session.ID {
 			if d, ok := e.Data.(domain.ToolEvent); ok {
 				m.mergeActivity(d.Activity)
+				m.touchActivity()
 			}
 		} else if d, ok := e.Data.(domain.ToolEvent); ok {
 			// Child-session tool activity belongs to a delegate subagent.
@@ -251,6 +256,9 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 		if e.SessionID == m.session.ID {
 			if d, ok := e.Data.(domain.ToolEvent); ok {
 				m.mergeActivity(d.Activity)
+				// A tool streaming output is working, not stalled: without this
+				// a long build would ramp the working line toward the error color.
+				m.touchActivity()
 			}
 		}
 		// Deliberately ignored for subagents: output chunks arrive at byte
@@ -287,6 +295,14 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 					m.session.Metadata = map[string]any{}
 				}
 				m.session.Metadata["mode"] = d.Mode
+			}
+		}
+	case domain.EventUsageChanged:
+		if e.SessionID == m.session.ID {
+			if u, ok := e.Data.(domain.Usage); ok {
+				// The runtime reports this cumulatively for the turn, which is
+				// exactly what the working line's counter wants to show.
+				m.turnUsage = u
 			}
 		}
 	case domain.EventCompaction:
@@ -1087,11 +1103,13 @@ func (m *Model) handleOp(x opMsg) tea.Cmd {
 	case "submit":
 		m.busy = true
 		m.busySince = time.Now()
+		m.beginTurn()
 	case "start_subagent":
 		if child, ok := x.value.(domain.Session); ok {
 			m.setSession(child)
 			m.busy = true
 			m.busySince = time.Now()
+			m.beginTurn()
 			return m.refreshSessions()
 		}
 	case "switch_session":

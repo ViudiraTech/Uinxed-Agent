@@ -83,6 +83,14 @@ type Model struct {
 	overlayScroll       int
 	activityFrame       int
 	statusCmdText       string
+	// Working-line state. The verb is drawn once per turn so it holds still
+	// instead of reshuffling every frame, and turnUsage is the cumulative count
+	// the runtime reports for the turn (see internal/tui/working.go).
+	turnVerb       string
+	completionVerb string
+	turnElapsed    time.Duration
+	turnUsage      domain.Usage
+	lastActivityAt time.Time
 	// approval is the currently presented prompt, if any. It lives outside the
 	// overlay queue: an approval raised by a delegate child must be visible
 	// regardless of which session the user is browsing.
@@ -194,6 +202,13 @@ func asyncOp(op string, fn func() (any, error)) tea.Cmd {
 }
 
 func (m *Model) setSession(s domain.Session) {
+	if m.session.ID != s.ID {
+		// Per-turn working-line state belongs to the session that produced it.
+		// This must be keyed on an actual change: EventAgentFinished reloads the
+		// same session, and clearing unconditionally would wipe the settled line
+		// the instant it appeared.
+		m.clearWorkingLine()
+	}
 	m.session = s
 	m.activities = m.activities[:0]
 	for _, a := range s.ToolActivities {
