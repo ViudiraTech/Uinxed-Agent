@@ -237,6 +237,10 @@ func (r *Runtime) runTurn(ctx context.Context, sessionID, text, runID string) er
 }
 
 func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, runID string) error {
+	// turnUsage spans the whole turn. Each round below reports its own usage, and
+	// a consumer showing "what has this turn cost" would otherwise watch the
+	// number fall back to near zero every time a tool round started.
+	var turnUsage domain.Usage
 	for round := 0; round < r.maxToolRounds; round++ {
 		select {
 		case <-ctx.Done():
@@ -278,7 +282,7 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 				acc.Add(ev.ToolCalls)
 			case provider.EventUsage:
 				usage = mergeUsage(usage, ev.Usage)
-				r.emit(ctx, domain.NewEvent(domain.EventUsageChanged, sess.ID, usage))
+				r.emit(ctx, domain.NewEvent(domain.EventUsageChanged, sess.ID, addUsage(turnUsage, usage)))
 			case provider.EventDone:
 				done = true
 			case provider.EventError:
@@ -287,6 +291,7 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 				}
 			}
 		}
+		turnUsage = addUsage(turnUsage, usage)
 		message.ToolCalls = acc.Calls()
 		if message.Content != "" || message.ReasoningContent != "" || len(message.ToolCalls) > 0 {
 			st.mu.Lock()
@@ -984,6 +989,20 @@ func (r *Runtime) saveFinal(sess domain.Session) error {
 func (r *Runtime) id(prefix string) string {
 	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixMilli(), r.seq.Add(1))
 }
+
+// addUsage folds one round's usage into a turn total. Output tokens sum, because
+// they are what the turn actually produced. Input tokens replace instead: every
+// round resends the whole context, so summing them would count the same prompt
+// once per tool round and inflate the number with each tool call.
+func addUsage(turn, round domain.Usage) domain.Usage {
+	turn.OutputTokens += round.OutputTokens
+	if round.InputTokens != 0 {
+		turn.InputTokens = round.InputTokens
+	}
+	turn.TotalTokens = turn.InputTokens + turn.OutputTokens
+	return turn
+}
+
 func mergeUsage(a, b domain.Usage) domain.Usage {
 	if b.InputTokens != 0 {
 		a.InputTokens = b.InputTokens

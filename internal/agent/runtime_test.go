@@ -479,3 +479,38 @@ func (*scriptedOffsetProvider) Models(context.Context) ([]string, error) {
 	return []string{"test"}, nil
 }
 func (*scriptedOffsetProvider) CheckKey(context.Context, string) error { return nil }
+
+// A turn spans several model rounds. Output tokens must accumulate across them —
+// a consumer showing "what this turn has written" cannot be allowed to watch the
+// number reset every time a tool round begins. Input tokens must not accumulate,
+// because each round resends the whole context and summing would count the same
+// prompt once per tool call.
+func TestAddUsageAccumulatesOutputButNotInput(t *testing.T) {
+	var turn domain.Usage
+	turn = addUsage(turn, domain.Usage{InputTokens: 1200, OutputTokens: 300})
+	if turn.OutputTokens != 300 || turn.InputTokens != 1200 {
+		t.Fatalf("first round = %#v", turn)
+	}
+	turn = addUsage(turn, domain.Usage{InputTokens: 1800, OutputTokens: 450})
+	if turn.OutputTokens != 750 {
+		t.Fatalf("output tokens must sum across rounds, got %d want 750", turn.OutputTokens)
+	}
+	if turn.InputTokens != 1800 {
+		t.Fatalf("input tokens must reflect the latest round, got %d want 1800", turn.InputTokens)
+	}
+	if turn.TotalTokens != 2550 {
+		t.Fatalf("total = %d, want 2550", turn.TotalTokens)
+	}
+}
+
+// A round that reports no input (some gateways only send output) must not erase
+// the input count already accumulated.
+func TestAddUsageKeepsInputWhenARoundOmitsIt(t *testing.T) {
+	turn := addUsage(domain.Usage{InputTokens: 900}, domain.Usage{OutputTokens: 50})
+	if turn.InputTokens != 900 {
+		t.Fatalf("input = %d, want the earlier 900", turn.InputTokens)
+	}
+	if turn.OutputTokens != 50 {
+		t.Fatalf("output = %d, want 50", turn.OutputTokens)
+	}
+}
