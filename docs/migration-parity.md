@@ -54,8 +54,8 @@ This matrix is based on the previous master implementation, not README claims al
 | Hover enhancement | absent/limited legacy | all-motion hover for clickable tool/reasoning/picker regions | TUI implementation |
 | Configurable mouse capture | new | `/mouse`, `--no-mouse` | config/TUI implementation |
 | Ctrl+T | legacy | reasoning toggle | TUI implementation |
-| Ctrl+O | legacy | Todo toggle | TUI implementation |
-| Ctrl+E | current master footer/behavior | tool-details toggle | TUI implementation |
+| Ctrl+O | legacy | tool-details toggle (the cards advertise it); the todos overlay is `/todos` | TUI implementation |
+| Ctrl+E | current master footer/behavior | alias for Ctrl+O | TUI implementation |
 | Tab Agent switch | legacy | primary Agent cycle | TUI implementation |
 | `/provider` | legacy | preserved | command layer |
 | `/connect` | legacy | preserved | connect wizard |
