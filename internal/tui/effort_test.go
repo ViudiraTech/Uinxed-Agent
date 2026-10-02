@@ -9,9 +9,9 @@ import (
 	"github.com/ViudiraTech/Uinxed-Agent/internal/config"
 )
 
-// The caret is placed by column arithmetic rather than by hand-padding, so this
-// is what keeps it pointing at the stop it claims to mark.
-func TestEffortCaretSitsUnderTheSelectedStop(t *testing.T) {
+// The marker rides the track and has to sit above its own label — that is what
+// makes this a scale rather than a cursor parked somewhere along a line.
+func TestEffortMarkerSitsAboveItsOwnLabel(t *testing.T) {
 	levels := config.EffortLevels()
 	for sel, want := range levels {
 		m := layoutModel(t)
@@ -20,17 +20,28 @@ func TestEffortCaretSitsUnderTheSelectedStop(t *testing.T) {
 		if len(lines) < 4 {
 			t.Fatalf("slider rendered %d lines", len(lines))
 		}
-		scale := stripANSI(lines[2])
-		caret := stripANSI(lines[3])
-		col := strings.Index(caret, "▲")
-		if col < 0 {
-			t.Fatalf("%s: no caret on %q", want, caret)
+		// Measured in display columns, not bytes: the rule glyph is three bytes
+		// wide in UTF-8 and one column on screen, and indexing the string
+		// directly would silently compare the wrong positions.
+		track := []rune(stripANSI(lines[2]))
+		labels := []rune(stripANSI(lines[3]))
+		marker := -1
+		for i, r := range track {
+			if r == '▲' {
+				marker = i
+				break
+			}
 		}
-		if col+len(want) > len(scale) {
-			t.Fatalf("%s: caret at column %d runs past the scale %q", want, col, scale)
+		if marker < 0 {
+			t.Fatalf("%s: no marker on the track %q", want, string(track))
 		}
-		if got := scale[col : col+len(want)]; got != want {
-			t.Fatalf("caret at column %d points at %q, want %q\nscale: %q", col, got, want, scale)
+		col := lipgloss.Width(string(track[:marker]))
+		from := col - len(want)/2
+		if from < 0 || from+len(want) > len(labels) {
+			t.Fatalf("%s: marker at column %d is off the label row %q", want, col, string(labels))
+		}
+		if got := string(labels[from : from+len(want)]); got != want {
+			t.Fatalf("%s: marker at column %d sits above %q, not %q", want, col, got, want)
 		}
 	}
 }
@@ -163,8 +174,8 @@ func TestEffortSliderCarriesTheRippleWhenSupercodeIsOn(t *testing.T) {
 	m.session.Metadata = map[string]any{"supercode": true}
 	on := stripANSI(strings.Join(m.renderEffortSlider(th, 80), "\n"))
 
-	if !strings.Contains(on, "supercode on") {
-		t.Fatalf("the badge is missing:\n%s", on)
+	if !strings.Contains(on, "┊  supercode") {
+		t.Fatalf("the scale should hang supercode off its own divider:\n%s", on)
 	}
 	if len(on) <= len(off) {
 		t.Fatal("supercode on should add the ripple row to the slider")

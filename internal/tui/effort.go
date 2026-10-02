@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/config"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // effortGuide pairs each level with what it is for. The guide line is the point
@@ -226,63 +227,111 @@ func (m *Model) supercodeRule(t Theme, w int, base lipgloss.Style) string {
 	return b.String()
 }
 
-// renderEffortSlider draws the reasoning scale: the stops in a row with the
-// chosen one highlighted and a caret beneath it, that stop's guide line below,
-// and the keys last.
+// wrapGuide word-wraps the guide line. wrapPlain hard-wraps, which is right for
+// paths and identifiers — breaking those anywhere is harmless — but wrong for a
+// sentence, where it drops half a word onto the next line.
+func wrapGuide(s string, width int) []string {
+	if width < 8 {
+		width = 8
+	}
+	return strings.Split(ansi.Wordwrap(s, width, "-"), "\n")
+}
+
+// renderEffortSlider draws the reasoning scale the way Claude Code does:
 //
-// There is deliberately no animation here. Claude Code's slider is a highlight
-// and a description that changes as you move; the animated part of this feature
-// is the composer border, which shimmers while supercode is on.
+//	Speed                                     Intelligence
+//
+//	──────────────────────────▲──────────────────────────────
+//	    low    medium    high     xhigh        max     ┊  supercode
+//
+// The track and its marker come first and the labels sit under it, so the marker
+// reads as a position on a scale rather than as a cursor in a list. Speed and
+// Intelligence label the two ends, because that is the trade being made.
 func (m *Model) renderEffortSlider(t Theme, w int) []string {
 	levels := config.EffortLevels()
 	sel := min(max(0, m.effortSel), len(levels)-1)
+	inner := max(24, w-2)
 
 	title := lipgloss.NewStyle().Bold(true).Foreground(t.Secondary)
-	on := lipgloss.NewStyle().Bold(true).Foreground(t.Primary)
-	off := lipgloss.NewStyle().Foreground(t.Muted)
+	dim := lipgloss.NewStyle().Foreground(t.Muted)
+	pick := lipgloss.NewStyle().Bold(true).Foreground(t.Primary)
 	guide := lipgloss.NewStyle().Foreground(t.Text)
+	line := lipgloss.NewStyle().Foreground(t.Border)
 
-	head := title.Render("Reasoning effort")
-	var out []string
-	if m.supercodeOn() {
-		head += on.Render("   supercode on")
-		out = append(out, head)
-		// The same wave the composer border carries, so the mode reads the same
-		// whether you are looking at the slider or at the input.
-		out = append(out, m.supercodeRule(t, min(max(20, w-4), 60), lipgloss.NewStyle().Foreground(t.Border)))
-	} else {
-		out = append(out, head)
+	// The two ends of the trade, right-aligned against each other.
+	head := title.Render("Speed")
+	right := title.Render("Intelligence")
+	if pad := inner - lipgloss.Width(head) - lipgloss.Width(right); pad > 0 {
+		head += strings.Repeat(" ", pad) + right
 	}
-	out = append(out, "")
+	out := []string{head, ""}
 
-	// The stops are laid out first so the caret can be placed under the chosen
-	// one by column rather than by guessing at the padding.
-	const gap = 4
-	offsets := make([]int, len(levels))
-	var row strings.Builder
-	row.WriteString("  ")
-	col := 2
+	// supercode rides past a divider at the end of the scale: Claude Code hangs
+	// ultracode off the same track rather than giving it a stop among the levels,
+	// because it is a mode, not a deeper setting of the same dial. Its width is
+	// reserved before the labels are spread, or they take the room it needs and
+	// push it off the end.
+	const tailText = "  ┊  supercode"
+	tailW := 0
+	if inner-len(tailText) > 24 {
+		tailW = lipgloss.Width(tailText)
+	}
+	avail := inner - tailW
+
+	// Stops are spread evenly across the track, which is what puts the marker
+	// above its own label rather than merely somewhere along the line.
+	n := len(levels)
+	labelW := 0
+	for _, lv := range levels {
+		labelW += len(lv)
+	}
+	gap := 2
+	if n > 1 {
+		if g := (avail - labelW) / (n - 1); g > gap {
+			gap = g
+		}
+	}
+	var labels strings.Builder
+	starts := make([]int, n)
+	col := 0
 	for i, lv := range levels {
 		if i > 0 {
-			row.WriteString(strings.Repeat(" ", gap))
+			labels.WriteString(strings.Repeat(" ", gap))
 			col += gap
 		}
-		offsets[i] = col
+		starts[i] = col
 		if i == sel {
-			row.WriteString(on.Render(lv))
+			labels.WriteString(pick.Render(lv))
 		} else {
-			row.WriteString(off.Render(lv))
+			labels.WriteString(dim.Render(lv))
 		}
-		col += lipgloss.Width(lv)
+		col += len(lv)
 	}
-	out = append(out, row.String())
-	out = append(out, strings.Repeat(" ", offsets[sel])+on.Render(t.Glyphs.Caret))
 
-	body := w - 4
-	if body < 10 {
-		body = 10
+	// supercode rides past a divider at the end of the scale: Claude Code hangs
+	// ultracode off the same track rather than giving it a stop among the levels,
+	// because it is a mode and not a deeper setting of the same dial.
+	var tail string
+	if tailW > 0 {
+		style := dim
+		if m.supercodeOn() {
+			style = pick
+		}
+		tail = dim.Render("  ┊  ") + style.Render("supercode")
 	}
-	for _, l := range wrapPlain(effortGuide[levels[sel]], body) {
+
+	markerAt := starts[sel] + len(levels[sel])/2
+	track := strings.Repeat(t.Glyphs.Rule, markerAt) + pick.Render(t.Glyphs.Caret) +
+		line.Render(strings.Repeat(t.Glyphs.Rule, max(0, avail-markerAt-1)))
+	out = append(out, track)
+	out = append(out, labels.String()+tail)
+	if m.supercodeOn() {
+		out = append(out, m.supercodeRule(t, min(max(20, inner), 60), line))
+	}
+
+	out = append(out, "")
+	body := max(12, inner-2)
+	for _, l := range wrapGuide(effortGuide[levels[sel]], body) {
 		out = append(out, "  "+guide.Render(l))
 	}
 
@@ -291,6 +340,6 @@ func (m *Model) renderEffortSlider(t Theme, w int) []string {
 	if m.supercodeOn() {
 		flip = "tab supercode off"
 	}
-	out = append(out, off.Render("  ← → choose · enter save as default · s this session only · "+flip+" · esc cancel"))
+	out = append(out, dim.Render("  ←/→ adjust · enter save as default · s this session only · "+flip+" · esc cancel"))
 	return out
 }
