@@ -199,7 +199,7 @@ Type `/` in the prompt or press `Ctrl+P` to access commands:
 | `/model` | Provider | Switch model for active session |
 | `/key` | Provider | Set or update encrypted API key |
 | `/thinking` | Reasoning | Toggle reasoning mode on/off |
-| `/effort` | Reasoning | Set reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`, `supercode`) |
+| `/effort` | Reasoning | Open the effort slider. `/effort auto` clears the session's level; `/effort supercode` toggles orchestration |
 | `/agent` | Agent | Switch primary agent (`build`, `coding`, `plan`) |
 | `/diff` | Git | Open interactive visual diff viewer with per-file navigation |
 | `/todos` | Tasks | View task progress and checklist items |
@@ -248,7 +248,9 @@ Uinxed-Agent features a hierarchical multi-agent architecture designed for auton
 - **`general`**: Versatile worker for running benchmarks, compiling dependencies, or multi-step tasks.
 
 ### ⚡ Supercode Mode
-Activate `supercode` effort via `/effort supercode` to enable high-concurrency multi-subagent orchestration. Complex prompts are automatically decomposed into parallel subagent workflows that explore, implement, and verify simultaneously.
+Toggle `supercode` with `/effort supercode`, or by pressing `Tab` in the effort slider. Complex prompts are decomposed into parallel subagent workflows that explore, implement and verify at once.
+
+`supercode` is deliberately **not** an effort level: it answers "fan the work out", not "think harder", and turning it on leaves the reasoning level alone. While it is on, the composer's top border carries a rainbow ripple and a `supercode` tag, so the mode is visible without opening the slider.
 
 ---
 

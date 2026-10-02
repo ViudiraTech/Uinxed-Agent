@@ -13,7 +13,7 @@ This matrix is based on the previous master implementation, not README claims al
 | Responses API | `provider.js` | `provider/openai.go` | Responses SSE tests |
 | Provider reasoning | `provider.js`, `Thinking.jsx` | normalized reasoning events/TUI | provider + TUI tests |
 | `low..max` effort | `App.jsx` | config/runtime/provider | command/provider paths |
-| `supercode` | current master source | runtime orchestration + provider max effort | config/runtime paths |
+| `supercode` | current master source | runtime orchestration, now a toggle separate from the effort level | config/runtime paths |
 | Local gateway | `config.js` / `provider.js` | built-in provider | provider implementation |
 | DeepSeek | `config.js` / `provider.js` | built-in provider | provider implementation |
 | Custom OpenAI-compatible provider | `/connect` | connect wizard + persisted provider | command path |
