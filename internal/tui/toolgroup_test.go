@@ -229,3 +229,42 @@ func TestSettledSubagentDoesNotAttach(t *testing.T) {
 		t.Fatalf("a finished run should not report live progress:\n%s", out)
 	}
 }
+
+// A call the model has already emitted has to be visible before its round
+// settles. It used to stay invisible until then, which read as the tool cards
+// only showing up once the turn stopped — cancelling flushed the accumulated
+// calls into a message, which is why pressing esc made them appear.
+func TestStreamedToolCallRendersBeforeTheRoundSettles(t *testing.T) {
+	c := NewConversation()
+	c.SetSession(domain.Session{ID: "s", Messages: []domain.Message{
+		{ID: "u1", Role: domain.RoleUser, Content: "do the thing"},
+	}}, 60)
+
+	if out := renderConversation(c, RenderOptions{StreamContent: "starting"}); strings.Contains(out, "Read(") {
+		t.Fatalf("no tool call has been emitted yet:\n%s", out)
+	}
+
+	out := renderConversation(c, RenderOptions{
+		StreamContent: "starting",
+		StreamToolCalls: []domain.ToolCall{{ID: "c0", Function: domain.ToolCallFunction{
+			Name: "read_file", Arguments: `{"path":"a.go"}`,
+		}}},
+	})
+	if !strings.Contains(out, "Read(a.go)") {
+		t.Fatalf("a streamed call must render before its round settles:\n%s", out)
+	}
+}
+
+// A call can arrive with no accompanying text, so the live block's version has to
+// move on the call itself or the render cache serves the block from before it.
+func TestStreamedToolCallMovesTheLiveBlockVersion(t *testing.T) {
+	calls := []domain.ToolCall{{ID: "c0", Function: domain.ToolCallFunction{
+		Name: "read_file", Arguments: `{"path":"a.go"}`,
+	}}}
+	if streamVersion("same", "", nil) == streamVersion("same", "", calls) {
+		t.Fatal("a newly streamed call must change the live block's version")
+	}
+	if streamVersion("a", "", calls) == streamVersion("ab", "", calls) {
+		t.Fatal("streamed text must still change the version")
+	}
+}

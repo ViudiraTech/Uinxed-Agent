@@ -100,6 +100,7 @@ func (m *Model) renderBase(t Theme) string {
 		StreamContent:   m.streamContent,
 		StreamReasoning: m.streamReasoning,
 		StreamMessageID: m.streamMessageID,
+		StreamToolCalls: m.streamToolCalls,
 		Activities:      m.activities,
 		Hover:           m.hover,
 		Frame:           m.activityFrame,

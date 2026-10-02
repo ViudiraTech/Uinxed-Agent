@@ -65,21 +65,24 @@ type Model struct {
 	streamContent       string
 	streamReasoning     string
 	streamMessageID     string
-	activities          []domain.ToolActivity
-	subagents           map[string]domain.AgentRun
-	subagentProgress    map[string]subagentProgress
-	regions             []Region
-	hover               string
-	layout              layoutState
-	history             []string
-	historyIndex        int
-	commandMatches      []PickerItem
-	atMatches           []PickerItem
-	connect             connectWizard
-	confirmTarget       string
-	overlayScroll       int
-	activityFrame       int
-	statusCmdText       string
+	// streamToolCalls are the calls the current round has emitted so far. They
+	// are promoted into a real message when the round settles.
+	streamToolCalls  []domain.ToolCall
+	activities       []domain.ToolActivity
+	subagents        map[string]domain.AgentRun
+	subagentProgress map[string]subagentProgress
+	regions          []Region
+	hover            string
+	layout           layoutState
+	history          []string
+	historyIndex     int
+	commandMatches   []PickerItem
+	atMatches        []PickerItem
+	connect          connectWizard
+	confirmTarget    string
+	overlayScroll    int
+	activityFrame    int
+	statusCmdText    string
 	// Working-line state. The verb is drawn once per turn so it holds still
 	// instead of reshuffling every frame, and turnUsage is the cumulative count
 	// the runtime reports for the turn (see internal/tui/working.go).

@@ -229,6 +229,13 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 		} else {
 			m.touchSubagentHeartbeat(e.RunID, e.SessionID)
 		}
+	case domain.EventToolCallDelta:
+		if e.SessionID == m.session.ID {
+			if calls, ok := e.Data.([]domain.ToolCall); ok {
+				m.streamToolCalls = calls
+				m.touchActivity()
+			}
+		}
 	case domain.EventMessageAdded:
 		// A turn is made of several model rounds; each finished round arrives
 		// here already persisted. Settling it immediately is what keeps one
@@ -481,6 +488,7 @@ func (m *Model) settleMessage(msg domain.Message) {
 		m.streamContent = ""
 		m.streamReasoning = ""
 		m.streamMessageID = ""
+		m.streamToolCalls = nil
 		return
 	}
 	m.session.Messages = append(m.session.Messages, msg)
@@ -488,6 +496,7 @@ func (m *Model) settleMessage(msg domain.Message) {
 	m.streamContent = ""
 	m.streamReasoning = ""
 	m.streamMessageID = ""
+	m.streamToolCalls = nil
 	m.conv.SetSession(m.session, m.conv.width)
 }
 

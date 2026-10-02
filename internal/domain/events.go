@@ -11,6 +11,12 @@ const (
 	EventStreamDelta    EventKind = "stream.delta"
 	EventReasoningDelta EventKind = "stream.reasoning"
 	EventMessageAdded   EventKind = "message.added"
+	// EventToolCallDelta carries the tool calls a model round has accumulated so
+	// far, before the round ends. Without it a call the model has already emitted
+	// stays invisible until the round settles — which reads as the tool cards only
+	// appearing when the turn stops. The payload is the whole accumulated set, so
+	// a consumer replaces rather than appends.
+	EventToolCallDelta  EventKind = "toolcall.delta"
 	EventToolStarted    EventKind = "tool.started"
 	EventToolOutput     EventKind = "tool.output"
 	EventToolFinished   EventKind = "tool.finished"

@@ -280,6 +280,9 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 				r.emit(ctx, domain.Event{Kind: domain.EventReasoningDelta, SessionID: sess.ID, RunID: runID, At: time.Now(), Data: domain.ReasoningDelta{MessageID: message.ID, Text: ev.Text}})
 			case provider.EventToolCall:
 				acc.Add(ev.ToolCalls)
+				// The streamed call is only persisted when the round ends, so
+				// without this the UI has nothing to draw until then.
+				r.emit(ctx, domain.NewEvent(domain.EventToolCallDelta, sess.ID, acc.Calls()))
 			case provider.EventUsage:
 				usage = mergeUsage(usage, ev.Usage)
 				r.emit(ctx, domain.NewEvent(domain.EventUsageChanged, sess.ID, addUsage(turnUsage, usage)))

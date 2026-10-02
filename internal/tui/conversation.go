@@ -366,6 +366,9 @@ type RenderOptions struct {
 	StreamContent   string
 	StreamReasoning string
 	StreamMessageID string
+	// StreamToolCalls are the calls the current round has emitted but not yet
+	// settled into a message.
+	StreamToolCalls []domain.ToolCall
 	Activities      []domain.ToolActivity
 	Hover           string
 	Frame           int
@@ -385,6 +388,7 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 		return nil
 	}
 	streamContent, streamReasoning := o.StreamContent, o.StreamReasoning
+	streamCalls := sanitizeToolCalls(o.StreamToolCalls)
 	activities, hover := o.Activities, o.Hover
 	c.applyTheme(t)
 	// Refreshed per frame alongside the theme, so a running delegate call can
@@ -398,7 +402,7 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 	total := c.totalEstimate()
 	streamEst := 0
 	if streamContent != "" || streamReasoning != "" {
-		streamEst = estimateBlockWithReasoning(streamContent, streamReasoning, width, 0, c.reasoningExpanded("__stream__"))
+		streamEst = estimateBlockWithReasoning(streamContent, streamReasoning, width, toolRows(streamCalls), c.reasoningExpanded("__stream__"))
 	}
 	total += streamEst
 	bottom := total - c.scroll
@@ -435,8 +439,8 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 		}
 		pos += b.Estimate
 	}
-	if streamContent != "" || streamReasoning != "" {
-		b := convBlock{ID: "__stream__", StreamID: o.StreamMessageID, Role: domain.RoleAssistant, Content: streamContent, Reasoning: streamReasoning, Estimate: streamEst, Version: len(streamContent) + len(streamReasoning)}
+	if streamContent != "" || streamReasoning != "" || len(streamCalls) > 0 {
+		b := convBlock{ID: "__stream__", StreamID: o.StreamMessageID, Role: domain.RoleAssistant, Content: streamContent, Reasoning: streamReasoning, ToolCalls: streamCalls, Estimate: streamEst, Version: streamVersion(streamContent, streamReasoning, streamCalls)}
 		lines = append(lines, c.renderCached(&b, t, acts, hover, o.Frame)...)
 	}
 	// A session with no messages shows what to do next. The card is transcript
@@ -1023,6 +1027,17 @@ func (c *Conversation) totalEstimate() int {
 	n := 0
 	for _, b := range c.blocks {
 		n += b.Estimate
+	}
+	return n
+}
+
+// streamVersion is the live block's content version. A tool call can arrive with
+// no accompanying text, so the call itself has to move the version or the render
+// cache would keep serving the block from before it appeared.
+func streamVersion(content, reasoning string, calls []domain.ToolCall) int {
+	n := len(content) + len(reasoning)
+	for _, tc := range calls {
+		n += len(tc.Function.Name) + len(tc.Function.Arguments) + 1
 	}
 	return n
 }
