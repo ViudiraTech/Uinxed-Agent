@@ -146,6 +146,24 @@ func namedTheme(name string) Theme {
 			Tool: lipgloss.Color("#C084FC"), User: lipgloss.Color("#38BDF8"), Assistant: lipgloss.Color("#F8FAFC"),
 			Reasoning: lipgloss.Color("#64748B"), Gutter: lipgloss.Color("#475569"),
 		}}
+	// claude reproduces Claude Code's terminal palette. Primary and Secondary are
+	// its published brand tokens (theme.ts `claude` rgb(215,119,87) and
+	// `claudeShimmer` rgb(245,149,117)); Tool, Accent, Success and the diff pair
+	// are its published tool-block, bash-border, success-dot and diff colors. The
+	// remaining grays are derived — Claude Code defers body text to the
+	// terminal's own foreground and its background-bearing tokens have no
+	// counterpart here (see the Palette comment). Deliberately one dark-oriented
+	// palette: this app has no light/dark variant mechanism.
+	case "claude":
+		return Theme{Name: "claude", Palette: Palette{
+			Primary: lipgloss.Color("#D77757"), Secondary: lipgloss.Color("#F59575"), Accent: lipgloss.Color("#FF0087"),
+			Text: lipgloss.Color("#DEDEDE"), Muted: lipgloss.Color("#808080"), Border: lipgloss.Color("#4D4D4D"),
+			SelectionBg: lipgloss.Color("#D77757"), SelectionFg: lipgloss.Color("#1A1A1A"),
+			Success: lipgloss.Color("#4EBA65"), Warning: lipgloss.Color("#D7A657"), Error: lipgloss.Color("#FF5F5F"),
+			DiffAdd: lipgloss.Color("#4EBA65"), DiffDelete: lipgloss.Color("#FF5F5F"),
+			Tool: lipgloss.Color("#FD5DB1"), User: lipgloss.Color("#F59575"), Assistant: lipgloss.Color("#D77757"),
+			Reasoning: lipgloss.Color("#808080"), Gutter: lipgloss.Color("#666666"),
+		}}
 	default: // "uinxed"
 		return Theme{Name: "uinxed", Palette: Palette{
 			Primary: lipgloss.Color("#8B5CF6"), Secondary: lipgloss.Color("#06B6D4"), Accent: lipgloss.Color("#EC4899"),

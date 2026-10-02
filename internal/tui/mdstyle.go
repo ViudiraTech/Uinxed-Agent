@@ -12,6 +12,7 @@ import (
 // glamour's default is a light palette, which looks broken under every dark
 // theme this app ships.
 var chromaByTheme = map[string]string{
+	"claude":     "onedark",
 	"uinxed":     "onedark",
 	"tokyonight": "onedark",
 	"catppuccin": "catppuccin-mocha",

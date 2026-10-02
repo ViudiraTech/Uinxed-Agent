@@ -265,8 +265,10 @@ func TestStreamingAssistantUsesLightweightPlainRenderer(t *testing.T) {
 	}
 }
 
+// Driven from config.Themes() rather than a literal list: a hardcoded copy
+// silently stops covering a newly registered theme.
 func TestModernThemes(t *testing.T) {
-	for _, name := range []string{"uinxed", "tokyonight", "catppuccin", "gruvbox", "nord", "dracula", "dark", "light"} {
+	for _, name := range config.Themes() {
 		th := ThemeByName(name)
 		if th.Name != name {
 			t.Fatalf("theme name mismatch: got %s, want %s", th.Name, name)
@@ -280,6 +282,22 @@ func TestModernThemes(t *testing.T) {
 		if len(th.Glyphs.Spinner) == 0 {
 			t.Fatalf("theme %s has no spinner frames", name)
 		}
+	}
+}
+
+// namedTheme falls through to uinxed for an unrecognised name, so a mistyped
+// case label would silently render the wrong palette instead of failing. Pin the
+// brand token that identifies the claude theme.
+func TestClaudeThemeResolvesToBrandPalette(t *testing.T) {
+	th := ThemeByName("claude")
+	if th.Name != "claude" {
+		t.Fatalf("ThemeByName(claude).Name = %q; the case label is not matching", th.Name)
+	}
+	if got := hexColor(th.Primary); got != "#D77757" {
+		t.Fatalf("claude Primary = %s, want #D77757 (Claude Code's brand token)", got)
+	}
+	if got := hexColor(th.Tool); got != "#FD5DB1" {
+		t.Fatalf("claude Tool = %s, want #FD5DB1 (Claude Code's tool-block token)", got)
 	}
 }
 

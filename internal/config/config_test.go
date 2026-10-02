@@ -50,11 +50,59 @@ func TestLegacyConfigPreservesFalseThinkingAndDefaultsNewUI(t *testing.T) {
 	if !cfg.Mouse || !cfg.Animations {
 		t.Fatal("new UI options must default on for legacy config")
 	}
-	if cfg.Version != 2 {
-		t.Fatalf("version=%d", cfg.Version)
+	if cfg.Version != configVersion {
+		t.Fatalf("version=%d, want %d", cfg.Version, configVersion)
 	}
 	if cfg.ActiveProvider != "custom" || cfg.Model != "legacy-model" {
 		t.Fatalf("legacy provider/model lost: %#v", cfg)
+	}
+}
+
+// v3 moved the default theme from uinxed to claude. A config still sitting on
+// the old default has to move with it — an explicit "uinxed" is indistinguishable
+// from never having chosen — but a deliberate pick must survive, and once the
+// file records v3 a later switch back to uinxed has to stick.
+func TestThemeMigrationToClaudeDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  map[string]any
+		want string
+	}{
+		{"legacy file without a theme", map[string]any{"model": "m"}, "claude"},
+		{"old default moves with the default", map[string]any{"version": 2, "theme": "uinxed"}, "claude"},
+		{"a deliberate choice survives", map[string]any{"version": 2, "theme": "tokyonight"}, "tokyonight"},
+		{"v3 file switched back to uinxed sticks", map[string]any{"version": configVersion, "theme": "uinxed"}, "uinxed"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			b, _ := json.Marshal(c.raw)
+			if err := os.WriteFile(filepath.Join(dir, "config.json"), b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			s, err := NewStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := s.Snapshot().Theme; got != c.want {
+				t.Fatalf("theme=%q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestClaudeThemeIsRegisteredAndDefault(t *testing.T) {
+	if got := Defaults().Theme; got != "claude" {
+		t.Fatalf("Defaults().Theme = %q, want claude", got)
+	}
+	if !ValidTheme("claude") {
+		t.Fatal("claude must be a valid theme id")
+	}
+	if got := Themes()[0]; got != "claude" {
+		t.Fatalf("Themes() = %v; the default should lead the list", Themes())
+	}
+	if got := mergeDefaults(Config{Theme: "not-a-theme"}).Theme; got != "claude" {
+		t.Fatalf("an unknown theme should fall back to the default, got %q", got)
 	}
 }
 

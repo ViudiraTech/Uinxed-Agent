@@ -78,11 +78,15 @@ func BuiltinProviders() []Provider {
 	}
 }
 
+// configVersion is the schema version this build writes. v3 changed the default
+// theme from uinxed to claude; mergeDefaults performs that one-time migration.
+const configVersion = 3
+
 func Defaults() Config {
 	return Config{
-		Version: 2, BaseURL: DefaultBaseURL, Model: DefaultModel, Storage: "db",
+		Version: configVersion, BaseURL: DefaultBaseURL, Model: DefaultModel, Storage: "db",
 		Providers: BuiltinProviders(), ActiveProvider: "ux-gateway",
-		Thinking: true, Effort: "high", Theme: "uinxed", Mouse: true,
+		Thinking: true, Effort: "high", Theme: "claude", Mouse: true,
 		ScrollSpeed: 3, Sidebar: "off", Animations: true, StreamRenderIntervalMS: 16,
 		Glyphs: "auto", ApprovalMode: "auto-edit", StatusItems: DefaultStatusItems(),
 	}
@@ -407,6 +411,13 @@ func mergeDefaults(in Config) Config {
 	if in.Theme != "" {
 		d.Theme = in.Theme
 	}
+	// v3 moved the default theme to claude. A config still sitting on "uinxed"
+	// is indistinguishable from one that never chose — nothing recorded whether
+	// the value was the old default or a deliberate pick — so it moves with the
+	// default. Any other theme was clearly chosen and is left alone.
+	if in.Version < configVersion && (in.Theme == "" || in.Theme == "uinxed") {
+		d.Theme = "claude"
+	}
 	if in.ScrollSpeed != 0 {
 		d.ScrollSpeed = in.ScrollSpeed
 	}
@@ -430,9 +441,14 @@ func mergeDefaults(in Config) Config {
 	}
 	d.Debug = in.Debug
 	if in.Version == 0 {
-		d.Version = 2
 		// Legacy files lacked these UI fields: maintain historical default-on behavior.
 		d.Mouse, d.Animations = true, true
+	}
+	// Record the upgrade once, so a later deliberate switch back to the previous
+	// default theme is not undone by the migration on the next load. Never
+	// downgrade a version this build does not understand.
+	if d.Version < configVersion {
+		d.Version = configVersion
 	}
 	_ = validate(&d)
 	return d
@@ -494,7 +510,8 @@ func mergeProvider(base, override Provider) Provider {
 
 // themeNames is the single source of truth for valid theme ids. The CLI flag,
 // the /theme command and validation all consult it so they cannot drift apart.
-var themeNames = []string{"uinxed", "tokyonight", "catppuccin", "gruvbox", "nord", "dracula", "dark", "light"}
+// Order is user-visible: "claude" leads because it is the default.
+var themeNames = []string{"claude", "uinxed", "tokyonight", "catppuccin", "gruvbox", "nord", "dracula", "dark", "light"}
 
 func Themes() []string { return append([]string(nil), themeNames...) }
 
@@ -529,7 +546,7 @@ func validate(c *Config) error {
 		c.Effort = "high"
 	}
 	if !ValidTheme(c.Theme) {
-		c.Theme = "uinxed"
+		c.Theme = "claude"
 	}
 	switch c.Glyphs {
 	case "auto", "unicode", "ascii":

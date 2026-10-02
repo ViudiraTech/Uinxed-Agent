@@ -467,7 +467,8 @@ func (m *Model) openThemePicker() {
 	opts := []struct {
 		id, label, desc string
 	}{
-		{"uinxed", "Uinxed Cyberpunk", "Purple and cyan neon (default)"},
+		{"claude", "Claude Code", "Warm terracotta brand palette (default)"},
+		{"uinxed", "Uinxed Cyberpunk", "Purple and cyan neon"},
 		{"tokyonight", "Tokyo Night", "Cool deep blues"},
 		{"catppuccin", "Catppuccin Mocha", "Soft pastel palette"},
 		{"gruvbox", "Gruvbox", "Warm retro earth tones"},
