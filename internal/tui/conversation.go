@@ -179,7 +179,7 @@ func (c *Conversation) SetSession(s domain.Session, width int) {
 			id = fmt.Sprintf("%s-%d", m.Role, i)
 		}
 		clean := sanitizeToolCalls(m.ToolCalls)
-		c.blocks = append(c.blocks, convBlock{ID: id, Role: m.Role, Content: m.Content, Reasoning: m.ReasoningContent, ToolCalls: clean, Estimate: estimateBlockWithReasoning(m.Content, m.ReasoningContent, width, len(clean), c.expandedThinking[id]), Version: len(m.Content) + len(m.ReasoningContent)})
+		c.blocks = append(c.blocks, convBlock{ID: id, Role: m.Role, Content: m.Content, Reasoning: m.ReasoningContent, ToolCalls: clean, Estimate: estimateBlockWithReasoning(m.Content, m.ReasoningContent, width, toolRows(clean), c.expandedThinking[id]), Version: len(m.Content) + len(m.ReasoningContent)})
 	}
 }
 
@@ -203,7 +203,7 @@ func (c *Conversation) SetWidth(w int) {
 		c.width = w
 		for i := range c.blocks {
 			b := &c.blocks[i]
-			b.Estimate = estimateBlockWithReasoning(b.Content, b.Reasoning, w, len(b.ToolCalls), c.expandedThinking[b.ID])
+			b.Estimate = estimateBlockWithReasoning(b.Content, b.Reasoning, w, toolRows(b.ToolCalls), c.expandedThinking[b.ID])
 		}
 	}
 }
@@ -226,8 +226,22 @@ func (c *Conversation) ScrollDown(n int) {
 		c.scroll = 0
 	}
 }
-func (c *Conversation) GotoBottom()          { c.scroll = 0 }
-func (c *Conversation) ToggleTool(id string) { c.expandedTools[id] = !c.expandedTools[id] }
+func (c *Conversation) GotoBottom() { c.scroll = 0 }
+
+// ToggleTool flips one call's detail. A grouped row carries "group:a,b,c" so the
+// whole run opens together, which is what its single row stands for.
+func (c *Conversation) ToggleTool(id string) {
+	ids, grouped := strings.CutPrefix(id, groupPrefix)
+	if !grouped {
+		c.expandedTools[id] = !c.expandedTools[id]
+		return
+	}
+	members := strings.Split(ids, ",")
+	open := !c.expandedTools[members[0]]
+	for _, m := range members {
+		c.expandedTools[m] = open
+	}
+}
 
 // ToggleThinking expands/collapses one reasoning block and keeps the viewport
 // anchored. Without scroll compensation, adding the reasoning lines increases
@@ -498,11 +512,14 @@ func (c *Conversation) renderBlock(b convBlock, t Theme, acts map[string]domain.
 		out = append(out, renderLine{Text: marker})
 	}
 
-	// 3. Tool calls render as a nested tree under the turn.
-	for _, tc := range b.ToolCalls {
-		if strings.TrimSpace(tc.Function.Name) == "" {
+	// 3. Tool calls render as a nested tree under the turn. Adjacent read-only
+	// calls fold into one aggregate row; everything else keeps its own card.
+	for _, run := range planToolRuns(b.ToolCalls) {
+		if run.group {
+			out = append(out, c.renderToolGroup(run, acts, t, width, hover, frame)...)
 			continue
 		}
+		tc := run.calls[0]
 		out = append(out, c.renderToolCall(tc, acts[tc.ID], t, width, hover, frame)...)
 	}
 
@@ -979,8 +996,8 @@ func (c *Conversation) totalEstimate() int {
 	return n
 }
 
-func estimateBlockWithReasoning(content, reasoning string, width, tools int, expanded bool) int {
-	n := estimateBlock(content, width, tools)
+func estimateBlockWithReasoning(content, reasoning string, width, rows int, expanded bool) int {
+	n := estimateBlock(content, width, rows)
 	reasoning = terminalutil.SanitizeText(reasoning)
 	if strings.TrimSpace(reasoning) == "" {
 		return n
@@ -995,11 +1012,11 @@ func estimateBlockWithReasoning(content, reasoning string, width, tools int, exp
 // estimateBlock approximates the height of one turn. Block rendering corrects
 // the estimate to the real height for any block it materializes, so this only
 // needs to be close enough to keep the off-screen scroll position stable.
-func estimateBlock(content string, width, tools int) int {
+func estimateBlock(content string, width, rows int) int {
 	if width < 20 {
 		width = 20
 	}
-	lines := 1 + tools*2 // trailing blank + one line per tool call and result
+	lines := 1 + rows // trailing blank + the rows the tool calls occupy
 	contentW := max(16, width-2)
 	for _, l := range strings.Split(content, "\n") {
 		lines += max(1, int(math.Ceil(float64(displayWidth(l))/float64(contentW))))

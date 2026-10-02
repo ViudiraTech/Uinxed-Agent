@@ -157,24 +157,127 @@ func (m *Model) renderWorkingLine(t Theme) string {
 		// a label; the plain fallback beats an empty line.
 		verb = "Working"
 	}
-	line := glyph + " " + verb + "…"
+	line := style.Render(glyph) + " " + m.shimmerVerb(t, verb+"…")
 	if len(parts) > 0 {
-		line += " (" + strings.Join(parts, " · ") + ")"
+		line += style.Render(" (" + strings.Join(parts, " · ") + ")")
 	}
-	return style.Render(line)
+	return line
+}
+
+// shimmerVerb renders the verb with Claude Code's travelling highlight: the text
+// outside the band is dimmed, and the band itself carries the lighter shimmer
+// color as it sweeps the word.
+func (m *Model) shimmerVerb(t Theme, text string) string {
+	base := m.workingColor(t)
+	plain := lipgloss.NewStyle().Foreground(base).Bold(true)
+	if !m.cfg.Animations {
+		// Reduced motion kills the sweep. Claude Code's -100 sentinel makes the
+		// whole string the leading segment, which would render the verb dim —
+		// greying out a line that is still meant to read as active. Keep the
+		// plain color instead.
+		return plain.Render(text)
+	}
+	idx := computeGlimmerIndex(glimmerTick(m.activityFrame), displayWidth(text))
+	before, hot, after := shimmerSegments(text, idx)
+
+	dim := lipgloss.NewStyle().Foreground(base).Faint(true)
+	hotStyle := lipgloss.NewStyle().Foreground(m.workingShimmer(t)).Bold(true)
+	var b strings.Builder
+	if before != "" {
+		b.WriteString(dim.Render(before))
+	}
+	if hot != "" {
+		b.WriteString(hotStyle.Render(hot))
+	}
+	if after != "" {
+		b.WriteString(dim.Render(after))
+	}
+	return b.String()
+}
+
+// stallIntensity reports how far into the stall ramp a turn has drifted: zero
+// while the model is still producing, rising to one over stallRamp once it stops.
+func (m *Model) stallIntensity() float64 {
+	if m.lastActivityAt.IsZero() {
+		return 0
+	}
+	since := time.Since(m.lastActivityAt)
+	if since <= stallAfter {
+		return 0
+	}
+	return min(1, float64(since-stallAfter)/float64(stallRamp))
 }
 
 // workingColor blends the accent toward the error color as a stalled turn drags
 // on, so a wedged provider looks different from a slow one.
 func (m *Model) workingColor(t Theme) color.Color {
-	if m.lastActivityAt.IsZero() {
-		return t.Primary
+	return blendColor(t.Primary, t.Error, m.stallIntensity())
+}
+
+// workingShimmer is the lighter highlight that sweeps across the verb. It ramps
+// toward the error color alongside the base so a stalled turn reads as one
+// object rather than a warm word riding a red line.
+func (m *Model) workingShimmer(t Theme) color.Color {
+	return blendColor(t.Secondary, t.Error, m.stallIntensity())
+}
+
+// shimmerIntervalMS is Claude Code's shimmer cadence. The glyph and the shimmer
+// read from the same animation frame but advance at different rates: 120ms for
+// the frame, 150ms for the sweep.
+const shimmerIntervalMS = 150
+
+// shimmerDisabled is Claude Code's sentinel for "draw no sweep at all" — used
+// under reduced motion, and for a connection warning, where a shimmer would read
+// as working when the line has to read as broken.
+const shimmerDisabled = -100
+
+// glimmerTick converts an animation frame into the shimmer clock.
+func glimmerTick(frame int) int {
+	return frame * int(spinnerInterval/time.Millisecond) / shimmerIntervalMS
+}
+
+// computeGlimmerIndex mirrors Claude Code's sweep exactly: the cycle spans the
+// text width plus twenty columns, and the index counts down from width+10. The
+// descending count is what makes the highlight enter from the right and travel
+// left rather than the other way around.
+func computeGlimmerIndex(tick, width int) int {
+	cycle := width + 20
+	if cycle <= 0 {
+		return shimmerDisabled
 	}
-	since := time.Since(m.lastActivityAt)
-	if since <= stallAfter {
-		return t.Primary
+	return width + 10 - (tick % cycle)
+}
+
+// shimmerSegments splits text into the dimmed lead, the travelling highlight and
+// the dimmed tail. Ported from Claude Code's computeShimmerSegments: the band
+// spans three columns centred on the glimmer index, and a glyph overlapping
+// either edge is pulled wholly into the highlight rather than being cut, so a
+// wide or multibyte character is never split across the style boundary.
+func shimmerSegments(text string, glimmerIndex int) (before, shimmer, after string) {
+	width := displayWidth(text)
+	start, end := glimmerIndex-1, glimmerIndex+1
+	if start >= width || end < 0 {
+		return text, "", ""
 	}
-	return blendColor(t.Primary, t.Error, float64(since-stallAfter)/float64(stallRamp))
+	if start < 0 {
+		start = 0
+	}
+	var b, s, a strings.Builder
+	col := 0
+	for _, r := range text {
+		seg := string(r)
+		w := displayWidth(seg)
+		switch {
+		case col+w <= start:
+			b.WriteString(seg)
+		case col > end:
+			a.WriteString(seg)
+		default:
+			s.WriteString(seg)
+		}
+		col += w
+	}
+	return b.String(), s.String(), a.String()
 }
 
 // blendColor interpolates between two theme colors. The NO_COLOR palette is

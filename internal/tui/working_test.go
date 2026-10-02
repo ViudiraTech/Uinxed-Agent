@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/ViudiraTech/Uinxed-Agent/internal/config"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
 )
 
@@ -248,4 +249,85 @@ func TestLayoutFitsEveryTerminalSizeWhileBusy(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The sweep has to match Claude Code's arithmetic, not merely look like a sweep:
+// the cycle spans the text width plus twenty columns, and the index counts down
+// from width+10 — the descending count is what makes the highlight travel
+// right-to-left.
+func TestComputeGlimmerIndexMatchesClaudeCode(t *testing.T) {
+	const width = 10
+	if got := computeGlimmerIndex(0, width); got != width+10 {
+		t.Fatalf("tick 0 = %d, want %d", got, width+10)
+	}
+	if got := computeGlimmerIndex(1, width); got != width+9 {
+		t.Fatalf("ticks must step down by one, got %d", got)
+	}
+	if got := computeGlimmerIndex(width+20, width); got != width+10 {
+		t.Fatalf("the cycle must wrap at width+20, got %d", got)
+	}
+}
+
+// The band is three columns wide, and a glyph that straddles an edge is pulled
+// wholly into the highlight rather than cut — so a wide or multibyte character
+// never gets split across the style boundary.
+func TestShimmerSegmentsBandThreeColumns(t *testing.T) {
+	text := "Reading" // width 7
+	before, hot, after := shimmerSegments(text, 4)
+	if before != "Rea" || hot != "din" || after != "g" {
+		t.Fatalf("segments = %q / %q / %q, want \"Rea\" / \"din\" / \"g\"", before, hot, after)
+	}
+	if got := displayWidth(before) + displayWidth(hot) + displayWidth(after); got != displayWidth(text) {
+		t.Fatalf("split covers %d columns, want %d", got, displayWidth(text))
+	}
+}
+
+// Off the text the band highlights nothing and the whole string stays in the
+// leading segment, which is how the -100 sentinel disables the effect.
+func TestShimmerSegmentsOffText(t *testing.T) {
+	for _, idx := range []int{shimmerDisabled, 99} {
+		if b, s, a := shimmerSegments("Reading", idx); b != "Reading" || s != "" || a != "" {
+			t.Fatalf("idx %d split = %q / %q / %q", idx, b, s, a)
+		}
+	}
+}
+
+// The highlight has to actually travel. A band pinned to one column would be a
+// static word with one oddly-colored character.
+func TestShimmerBandTravels(t *testing.T) {
+	text := "Accomplishing…"
+	seen := map[int]bool{}
+	for frame := 0; frame < 40; frame++ {
+		idx := computeGlimmerIndex(glimmerTick(frame), displayWidth(text))
+		before, _, _ := shimmerSegments(text, idx)
+		seen[displayWidth(before)] = true
+	}
+	if len(seen) < 5 {
+		t.Fatalf("the band reached only %d distinct positions across 40 frames", len(seen))
+	}
+}
+
+// Reduced motion drops the sweep. It must not dim the verb in the process:
+// Claude Code's sentinel makes the whole string the leading segment, which would
+// grey out a line that is still meant to read as active.
+func TestShimmerSplitsTheVerbOnlyWhenAnimating(t *testing.T) {
+	th := ThemeByName("claude")
+	spans := func(s string) int { return strings.Count(s, "\x1b[") }
+
+	static := &Model{cfg: config.Config{Animations: false}, lastActivityAt: time.Now()}
+	if got := stripANSI(static.shimmerVerb(th, "Herding…")); got != "Herding…" {
+		t.Fatalf("reduced motion lost the verb text: %q", got)
+	}
+	baseline := spans(static.shimmerVerb(th, "Herding…"))
+
+	// The band spends part of its cycle past the end of the word, where nothing
+	// is highlighted and the verb renders as one dim span — so the sweep has to
+	// be sampled across the cycle, not at a single frame.
+	for frame := 0; frame < 60; frame++ {
+		m := &Model{cfg: config.Config{Animations: true}, activityFrame: frame, lastActivityAt: time.Now()}
+		if spans(m.shimmerVerb(th, "Herding…")) > baseline {
+			return
+		}
+	}
+	t.Fatal("no frame in the cycle split the verb; the sweep never renders")
 }
