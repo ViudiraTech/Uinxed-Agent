@@ -1238,6 +1238,10 @@ func parseBoolWord(s string, current bool) (bool, error) {
 }
 func atoi(s string) int { v, _ := strconv.Atoi(s); return v }
 
+// spinnerInterval is Claude Code's frame cadence. The spinner advances one frame
+// per tick, so this is also the shimmer speed of the working line.
+const spinnerInterval = 120 * time.Millisecond
+
 func animationTick() tea.Cmd {
-	return tea.Tick(125*time.Millisecond, func(time.Time) tea.Msg { return animationTickMsg{} })
+	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg { return animationTickMsg{} })
 }

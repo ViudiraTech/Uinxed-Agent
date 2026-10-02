@@ -52,7 +52,8 @@ var unicodeGlyphs = Glyphs{
 	Sep:        "·",
 	Rule:       "─",
 	VBar:       "│",
-	Spinner:    []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
+	// Claude Code's sparkle frames, resolved per platform — see spinner.go.
+	Spinner: spinnerFrames(),
 }
 
 var asciiGlyphs = Glyphs{
