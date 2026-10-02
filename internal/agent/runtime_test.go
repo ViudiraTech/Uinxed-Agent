@@ -514,3 +514,52 @@ func TestAddUsageKeepsInputWhenARoundOmitsIt(t *testing.T) {
 		t.Fatalf("output = %d, want 50", turn.OutputTokens)
 	}
 }
+
+// A consumer cannot draw a call the model has already emitted until the runtime
+// says the call exists. Publishing the accumulated set only when the round
+// settled meant the UI showed nothing until then — and cancelling a turn flushed
+// the accumulator, which is why the cards appeared on interrupt.
+func TestStreamedToolCallIsPublishedDuringTheRound(t *testing.T) {
+	st := newMemStore()
+	sess := domain.Session{ID: "s", Name: "s", CreatedAt: time.Now(), UpdatedAt: time.Now(), ProviderID: "p", Model: "test", AgentID: "build", CWD: t.TempDir()}
+	_ = st.SaveSession(context.Background(), sess)
+	fp := &scriptedProvider{mode: "tool"}
+	r := NewRuntime(st, nil, func(string) (provider.Provider, error) { return fp, nil })
+	defer r.Close()
+
+	if _, err := r.StartTurn(context.Background(), "s", "calculate"); err != nil {
+		t.Fatal(err)
+	}
+
+	var sawDelta, deltaBeforeFinish bool
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+loop:
+	for {
+		select {
+		case e := <-r.Events():
+			switch e.Kind {
+			case domain.EventToolCallDelta:
+				calls, ok := e.Data.([]domain.ToolCall)
+				if !ok || len(calls) == 0 {
+					t.Fatalf("delta carried no calls: %#v", e.Data)
+				}
+				if calls[0].Function.Name != "calc" {
+					t.Fatalf("delta carried %#v", calls)
+				}
+				sawDelta = true
+				deltaBeforeFinish = true
+			case domain.EventAgentFinished:
+				break loop
+			}
+		case <-timer.C:
+			t.Fatal("timed out waiting for runtime")
+		}
+	}
+	if !sawDelta {
+		t.Fatal("a streamed tool call must be published before the turn ends")
+	}
+	if !deltaBeforeFinish {
+		t.Fatal("the delta must arrive during the round, not with the finished event")
+	}
+}
