@@ -186,6 +186,14 @@ Type `@` in the prompt composer to trigger fuzzy suggestions:
 - `@general <task>` — Launch a versatile subagent for multi-step tasks.
 - `@skill:<name>` — Discover and activate specialized skill prompts.
 
+### Project Instructions
+
+The repository's own conventions are loaded into every turn automatically. Put them
+in `AGENTS.md` or `CLAUDE.md` at the working directory root, or in `.ux-agent/`
+inside it; `/init` writes the first version by reading the repository. Files are
+capped at 32 KiB each and 64 KiB in total, and a checked-in document can narrow
+what the agent does — it can never widen its permissions.
+
 ---
 
 ### Slash Commands (`/`)
@@ -212,6 +220,19 @@ Type `/` in the prompt or press `Ctrl+P` to access commands:
 | `/new` | Session | Create a new isolated session |
 | `/theme` | Interface | Switch active color palette (`tokyonight`, `nord`, `catppuccin`, etc.) |
 | `/mouse` | Interface | Toggle mouse capture (`/mouse on`, `/mouse off`) |
+| `/init` | Instructions | Write `AGENTS.md` from this repository, or refresh an existing one |
+| `/skills` | Skills | Browse and load agent skills |
+| `/cd` | Session | Change the session's working directory |
+| `/pwd` | Session | Print the working directory |
+| `/rename` | Session | Rename the current session |
+| `/parent` | Session | Return to the parent agent session |
+| `/delete` | Session | Delete a session |
+| `/storage` | Storage | Switch between SQLite and `config.json` storage |
+| `/migrate` | Storage | Alias for `/storage` |
+| `/quota` | Provider | Query the gateway account and balance |
+| `/clear` | Session | Clear the current session's transcript |
+| `/restore` | System | Restore factory settings (confirmation required) |
+| `/exit` | System | Quit (`/quit` is an alias) |
 | `/help` | System | View shortcuts and command reference |
 
 ---
@@ -250,7 +271,7 @@ Uinxed-Agent features a hierarchical multi-agent architecture designed for auton
 ### ⚡ Supercode Mode
 Toggle `supercode` with `/effort supercode`, or by pressing `Tab` in the effort slider. Complex prompts are decomposed into parallel subagent workflows that explore, implement and verify at once.
 
-`supercode` is deliberately **not** an effort level: it answers "fan the work out", not "think harder", and turning it on leaves the reasoning level alone. While it is on, the composer's top border carries a rainbow ripple and a `supercode` tag, so the mode is visible without opening the slider.
+`supercode` is deliberately **not** an effort level: it answers "fan the work out", not "think harder", and turning it on leaves the reasoning level alone. While it is on, the composer's top border carries a static `supercode` tag and ring, so the mode is visible without opening the slider; the animated water surface lives in the effort panel, which keeps the row directly above the input still while you type.
 
 ---
 

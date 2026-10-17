@@ -52,7 +52,15 @@ Both normalize content, provider-exposed reasoning, tool calls, usage and finish
 
 ## Agent execution
 
-A session can have at most one active turn. Every turn has a `context.Context` and cancel function. Runtime shutdown marks the runtime closed, cancels active turns and waits for their goroutines before storage/terminal teardown, preventing orphan work from surviving application exit. The runtime builds a system prompt from the selected Agent, installed skills, model and effort state, then streams provider events.
+A session can have at most one active turn. Every turn has a `context.Context` and cancel function. Runtime shutdown marks the runtime closed, cancels active turns and waits for their goroutines before storage/terminal teardown, preventing orphan work from surviving application exit. The runtime builds a system prompt from the selected Agent, the repository's own instruction files, installed skills, model and effort state, then streams provider events.
+
+Project instructions are read from `AGENTS.md` / `CLAUDE.md` (and their `.ux-agent/`
+copies) under the session working directory. Discovery deliberately does not walk up
+the tree: reading a parent directory would pull unrelated conventions into the task and
+leave the sandbox the tools are held to. Each file is capped at 32 KiB, the block at
+64 KiB, symlinks that resolve outside the working directory are refused, and binary
+files are skipped. The block states that project text may narrow behaviour but cannot
+widen permissions.
 
 Tool calls are assembled by streaming tool-call index/ID and run through `ToolScheduler`. Independent calls can execute concurrently under category limits. Write/shell/delegate/state categories have separate concurrency controls so the application does not spawn unbounded goroutines.
 
