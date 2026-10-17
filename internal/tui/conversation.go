@@ -538,9 +538,10 @@ func (c *Conversation) renderBlock(b convBlock, t Theme, acts map[string]domain.
 		}
 	}
 
-	if !emitted && len(out) == 0 {
+	if !emitted && len(out) == 0 && len(b.ToolCalls) == 0 {
 		// An empty turn still needs a marker, but a turn that has shown
-		// reasoning must not trail a bare marker with nothing after it.
+		// reasoning must not trail a bare marker with nothing after it — and a
+		// turn made only of tool calls has its cards to say what happened.
 		out = append(out, renderLine{Text: marker})
 	}
 
@@ -625,91 +626,94 @@ func (c *Conversation) renderReasoning(b convBlock, t Theme, width int, hover st
 
 func (c *Conversation) renderToolCall(tc domain.ToolCall, a domain.ToolActivity, t Theme, width int, hover string, frame int) []renderLine {
 	g := t.Glyphs
-	icon, fg := g.Pending, t.Muted
-	statusLabel := "queued"
-	switch a.State {
-	case "running":
-		icon, fg = g.spinner(frame), t.Warning
-		statusLabel = "running"
-	case "success":
-		icon, fg = g.Success, t.Success
-		statusLabel = "done"
-	case "failed":
-		icon, fg = g.Failure, t.Error
-		statusLabel = "failed"
-	}
-
 	name := terminalutil.SanitizeText(tc.Function.Name)
-	head := c.renderToolHead(tc, name, t, hover, g)
-	if a.State == "failed" {
-		// Failed calls read as errors first, tool second.
-		head = lipgloss.NewStyle().Foreground(t.Error).Render(ansi.Strip(head))
-		if hover == tc.ID {
-			head = lipgloss.NewStyle().Foreground(t.Error).Bold(true).Render(ansi.Strip(head))
-		}
-	}
+	expanded := c.expandedTools[tc.ID]
 
-	// Status meta stays dim and fixed-position so the spinner can animate
-	// without shifting the action text. The marker already communicates motion;
-	// only elapsed time or an exceptional state needs a text label.
-	metaText := toolStatusMeta(a, statusLabel)
-	meta := ""
-	if metaText != "" {
-		meta = lipgloss.NewStyle().Foreground(t.Muted).Render(" · " + metaText)
-	}
-	if name == "delegate" && a.State == "running" {
-		meta += c.liveSubagentProgress(tc, t)
-	}
-
-	// The bullet sits at column 0, aligned with the assistant and user markers,
-	// the way Claude Code indents an entire turn off one left edge.
-	marker := lipgloss.NewStyle().Foreground(fg).Render(icon)
-	line := marker + " " + head + meta
-	if c.expandedTools[tc.ID] {
-		line = marker + " " + head + meta + lipgloss.NewStyle().Foreground(t.Muted).Render("  · details")
-	}
-
+	// The call row is stable: a bullet and the call itself, whatever the state.
+	// Animating this glyph would reflow the row on every frame, and colouring it
+	// by state would be the only signal on a terminal without colour. The state
+	// lives on the result row instead, where it reads as the answer to the call.
+	bullet := lipgloss.NewStyle().Foreground(t.Gutter).Render(g.Assistant)
+	line := bullet + " " + c.renderToolHead(tc, name, t, hover, g)
 	out := []renderLine{{Text: line, Action: ActionTool, Value: tc.ID}}
 
-	if c.expandedTools[tc.ID] {
-		if name == "delegate" {
-			out = append(out, c.renderExpandedDelegate(tc, a, t, width)...)
-			return out
-		}
-		if tc.Function.Arguments != "" {
-			for _, l := range wrapPlain(tc.Function.Arguments, max(8, width-lipgloss.Width(expandedGut)-2)) {
-				out = append(out, renderLine{Text: expandedGut + lipgloss.NewStyle().Foreground(t.Muted).Render(l)})
-			}
-		}
-		out = append(out, c.renderExpandedResult(a, t, width)...)
+	// The summary row is always present, so a pending, running, finished and
+	// failed call all occupy the same two rows and the transcript never jumps as
+	// a call advances.
+	out = append(out, c.renderToolSummary(tc, a, t, width, expanded, frame))
+
+	if !expanded {
 		return out
 	}
+	if name == "delegate" {
+		return append(out, c.renderExpandedDelegate(tc, a, t, width)...)
+	}
+	if tc.Function.Arguments != "" {
+		for _, l := range wrapPlain(tc.Function.Arguments, max(8, width-lipgloss.Width(expandedGut)-2)) {
+			out = append(out, renderLine{Text: expandedGut + lipgloss.NewStyle().Foreground(t.Muted).Render(l)})
+		}
+	}
+	return append(out, c.renderExpandedResult(a, t, width)...)
+}
 
-	// Collapsed: one dim result line, or the first line of the error so a
-	// failure is visible without expanding.
-	resultStyle := lipgloss.NewStyle().Foreground(t.Muted)
-	result := toolResultClause(name, a)
+// toolStateGlyph is the marker on the summary row: ✓ finished, ✗ failed, a
+// spinner while running, ◌ before it starts. A glyph rather than colour alone,
+// because the transcript has to stay readable with no colour at all.
+func toolStateGlyph(a domain.ToolActivity, t Theme, frame int) (string, lipgloss.Style) {
+	g := t.Glyphs
+	switch a.State {
+	case "running":
+		return g.spinner(frame), lipgloss.NewStyle().Foreground(t.Warning)
+	case "success":
+		return g.Success, lipgloss.NewStyle().Foreground(t.Success)
+	case "failed":
+		return g.Failure, lipgloss.NewStyle().Foreground(t.Error)
+	}
+	return g.Pending, lipgloss.NewStyle().Foreground(t.Muted)
+}
+
+// renderToolSummary draws the row under a call: the state marker, then what
+// happened, then how long it took and whether there is more behind ctrl+o.
+func (c *Conversation) renderToolSummary(tc domain.ToolCall, a domain.ToolActivity, t Theme, width int, expanded bool, frame int) renderLine {
+	g := t.Glyphs
+	glyph, glyphStyle := toolStateGlyph(a, t, frame)
+
+	var parts []string
+	switch a.State {
+	case "running":
+		parts = append(parts, "running")
+		if name := tc.Function.Name; name == "delegate" {
+			if live := c.liveSubagentProgressText(tc); live != "" {
+				parts = append(parts, live)
+			}
+		}
+	case "success", "failed":
+		if s := toolResultClause(tc, a); s != "" {
+			parts = append(parts, s)
+		}
+	default:
+		parts = append(parts, "queued")
+	}
+	if d := toolStatusMeta(a); d != "" {
+		parts = append(parts, d)
+	}
+	if !expanded && toolExpandable(tc, a) {
+		parts = append(parts, "ctrl+o")
+	}
+
+	style := lipgloss.NewStyle().Foreground(t.Muted)
 	if a.State == "failed" {
-		resultStyle = lipgloss.NewStyle().Foreground(t.Error)
-	}
-	if result != "" {
-		if d := toolDuration(a); d != "" && a.State != "running" {
-			result += " · " + d
-		}
-		if toolExpandable(tc, a) {
-			result += " (ctrl+o to expand)"
-		}
-		gutter := resultGutter(g)
-		out = append(out, renderLine{Text: gutter + resultStyle.Render(truncWidth(result, max(6, width-lipgloss.Width(gutter))))})
+		style = lipgloss.NewStyle().Foreground(t.Error)
 	} else if a.State == "running" {
-		// A running call with no output yet still gets a result row so the
-		// card keeps a stable two-line height instead of popping when the
-		// first byte arrives.
-		gutter := resultGutter(g)
-		hint := lipgloss.NewStyle().Foreground(t.Muted).Render("…")
-		out = append(out, renderLine{Text: gutter + hint})
+		style = lipgloss.NewStyle().Foreground(t.Text)
 	}
-	return out
+	gutter := resultGutter(g)
+	body := strings.Join(parts, " · ")
+	text := gutter + glyphStyle.Render(glyph)
+	if body != "" {
+		text += " " + style.Render(truncWidth(body, max(6, width-lipgloss.Width(gutter)-2)))
+	}
+	return renderLine{Text: text}
 }
 
 // renderToolHead renders Claude Code's call grammar: a bold tool name with its
@@ -796,7 +800,8 @@ func toolDisplayName(name string) string {
 // toolResultClause is the dim line under a call. Claude Code phrases these as
 // what happened — "Read 42 lines", "Found 3 matches" — rather than as a byte
 // count, so a scan of the transcript says what the agent learned.
-func toolResultClause(name string, a domain.ToolActivity) string {
+func toolResultClause(tc domain.ToolCall, a domain.ToolActivity) string {
+	name := tc.Function.Name
 	if a.State == "failed" {
 		if a.Error != "" {
 			return firstLine(a.Error)
@@ -807,11 +812,31 @@ func toolResultClause(name string, a domain.ToolActivity) string {
 		// A live line count would tick on every frame as output streams in.
 		return toolResultSummary(a)
 	}
-	out := strings.TrimSpace(a.Output)
-	if out == "" {
-		return ""
+	out := cleanToolOutput(a.Output)
+	raw := toolArgsOf(tc)
+
+	// Write and edit results answer "how big was the change", which is the
+	// question a reader has about a mutation. The tools' own replies ("written",
+	// "edited") say nothing, and the change is in the arguments either way.
+	switch name {
+	case "write_file":
+		if n, ok := writtenLines(raw); ok {
+			return fmt.Sprintf("Wrote %d %s", n, plural(n, "line", "lines"))
+		}
+	case "edit_file", "multi_edit":
+		if added, removed, ok := editDelta(raw); ok {
+			return fmt.Sprintf("+%d −%d", added, removed)
+		}
+	case "delete_file":
+		return "Deleted"
 	}
-	lines := strings.Count(strings.TrimRight(out, "\n"), "\n") + 1
+
+	if out == "" {
+		// The call ran and produced nothing. Saying so beats a card with no result
+		// row, which reads as "still working" or as a rendering bug.
+		return noOutputLabel
+	}
+	lines := strings.Count(out, "\n") + 1
 	switch name {
 	case "read_file":
 		return fmt.Sprintf("Read %d %s", lines, plural(lines, "line", "lines"))
@@ -822,18 +847,88 @@ func toolResultClause(name string, a domain.ToolActivity) string {
 	case "list_dir":
 		return fmt.Sprintf("Listed %d %s", lines, plural(lines, "entry", "entries"))
 	}
-	if lines == 1 {
-		return truncWidth(singleLine(out), 60)
+	clause := truncWidth(singleLine(out), 60)
+	if lines > 1 {
+		clause = fmt.Sprintf("%d lines", lines)
 	}
-	return fmt.Sprintf("%d lines", lines)
+	// A command that exited non-zero did not succeed, whatever the output says.
+	if name == "bash" && a.ExitCode != nil && *a.ExitCode != 0 {
+		return fmt.Sprintf("exit %d · %s", *a.ExitCode, clause)
+	}
+	return clause
 }
 
-// toolExpandable reports whether a call has more to show than its collapsed row
-// already does, which is what keeps the "(ctrl+o to expand)" hint honest.
+// toolArgsOf decodes a call's arguments once. A malformed or empty argument object
+// yields nil, and every caller treats a missing key as absent.
+func toolArgsOf(tc domain.ToolCall) map[string]any {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &raw); err != nil {
+		return nil
+	}
+	return raw
+}
+
+// writtenLines is how many lines a write_file call carries.
+func writtenLines(raw map[string]any) (int, bool) {
+	s, _ := raw["content"].(string)
+	if s == "" {
+		return 0, false
+	}
+	return lineCount(s), true
+}
+
+// editDelta is the shape of an edit in the term a reader cares about: lines added
+// and removed. It covers both the single-replacement form and the batch form, and
+// reports nothing when neither is present.
+func editDelta(raw map[string]any) (added, removed int, ok bool) {
+	pair := func(m map[string]any) {
+		old, _ := m["old_string"].(string)
+		nw, _ := m["new_string"].(string)
+		if old == "" && nw == "" {
+			return
+		}
+		removed += lineCount(old)
+		added += lineCount(nw)
+		ok = true
+	}
+	if edits, isList := raw["edits"].([]any); isList {
+		for _, e := range edits {
+			if m, isMap := e.(map[string]any); isMap {
+				pair(m)
+			}
+		}
+		return added, removed, ok
+	}
+	pair(raw)
+	return added, removed, ok
+}
+
+func lineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(strings.TrimSuffix(s, "\n"), "\n") + 1
+}
+
+// toolExpandable reports whether opening the card would show anything the
+// collapsed row does not. The hint used to be on every call, which trains the eye
+// to ignore it: expanding {"expr":"1+1"} to read `Calc(1+1)` is not "more".
 func toolExpandable(tc domain.ToolCall, a domain.ToolActivity) bool {
-	return strings.TrimSpace(tc.Function.Arguments) != "" ||
-		strings.TrimSpace(a.Output) != "" ||
-		strings.TrimSpace(a.Error) != ""
+	if strings.TrimSpace(a.Error) != "" {
+		return true
+	}
+	out := cleanToolOutput(a.Output)
+	if strings.Count(out, "\n") > 0 {
+		return true
+	}
+	if lipgloss.Width(singleLine(out)) > 60 {
+		return true
+	}
+	args := terminalutil.SanitizeText(strings.TrimSpace(tc.Function.Arguments))
+	if args == "" || args == "{}" {
+		return false
+	}
+	return lipgloss.Width(toolSummary(tc.Function.Name, args)) >= 70
 }
 
 func plural(n int, one, many string) string {
@@ -863,26 +958,18 @@ func parseDelegateArgs(args string) (agent, task string) {
 
 // toolStatusMeta is the dim suffix on the header row: live elapsed while
 // running, total duration once finished, plain state when timing is unknown.
-func toolStatusMeta(a domain.ToolActivity, label string) string {
+func toolStatusMeta(a domain.ToolActivity) string {
 	switch a.State {
 	case "running":
-		if d := toolElapsed(a); d != "" {
-			return "running " + d
-		}
-		return "running"
-	case "success":
-		if d := toolDuration(a); d != "" {
-			return d
-		}
-		return label
-	case "failed":
-		if d := toolDuration(a); d != "" {
-			return "failed · " + d
-		}
-		return "failed"
-	default:
-		return "queued"
+		// The word "running" is already on the row; only elapsed time adds to it,
+		// and only once the call has been going long enough to wonder about.
+		return toolElapsed(a)
+	case "success", "failed":
+		// The glyph and the summary already say how it ended. A duration is only
+		// worth the space when it is long enough to be information.
+		return toolDuration(a)
 	}
+	return ""
 }
 
 func toolElapsed(a domain.ToolActivity) string {
@@ -908,8 +995,11 @@ func toolDuration(a domain.ToolActivity) string {
 }
 
 func formatToolDuration(d time.Duration) string {
-	if d < time.Millisecond*50 {
-		return "0ms"
+	// Under a tenth of a second the number is not information: every instant tool
+	// would carry the same "0ms" suffix and the ones that took real time would stop
+	// standing out.
+	if d < time.Millisecond*100 {
+		return ""
 	}
 	if d < time.Second {
 		return fmt.Sprintf("%dms", int(d.Milliseconds()))
@@ -973,8 +1063,9 @@ func (c *Conversation) renderExpandedDelegate(tc domain.ToolCall, a domain.ToolA
 func (c *Conversation) renderExpandedResult(a domain.ToolActivity, t Theme, width int) []renderLine {
 	var out []renderLine
 	bodyW := max(8, width-lipgloss.Width(expandedGut)-2)
-	if a.Output != "" {
-		lines := wrapPlain(terminalutil.SanitizeText(a.Output), bodyW)
+	body := cleanToolOutput(a.Output)
+	if body != "" {
+		lines := wrapPlain(terminalutil.SanitizeText(body), bodyW)
 		if len(lines) > maxExpandedOutputLines {
 			kept := lines[:maxExpandedOutputLines]
 			for _, l := range kept {
@@ -993,7 +1084,31 @@ func (c *Conversation) renderExpandedResult(a domain.ToolActivity, t Theme, widt
 			out = append(out, renderLine{Text: expandedGut + lipgloss.NewStyle().Foreground(t.Error).Render(l)})
 		}
 	}
+	if body == "" && strings.TrimSpace(a.Error) == "" {
+		note := lipgloss.NewStyle().Foreground(t.Muted).Render(noOutputLabel)
+		out = append(out, renderLine{Text: expandedGut + note})
+	}
 	return out
+}
+
+// noOutputLabel is what a call that produced nothing says for itself.
+const noOutputLabel = "(no output)"
+
+// cleanToolOutput normalises the whitespace a tool pads its result with: CRLF from
+// Windows commands, trailing spaces on every line, and the blank lines progress
+// bars and heredocs leave behind. The content lines themselves are untouched — a
+// diff's spacing is part of the diff — and a result that is only whitespace comes
+// back empty so the caller can say "(no output)" instead of drawing a blank row.
+func cleanToolOutput(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return ""
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " \t\r")
+	}
+	return strings.Trim(strings.Join(lines, "\n"), "\n")
 }
 
 // toolResultSummary condenses a completed call into one line. Byte counts and

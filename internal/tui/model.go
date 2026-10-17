@@ -85,6 +85,14 @@ type Model struct {
 	// effortSel is the stop the effort slider is on while it is open.
 	effortSel     int
 	activityFrame int
+	// ticking is true while a frame-ticker chain is in flight, so a second one is
+	// not armed on top of it.
+	ticking bool
+	// rippleArmed and rippleStart drive the surface's entrance: when the mode comes
+	// on the water spreads out from its sources over rippleGrowFrames, and this
+	// records whether that entrance is in flight and the frame it began.
+	rippleArmed   bool
+	rippleStart   int
 	statusCmdText string
 	// Working-line state. The verb is drawn once per turn so it holds still
 	// instead of reshuffling every frame, and turnUsage is the cumulative count
@@ -144,6 +152,10 @@ func New(ctx context.Context, ctrl *app.Controller, session domain.Session) *Mod
 	ta.SetWidth(80)
 	_ = ta.Focus()
 	m := &Model{ctx: ctx, ctrl: ctrl, cfg: cfg, session: session, prompt: ta, conv: NewConversation(), subagents: map[string]domain.AgentRun{}, subagentProgress: map[string]subagentProgress{}}
+	// A session that boots in supercode mode grows its surface from frame zero
+	// rather than flashing a finished panel before the first tick arms it.
+	m.rippleArmed = m.supercodeOn()
+	m.rippleStart = 0
 	m.setFocus(FocusPrompt)
 	m.activities = append([]domain.ToolActivity(nil), session.ToolActivities...)
 	m.conv.SetSession(session, 80)
@@ -154,6 +166,10 @@ func (m *Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.prompt.Focus(), waitRuntime(m.ctrl.Events()), m.refreshSessions()}
 	if strings.TrimSpace(m.cfg.StatuslineCommand) != "" {
 		cmds = append(cmds, statusTick(), m.runStatusCommand())
+	}
+	// Boot with supercode on is a frame-driven screen from the first paint.
+	if cmd := m.startAnimation(); cmd != nil {
+		cmds = append(cmds, cmd)
 	}
 	return tea.Batch(cmds...)
 }

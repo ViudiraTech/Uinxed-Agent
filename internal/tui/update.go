@@ -17,6 +17,9 @@ import (
 )
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Catch mode changes that did not come through the toggle — a session switch,
+	// a reload, a restored default — so the entrance is not skipped.
+	m.noteRippleTransition()
 	switch x := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = x.Width, x.Height
@@ -105,10 +108,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showToast(string(x))
 		return m, nil
 	case animationTickMsg:
-		if m.cfg.Animations && (m.busy || m.hasRunningSubagents()) {
+		if m.cfg.Animations && m.needsAnimation() {
 			m.activityFrame++
 			return m, animationTick()
 		}
+		// Nothing left to animate: let the chain die and re-arm on the next
+		// event that makes the screen animatable again.
+		m.ticking = false
 		return m, nil
 	case statusCmdTickMsg:
 		if strings.TrimSpace(m.ctrl.Config.Snapshot().StatuslineCommand) == "" {
@@ -189,15 +195,10 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 				m.busySince = time.Now()
 				m.mainRunID = a.Run.ID
 				m.beginTurn()
-				if m.cfg.Animations {
-					return animationTick()
-				}
-			} else {
-				m.upsertSubagent(a.Run)
-				if m.cfg.Animations && !m.busy {
-					return animationTick()
-				}
+				return m.startAnimation()
 			}
+			m.upsertSubagent(a.Run)
+			return m.startAnimation()
 		}
 	case domain.EventAgentFinished:
 		if a, ok := e.Data.(domain.AgentEvent); ok {
@@ -919,6 +920,13 @@ func (m *Model) submitPrompt() tea.Cmd {
 			})
 		}
 	}
+	return m.sendTurn(text)
+}
+
+// sendTurn starts a turn with text as the user's message. It is split out from
+// submitPrompt so a command such as /init can dispatch a turn without going
+// through the composer, and without pretending the user typed it.
+func (m *Model) sendTurn(text string) tea.Cmd {
 	if m.busy {
 		m.showToast("a turn is already running; esc or ctrl+c to cancel")
 		return nil
@@ -1090,6 +1098,11 @@ func (m *Model) handleOp(x opMsg) tea.Cmd {
 			m.connect.Error = terminalutil.SanitizeText(x.err.Error())
 		}
 		m.showError(x.err)
+		if x.op == "set_supercode" {
+			// The toggle flipped locally before the write was attempted. Reload so
+			// the UI shows what the store actually holds.
+			return m.reloadSession()
+		}
 		return nil
 	}
 	switch x.op {
@@ -1171,8 +1184,15 @@ func (m *Model) handleOp(x opMsg) tea.Cmd {
 		return m.reloadSession()
 	case "set_supercode":
 		on, _ := x.value.(bool)
+		// Reflect the toggle before the reload lands: the reload is async, and the
+		// ticker below reads the mode off the session to decide whether the
+		// surface and the border have anything to animate.
+		if m.session.Metadata == nil {
+			m.session.Metadata = map[string]any{}
+		}
+		m.session.Metadata["supercode"] = on
 		m.showToast("✓ supercode " + onOff(on))
-		return m.reloadSession()
+		return tea.Batch(m.reloadSession(), m.startAnimation())
 	case "set_agent", "set_model", "set_provider", "set_thinking", "clear", "compact", "cd", "key", "connect", "delete":
 		m.showToast("✓ " + strings.ReplaceAll(x.op, "_", " "))
 		if x.op == "delete" {
@@ -1269,4 +1289,25 @@ const spinnerInterval = 120 * time.Millisecond
 
 func animationTick() tea.Cmd {
 	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg { return animationTickMsg{} })
+}
+
+// needsAnimation reports whether the current screen carries a frame-driven
+// element: the working line while a turn runs, a delegate's progress, or the
+// supercode surface and its border. Frame-driven art is only worth a timer while
+// one of those is actually visible — an idle slider with the mode off is static.
+func (m *Model) needsAnimation() bool {
+	// The composer's supercode ring is static, so the mode alone is not a reason
+	// to keep a timer alive. The surface only moves while its panel is on screen.
+	return m.busy || m.hasRunningSubagents() || (m.overlay == overlayEffort && m.supercodeOn())
+}
+
+// startAnimation arms the frame ticker when something animatable is on screen
+// and no chain is running. The guard matters: two live chains would advance the
+// frame twice per interval and make every effect run at double speed.
+func (m *Model) startAnimation() tea.Cmd {
+	if !m.cfg.Animations || m.ticking || !m.needsAnimation() {
+		return nil
+	}
+	m.ticking = true
+	return animationTick()
 }

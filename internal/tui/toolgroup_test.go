@@ -30,10 +30,12 @@ func TestToolRowsCollapsesRuns(t *testing.T) {
 		want  int
 	}{
 		{"a lone read keeps its own card and result", callsNamed("read_file"), 2},
-		{"two reads fold into one row", callsNamed("read_file", "grep"), 1},
-		{"a longer run is still one row", callsNamed("read_file", "grep", "glob", "bash"), 1},
-		{"shell folds in too", callsNamed("bash", "grep"), 1},
-		{"a mutation breaks the run", callsNamed("read_file", "grep", "write_file"), 1 + 2},
+		{"two reads fold into one card", callsNamed("read_file", "grep"), 2},
+		{"a longer run is still one card", callsNamed("read_file", "grep", "glob", "tree"), 2},
+		// A command is not summarisable into "ran 1 command": the command is the
+		// information, so it keeps its own card.
+		{"a command breaks the run", callsNamed("bash", "grep"), 2 + 2},
+		{"a mutation breaks the run", callsNamed("read_file", "grep", "write_file"), 2 + 2},
 		{"independent tools stay independent", callsNamed("write_file", "todo_write"), 4},
 	}
 	for _, c := range cases {
@@ -98,12 +100,12 @@ func TestGroupedRowHidesNothingWhenOpened(t *testing.T) {
 	c.SetSession(domain.Session{ID: "s", Messages: []domain.Message{{
 		ID: "a", Role: domain.RoleAssistant,
 		ToolCalls: []domain.ToolCall{
-			{ID: "c0", Function: domain.ToolCallFunction{Name: "bash", Arguments: `{"cmd":"rm -rf build"}`}},
+			{ID: "c0", Function: domain.ToolCallFunction{Name: "read_file", Arguments: `{"path":"secret/long/path.go"}`}},
 			{ID: "c1", Function: domain.ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.go"}`}},
 		},
 	}}}, 80)
 	acts := map[string]domain.ToolActivity{
-		"c0": {CallID: "c0", Name: "bash", State: "success", Output: "removed"},
+		"c0": {CallID: "c0", Name: "read_file", State: "success", Output: "package secret"},
 		"c1": {CallID: "c1", Name: "read_file", State: "success", Output: "package a"},
 	}
 	render := func() string {
@@ -116,16 +118,18 @@ func TestGroupedRowHidesNothingWhenOpened(t *testing.T) {
 	}
 
 	collapsed := render()
-	if !strings.Contains(collapsed, "Read 1 file, ran 1 command") {
+	if !strings.Contains(collapsed, "Read 2 files") {
 		t.Fatalf("collapsed group row missing:\n%s", collapsed)
 	}
-	if strings.Contains(collapsed, "rm -rf build") {
-		t.Fatalf("a collapsed group must not inline its commands:\n%s", collapsed)
+	// The summary names what was read: "2 files" without saying which is the one
+	// thing a reader cannot recover without opening the row.
+	if !strings.Contains(collapsed, "secret/long/path.go") {
+		t.Fatalf("collapsed group does not name its files:\n%s", collapsed)
 	}
 
 	c.ToggleTool(groupPrefix + "c0,c1")
 	opened := render()
-	for _, want := range []string{"rm -rf build", "Read(a.go)", "removed", "package a"} {
+	for _, want := range []string{"secret/long/path.go", "Read(a.go)", "package secret", "package a"} {
 		if !strings.Contains(opened, want) {
 			t.Fatalf("opening the group lost %q:\n%s", want, opened)
 		}

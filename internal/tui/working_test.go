@@ -91,6 +91,9 @@ func TestWorkingVerbHoldsForTheTurnAndChangesOnTheNext(t *testing.T) {
 }
 
 func TestWorkingColorRampsFromAccentToError(t *testing.T) {
+	// See components_test.go: NO_COLOR would strip the palette and turn every
+	// comparison into "" == "".
+	t.Setenv("CLICOLOR_FORCE", "1")
 	th := ThemeByName("claude")
 	accent, fail := hexColor(th.Primary), hexColor(th.Error)
 

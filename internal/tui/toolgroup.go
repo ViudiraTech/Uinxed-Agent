@@ -13,19 +13,19 @@ import (
 // once — which is what the one row visually represents.
 const groupPrefix = "group:"
 
-// groupableTools are the calls Claude Code folds into a single aggregate row. It
-// is a curated list rather than tools.CategoryRead: that category also holds
-// use_skill, and folding a skill activation into "Read 1 file" would misreport
-// what the agent did.
+// groupableTools are the calls that fold into a single aggregate row. It is a
+// curated list rather than tools.CategoryRead: that category also holds use_skill,
+// and folding a skill activation into "Read 1 file" would misreport what the agent
+// did.
 //
-// bash is included for fidelity with Claude Code even though it is the one entry
-// that can mutate. Nothing becomes unreachable: opening the row renders every
-// command and its full result, so a destructive call is hidden only until asked
-// for, never dropped.
+// bash is deliberately NOT groupable. A group row says what kind of work happened
+// ("read 2 files, searched 1 pattern"), which is the right summary for reads — but
+// for a command the command itself is the information, and folding it into "ran 1
+// command" hides the only part a reader needs to check.
 var groupableTools = map[string]bool{
 	"read_file": true, "list_dir": true, "grep": true, "glob": true, "tree": true,
 	"git_status": true, "git_diff": true, "git_log": true,
-	"fetch_url": true, "web_search": true, "bash": true,
+	"fetch_url": true, "web_search": true,
 }
 
 // toolRun is a maximal stretch of adjacent calls that render together. A run of
@@ -55,25 +55,16 @@ func planToolRuns(calls []domain.ToolCall) []toolRun {
 	return runs
 }
 
-// toolRows is the height the calls occupy: two rows per standalone call (its
-// head and its result) and one for each grouped run. The virtualizer's estimate
-// has to know this, because grouping changes a block's height while its content
-// stays the same.
+// toolRows is the height the calls occupy. Every run — grouped or not — is one
+// call row plus one summary row. Keeping the two cases the same height is what
+// lets the virtualizer size a block without knowing which calls grouped.
 func toolRows(calls []domain.ToolCall) int {
-	rows := 0
-	for _, run := range planToolRuns(calls) {
-		if run.group {
-			rows++
-			continue
-		}
-		rows += 2
-	}
-	return rows
+	return 2 * len(planToolRuns(calls))
 }
 
-// renderToolGroup draws a run as one row: a gerund while the work is in flight
-// and a dim past-tense summary once it settles, which is how Claude Code answers
-// "what is happening" and then "what happened".
+// renderToolGroup draws a run of read-only calls as a call row plus a summary
+// row. The summary lists what was touched, which is the one thing the aggregate
+// row can lose: opening it restores every individual card.
 func (c *Conversation) renderToolGroup(run toolRun, acts map[string]domain.ToolActivity, t Theme, width int, hover string, frame int) []renderLine {
 	ids := make([]string, 0, len(run.calls))
 	running, failed := false, false
@@ -89,7 +80,9 @@ func (c *Conversation) renderToolGroup(run toolRun, acts map[string]domain.ToolA
 	value := groupPrefix + strings.Join(ids, ",")
 	open := c.expandedTools[run.calls[0].ID]
 
-	out := []renderLine{{Text: c.groupLine(run, t, hover, value, frame, running, failed, open), Action: ActionTool, Value: value}}
+	head := lipgloss.NewStyle().Foreground(t.Gutter).Render(t.Glyphs.Assistant) + " " + c.groupHead(run, t, hover, value, running)
+	out := []renderLine{{Text: head, Action: ActionTool, Value: value}}
+	out = append(out, c.groupSummary(run, acts, t, width, running, failed, open, frame))
 	if !open {
 		return out
 	}
@@ -101,35 +94,85 @@ func (c *Conversation) renderToolGroup(run toolRun, acts map[string]domain.ToolA
 	return out
 }
 
-func (c *Conversation) groupLine(run toolRun, t Theme, hover, value string, frame int, running, failed, open bool) string {
-	g := t.Glyphs
-	icon, fg := g.Success, t.Muted
-	switch {
-	case running:
-		icon, fg = g.spinner(frame), t.Warning
-	case failed:
-		icon, fg = g.Failure, t.Error
-	}
-
+// groupHead is the call row: a gerund while the work is in flight and a dim
+// past-tense summary once it settles.
+func (c *Conversation) groupHead(run toolRun, t Theme, hover, value string, running bool) string {
 	text := groupPhrase(run.calls, running)
 	if running {
 		text += "…"
 	}
+	style := lipgloss.NewStyle().Foreground(t.Muted)
+	if running {
+		style = lipgloss.NewStyle().Foreground(t.Text)
+	}
+	if hover == value {
+		style = style.Underline(true)
+	}
+	return style.Render(text)
+}
+
+// groupSummary is the row under a run: the state marker and what was touched.
+// The paths and patterns are the information the aggregate would otherwise hide.
+func (c *Conversation) groupSummary(run toolRun, acts map[string]domain.ToolActivity, t Theme, width int, running, failed, expanded bool, frame int) renderLine {
+	g := t.Glyphs
+	state := domain.ToolActivity{State: "success"}
+	switch {
+	case running:
+		state.State = "running"
+	case failed:
+		state.State = "failed"
+	}
+
+	detail := groupDetail(run.calls)
+	switch {
+	case running:
+		detail = "running"
+	case failed:
+		detail = ""
+		for _, tc := range run.calls {
+			if a := acts[tc.ID]; a.State == "failed" && strings.TrimSpace(a.Error) != "" {
+				detail = firstLine(a.Error)
+				break
+			}
+		}
+		if detail == "" {
+			detail = "failed"
+		}
+	}
+	var parts []string
+	if detail != "" {
+		parts = append(parts, detail)
+	}
+	if !expanded {
+		parts = append(parts, "ctrl+o")
+	}
+
+	glyph, glyphStyle := toolStateGlyph(state, t, frame)
 	style := lipgloss.NewStyle().Foreground(t.Muted)
 	if failed {
 		style = lipgloss.NewStyle().Foreground(t.Error)
 	} else if running {
 		style = lipgloss.NewStyle().Foreground(t.Text)
 	}
-	if hover == value {
-		style = style.Underline(true)
+	gutter := resultGutter(g)
+	body := strings.Join(parts, " · ")
+	text := gutter + glyphStyle.Render(glyph)
+	if body != "" {
+		text += " " + style.Render(truncWidth(body, max(6, width-lipgloss.Width(gutter)-2)))
 	}
+	return renderLine{Text: text}
+}
 
-	line := lipgloss.NewStyle().Foreground(fg).Render(icon) + " " + style.Render(text)
-	if open {
-		line += lipgloss.NewStyle().Foreground(t.Muted).Render("  · details")
+// groupDetail lists what the run touched, in call order. It is the summary line's
+// payload: "read 3 files" says how many, this says which.
+func groupDetail(calls []domain.ToolCall) string {
+	parts := make([]string, 0, len(calls))
+	for _, tc := range calls {
+		if s := toolSummary(tc.Function.Name, tc.Function.Arguments); s != "" {
+			parts = append(parts, s)
+		}
 	}
-	return line
+	return strings.Join(parts, ", ")
 }
 
 // groupPhrase counts a run by what was done rather than by how many calls it

@@ -289,6 +289,10 @@ func TestModernThemes(t *testing.T) {
 // case label would silently render the wrong palette instead of failing. Pin the
 // brand token that identifies the claude theme.
 func TestClaudeThemeResolvesToBrandPalette(t *testing.T) {
+	// NO_COLOR and TERM=dumb replace every token with lipgloss.NoColor, which
+	// would fail this test for reasons that have nothing to do with the palette.
+	// Pin colour on so the assertion is about the theme, not the terminal.
+	t.Setenv("CLICOLOR_FORCE", "1")
 	th := ThemeByName("claude")
 	if th.Name != "claude" {
 		t.Fatalf("ThemeByName(claude).Name = %q; the case label is not matching", th.Name)
@@ -597,17 +601,21 @@ func TestToolResultClausePhrasing(t *testing.T) {
 	lines := "a\nb\nc"
 	cases := []struct {
 		name string
+		args string
 		act  domain.ToolActivity
 		want string
 	}{
-		{"read counts lines", domain.ToolActivity{State: "success", Output: lines}, "Read 3 lines"},
-		{"read singular", domain.ToolActivity{State: "success", Output: "only"}, "Read 1 line"},
-		{"grep counts matches", domain.ToolActivity{State: "success", Output: lines}, "Found 3 matches"},
-		{"grep singular", domain.ToolActivity{State: "success", Output: "x"}, "Found 1 match"},
-		{"glob counts files", domain.ToolActivity{State: "success", Output: lines}, "Found 3 files"},
-		{"failure shows the error", domain.ToolActivity{State: "failed", Error: "boom\nsecond"}, "boom"},
-		{"failure without a message", domain.ToolActivity{State: "failed"}, "Failed"},
-		{"no output", domain.ToolActivity{State: "success"}, ""},
+		{"read counts lines", `{"path":"a.go"}`, domain.ToolActivity{State: "success", Output: lines}, "Read 3 lines"},
+		{"read singular", `{"path":"a.go"}`, domain.ToolActivity{State: "success", Output: "only"}, "Read 1 line"},
+		{"grep counts matches", `{"pattern":"x"}`, domain.ToolActivity{State: "success", Output: lines}, "Found 3 matches"},
+		{"grep singular", `{"pattern":"x"}`, domain.ToolActivity{State: "success", Output: "x"}, "Found 1 match"},
+		{"glob counts files", `{"pattern":"*.go"}`, domain.ToolActivity{State: "success", Output: lines}, "Found 3 files"},
+		{"failure shows the error", `{"cmd":"x"}`, domain.ToolActivity{State: "failed", Error: "boom\nsecond"}, "boom"},
+		{"failure without a message", `{"cmd":"x"}`, domain.ToolActivity{State: "failed"}, "Failed"},
+		{"no output", `{"cmd":"x"}`, domain.ToolActivity{State: "success"}, "(no output)"},
+		{"write counts lines", `{"path":"a.go","content":"a\nb\nc\n"}`, domain.ToolActivity{State: "success", Output: "written"}, "Wrote 3 lines"},
+		{"edit shows the delta", `{"path":"a.go","old_string":"a\nb","new_string":"a\nc\nd"}`, domain.ToolActivity{State: "success", Output: "edited"}, "+3 −2"},
+		{"failed command keeps its exit code", `{"cmd":"false"}`, domain.ToolActivity{State: "success", Output: "boom", ExitCode: intp(2)}, "exit 2 · boom"},
 	}
 	for _, c := range cases {
 		name := "grep"
@@ -616,12 +624,15 @@ func TestToolResultClausePhrasing(t *testing.T) {
 			name = "read_file"
 		case strings.HasPrefix(c.name, "glob"):
 			name = "glob"
-		case strings.HasPrefix(c.name, "failure"):
+		case strings.HasPrefix(c.name, "failure"), c.name == "no output", strings.HasPrefix(c.name, "failed command"):
 			name = "bash"
-		case c.name == "no output":
-			name = "bash"
+		case strings.HasPrefix(c.name, "write"):
+			name = "write_file"
+		case strings.HasPrefix(c.name, "edit"):
+			name = "edit_file"
 		}
-		if got := toolResultClause(name, c.act); got != c.want {
+		tc := domain.ToolCall{Function: domain.ToolCallFunction{Name: name, Arguments: c.args}}
+		if got := toolResultClause(tc, c.act); got != c.want {
 			t.Fatalf("%s: toolResultClause = %q, want %q", c.name, got, c.want)
 		}
 	}
@@ -631,10 +642,19 @@ func TestToolResultClausePhrasing(t *testing.T) {
 // nothing hidden would train the reader to ignore it.
 func TestToolExpandHintTracksExpandableContent(t *testing.T) {
 	call := domain.ToolCall{ID: "c", Function: domain.ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.go"}`}}
-	if !toolExpandable(call, domain.ToolActivity{State: "success", Output: "package a"}) {
-		t.Fatal("arguments and output are both expandable")
+	// A short argument and a one-line result are both already on the card.
+	if toolExpandable(call, domain.ToolActivity{State: "success", Output: "package a"}) {
+		t.Fatal("a one-line result with a short argument claims more to show")
+	}
+	if !toolExpandable(call, domain.ToolActivity{State: "success", Output: "a\nb\nc"}) {
+		t.Fatal("a multi-line result has no expand hint")
+	}
+	if !toolExpandable(call, domain.ToolActivity{State: "failed", Error: "boom"}) {
+		t.Fatal("a failure has no expand hint")
 	}
 	if toolExpandable(domain.ToolCall{ID: "c"}, domain.ToolActivity{State: "pending"}) {
 		t.Fatal("a call with no arguments and no output has nothing to expand")
 	}
 }
+
+func intp(v int) *int { return &v }

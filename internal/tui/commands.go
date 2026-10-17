@@ -49,6 +49,7 @@ var commandDefs = []commandDef{
 	{"/migrate", "Alias for /storage", ""},
 	{"/diff", "Open the git diff reviewer", "Ctrl+D"},
 	{"/skills", "Browse and load agent skills", ""},
+	{"/init", "Write AGENTS.md from this repository, or refresh it", ""},
 	{"/mouse", "Toggle terminal mouse capture", ""},
 	{"/theme", "Switch color theme", ""},
 	{"/clear", "Clear the current session", ""},
@@ -213,6 +214,8 @@ func (m *Model) executeCommand(text string) tea.Cmd {
 	case "/diff":
 		cwd := m.session.CWD
 		return func() tea.Msg { s, e := m.ctrl.Diff(m.ctx, cwd); return diffMsg{s, e} }
+	case "/init":
+		return m.runInit()
 	case "/skills":
 		if arg == "" {
 			m.openSkillPicker()

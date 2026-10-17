@@ -495,10 +495,24 @@ func (m *Model) renderOverlay(t Theme) string {
 	} else if len(lines) > innerH {
 		lines = lines[:innerH]
 	}
+	if m.overlay == overlayEffort && m.supercodeOn() {
+		// The panel is taller than the scale, and the rest of it belongs to the
+		// mode: the surface fills every row below the text, so nothing is drawn on
+		// top of it. The area is handed to the renderer, not a fixed grid — the
+		// sources have to be placed relative to the space that actually exists.
+		if fill := innerH - len(lines); fill > 0 {
+			lines = append(lines, rippleRows(w-6, fill, m.activityFrame, m.rippleReveal())...)
+		}
+	}
 	for len(lines) < innerH {
 		lines = append(lines, "")
 	}
-	boxStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(t.Border).Padding(0, 1).Width(w - 2).Height(h - 2)
+	borderColor := t.Border
+	if m.overlay == overlayEffort && m.supercodeOn() && m.cfg.Animations && !noColorEnv() {
+		// The frame is part of the panel, so the mode owns it too.
+		borderColor = lipgloss.Color(ripplePulse(m.activityFrame))
+	}
+	boxStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(borderColor).Padding(0, 1).Width(w - 2).Height(h - 2)
 	body := boxStyle.Render(strings.Join(lines, "\n"))
 	top := m.layout.overlay.Y
 	left := m.layout.overlay.X
