@@ -100,22 +100,25 @@ Rules for this mode:
   Ready to implement — call exit_plan to proceed.
 - Do not claim work is done. Nothing has been changed yet.`
 
-func SystemPrompt(a domain.AgentDefinition, model, skillBlock string, supercode bool) string {
-	return systemPromptAt(a, model, skillBlock, supercode, time.Now())
+func SystemPrompt(a domain.AgentDefinition, model, contextBlock string, supercode bool) string {
+	return systemPromptAt(a, model, contextBlock, supercode, time.Now())
 }
 
 // SystemPromptMode appends the active approval mode's instructions. The mode is
 // threaded in from the session so the prompt always describes the policy the
 // approval layer will actually enforce for that session.
-func SystemPromptMode(a domain.AgentDefinition, model, skillBlock string, supercode bool, mode string) string {
-	return systemPromptModeAt(a, model, skillBlock, supercode, mode, time.Now())
+func SystemPromptMode(a domain.AgentDefinition, model, contextBlock string, supercode bool, mode string) string {
+	return systemPromptModeAt(a, model, contextBlock, supercode, mode, time.Now())
 }
 
-func systemPromptAt(a domain.AgentDefinition, model, skillBlock string, supercode bool, now time.Time) string {
-	return systemPromptModeAt(a, model, skillBlock, supercode, "", now)
+func systemPromptAt(a domain.AgentDefinition, model, contextBlock string, supercode bool, now time.Time) string {
+	return systemPromptModeAt(a, model, contextBlock, supercode, "", now)
 }
 
-func systemPromptModeAt(a domain.AgentDefinition, model, skillBlock string, supercode bool, mode string, now time.Time) string {
+// systemPromptModeAt assembles the request prompt. contextBlock carries the
+// repository's own material — project instruction files first, then the skill
+// index — because it is the part of the prompt that changes between repositories.
+func systemPromptModeAt(a domain.AgentDefinition, model, contextBlock string, supercode bool, mode string, now time.Time) string {
 	p := a.Prompt
 	zone, offset := now.Zone()
 	offsetSign := "+"
@@ -137,7 +140,7 @@ Timezone: %s (UTC%s%02d:%02d)
 	if strings.TrimSpace(model) != "" {
 		p += fmt.Sprintf("\n\n## 运行时\n你当前运行的模型是: %s。回答与代码风格应适配该模型的能力。", model)
 	}
-	p += skillBlock
+	p += contextBlock
 	if mode == "plan" {
 		p += "\n\n" + planPrompt
 	}

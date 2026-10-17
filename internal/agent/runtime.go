@@ -35,7 +35,6 @@ type Runtime struct {
 	mu               sync.Mutex
 	runs             map[string]*runHandle
 	seq              atomic.Uint64
-	maxToolRounds    int
 	wg               sync.WaitGroup
 	closed           bool
 	log              *slog.Logger
@@ -50,7 +49,7 @@ func NewRuntime(store storage.Store, registry *tools.Registry, resolver Provider
 	if registry == nil {
 		registry = tools.DefaultRegistry()
 	}
-	r := &Runtime{store: store, registry: registry, resolve: resolver, events: make(chan domain.Event, 256), runs: map[string]*runHandle{}, maxToolRounds: 32, approvalFallback: approval.DefaultMode}
+	r := &Runtime{store: store, registry: registry, resolve: resolver, events: make(chan domain.Event, 256), runs: map[string]*runHandle{}, approvalFallback: approval.DefaultMode}
 	r.broker = NewBroker(func(e domain.Event) { r.emitTerminal(e) })
 	return r
 }
@@ -241,7 +240,12 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 	// a consumer showing "what has this turn cost" would otherwise watch the
 	// number fall back to near zero every time a tool round started.
 	var turnUsage domain.Usage
-	for round := 0; round < r.maxToolRounds; round++ {
+	// There is no round cap. A turn ends when the model answers without asking
+	// for another tool call — that is the only exit that means the work is done,
+	// and a fixed budget either cuts long investigations short or forces the
+	// model to rush. Runaway loops are bounded by the turn's context instead:
+	// Esc, Ctrl+C and shutdown cancel it, and every round checks for that.
+	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -252,7 +256,10 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 		st.mu.Unlock()
 		adef := Get(sess.AgentID)
 		mode := modeFromMetadata(sess.Metadata, r.approvalMode())
-		sys := SystemPromptMode(adef, sess.Model, skills.PromptBlock(sess.CWD), supercodeFromMetadata(sess.Metadata), string(mode))
+		// Project instructions come before the skill index: what this repository
+		// asks for outranks the catalogue of what the agent can load.
+		contextBlock := InstructionsBlock(sess.CWD) + skills.PromptBlock(sess.CWD)
+		sys := SystemPromptMode(adef, sess.Model, contextBlock, supercodeFromMetadata(sess.Metadata), string(mode))
 		history := contextmgr.FitMessages(sess.Messages, contextmgr.HistoryBudget(sess.Model))
 		msgs := make([]domain.Message, 0, len(history)+1)
 		msgs = append(msgs, domain.Message{Role: domain.RoleSystem, Content: sys})
@@ -323,7 +330,6 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 			return err
 		}
 	}
-	return fmt.Errorf("tool round limit (%d) exceeded", r.maxToolRounds)
 }
 
 type toolAccumulator struct{ calls []domain.ToolCall }
