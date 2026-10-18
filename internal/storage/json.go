@@ -102,6 +102,50 @@ func (j *JSONStore) LoadSession(ctx context.Context, id string) (domain.Session,
 	return domain.Session{}, sql.ErrNoRows
 }
 
+func (j *JSONStore) SessionMeta(ctx context.Context, id string) (map[string]any, error) {
+	s, err := j.LoadSession(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if s.Metadata == nil {
+		return map[string]any{}, nil
+	}
+	out := make(map[string]any, len(s.Metadata))
+	for k, v := range s.Metadata {
+		out[k] = v
+	}
+	return out, nil
+}
+
+// UpdateSettings applies fn under the store lock and saves the collection, which
+// is the only write a legacy JSON file supports. The lock, not a column-level
+// update, is what keeps a concurrent settings write from racing itself.
+func (j *JSONStore) UpdateSettings(ctx context.Context, id string, fn func(*domain.Session)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	ss, active, err := j.all()
+	if err != nil {
+		return err
+	}
+	found := false
+	for i := range ss {
+		if ss[i].ID != id {
+			continue
+		}
+		fn(&ss[i])
+		ss[i].UpdatedAt = time.Now()
+		found = true
+		break
+	}
+	if !found {
+		return sql.ErrNoRows
+	}
+	return j.cfg.SaveLegacySessions(ss, active)
+}
+
 func (j *JSONStore) SaveSession(ctx context.Context, s domain.Session) error {
 	if err := ctx.Err(); err != nil {
 		return err

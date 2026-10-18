@@ -43,6 +43,30 @@ func (m *memExportStore) SaveSession(_ context.Context, s domain.Session) error 
 	m.s[s.ID] = s.Clone()
 	return nil
 }
+func (m *memExportStore) SessionMeta(_ context.Context, id string) (map[string]any, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.s[id]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	out := map[string]any{}
+	for k, v := range s.Metadata {
+		out[k] = v
+	}
+	return out, nil
+}
+func (m *memExportStore) UpdateSettings(_ context.Context, id string, fn func(*domain.Session)) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.s[id]
+	if !ok {
+		return sql.ErrNoRows
+	}
+	fn(&s)
+	m.s[id] = s
+	return nil
+}
 func (m *memExportStore) DeleteSession(_ context.Context, id string) error { return nil }
 func (m *memExportStore) DeleteAllSessions(context.Context) error          { return nil }
 func (m *memExportStore) Close() error                                     { return nil }

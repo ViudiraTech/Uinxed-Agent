@@ -61,6 +61,33 @@ func (m *memStore) DeleteSession(_ context.Context, id string) error {
 	delete(m.s, id)
 	return nil
 }
+func (m *memStore) SessionMeta(_ context.Context, id string) (map[string]any, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.s[id]
+	if !ok {
+		return nil, errors.New("session not found")
+	}
+	out := map[string]any{}
+	for k, v := range s.Metadata {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (m *memStore) UpdateSettings(_ context.Context, id string, fn func(*domain.Session)) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.s[id]
+	if !ok {
+		return errors.New("session not found")
+	}
+	fn(&s)
+	s.UpdatedAt = time.Now()
+	m.s[id] = s
+	return nil
+}
+
 func (m *memStore) DeleteAllSessions(context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

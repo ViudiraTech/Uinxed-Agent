@@ -24,7 +24,14 @@ func OpenSQLite(ctx context.Context, path string) (*SQLite, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	// The pragmas go in the DSN, not in a one-off Exec: foreign_keys and
+	// busy_timeout are per-connection settings, and the pool opens new
+	// connections (up to SetMaxOpenConns) long after OpenSQLite returns. A
+	// connection without foreign_keys leaves orphaned messages behind when a
+	// session is deleted by cascade; one without busy_timeout fails a concurrent
+	// writer immediately instead of waiting.
+	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -46,15 +53,15 @@ func OpenSQLite(ctx context.Context, path string) (*SQLite, error) {
 func (s *SQLite) Path() string { return s.path }
 
 func (s *SQLite) configure(ctx context.Context) error {
-	for _, q := range []string{
-		`PRAGMA journal_mode=WAL`,
-		`PRAGMA busy_timeout=5000`,
-		`PRAGMA foreign_keys=ON`,
-		`PRAGMA synchronous=NORMAL`,
-	} {
-		if _, err := s.db.ExecContext(ctx, q); err != nil {
-			return fmt.Errorf("sqlite pragma: %w", err)
-		}
+	// Verify the DSN pragmas actually applied. journal_mode is persisted in the
+	// file; the rest are per connection and cannot be checked from the pool, so a
+	// missing one here means the DSN was rejected outright.
+	var mode string
+	if err := s.db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&mode); err != nil {
+		return fmt.Errorf("sqlite pragma: %w", err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		return fmt.Errorf("sqlite journal_mode = %q, want wal", mode)
 	}
 	return s.db.PingContext(ctx)
 }
@@ -162,18 +169,61 @@ func (s *SQLite) migrateLegacyV1(ctx context.Context) error {
 		if sess.AgentID == "" {
 			sess.AgentID = "build"
 		}
-		var msgs []domain.Message
 		src := r.Conversation
 		if strings.TrimSpace(src) == "" || src == "[]" {
 			src = r.History
 		}
-		_ = json.Unmarshal([]byte(src), &msgs)
-		sess.Messages = msgs
+		sess.Messages = decodeLegacyMessages(src, r.ID)
 		if err := saveSessionTx(ctx, tx, sess); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+// legacyMessageDB is the Node-era message shape. domain.Message reads
+// reasoning_content and created_at, so decoding the old JSON straight into it
+// silently drops the reasoning text and the timestamp — and the migration is
+// advertised as preserving both.
+type legacyMessageDB struct {
+	Role             string            `json:"role"`
+	Content          string            `json:"content"`
+	Reasoning        string            `json:"reasoning"`
+	ReasoningContent string            `json:"reasoning_content"`
+	Time             int64             `json:"time"`
+	ToolCallID       string            `json:"tool_call_id"`
+	Name             string            `json:"name"`
+	ToolCalls        []domain.ToolCall `json:"tool_calls"`
+}
+
+func decodeLegacyMessages(raw, sessionID string) []domain.Message {
+	var in []legacyMessageDB
+	if err := json.Unmarshal([]byte(raw), &in); err != nil {
+		return nil
+	}
+	out := make([]domain.Message, 0, len(in))
+	for i, m := range in {
+		msg := domain.Message{
+			ID:               fmt.Sprintf("legacy-%s-%d", sessionID, i),
+			Role:             domain.Role(m.Role),
+			Content:          m.Content,
+			ReasoningContent: m.ReasoningContent,
+			ToolCallID:       m.ToolCallID,
+			Name:             m.Name,
+			ToolCalls:        m.ToolCalls,
+		}
+		if msg.ReasoningContent == "" {
+			msg.ReasoningContent = m.Reasoning
+		}
+		if m.Time > 0 {
+			msg.CreatedAt = time.UnixMilli(m.Time)
+		}
+		if msg.Role == "" {
+			msg.Role = domain.RoleAssistant
+		}
+		out = append(out, msg)
+	}
+	return out
 }
 
 const schema = `
@@ -418,6 +468,54 @@ func (s *SQLite) loadActivities(ctx context.Context, sess *domain.Session) error
 		sess.ToolActivities = append(sess.ToolActivities, a)
 	}
 	return rows.Err()
+}
+
+// SessionMeta loads only the metadata column.
+func (s *SQLite) SessionMeta(ctx context.Context, id string) (map[string]any, error) {
+	var raw string
+	if err := s.db.QueryRowContext(ctx, `SELECT metadata FROM sessions WHERE id=?`, id).Scan(&raw); err != nil {
+		return nil, err
+	}
+	meta := map[string]any{}
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &meta)
+	}
+	return meta, nil
+}
+
+// UpdateSettings rewrites the settings columns only. The transcript, todos and
+// tool activity are read by nothing here and written by nothing here, so a
+// concurrent turn's message save cannot be rolled back by a settings change.
+func (s *SQLite) UpdateSettings(ctx context.Context, id string, fn func(*domain.Session)) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var (
+		name, cwd, agentID, model, providerID, metaRaw string
+	)
+	if err := tx.QueryRowContext(ctx, `SELECT name,cwd,agent_id,model,provider_id,metadata FROM sessions WHERE id=?`, id).
+		Scan(&name, &cwd, &agentID, &model, &providerID, &metaRaw); err != nil {
+		return err
+	}
+	sess := domain.Session{ID: id, Name: name, CWD: cwd, AgentID: agentID, Model: model, ProviderID: providerID}
+	if strings.TrimSpace(metaRaw) != "" {
+		_ = json.Unmarshal([]byte(metaRaw), &sess.Metadata)
+	}
+	if sess.Metadata == nil {
+		sess.Metadata = map[string]any{}
+	}
+	fn(&sess)
+	meta, err := json.Marshal(sess.Metadata)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET name=?,cwd=?,agent_id=?,model=?,provider_id=?,metadata=?,updated_at=? WHERE id=?`,
+		sess.Name, sess.CWD, sess.AgentID, sess.Model, sess.ProviderID, string(meta), time.Now().UnixMilli(), id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLite) SaveSession(ctx context.Context, sess domain.Session) error {

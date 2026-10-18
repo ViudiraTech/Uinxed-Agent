@@ -62,6 +62,20 @@ func (h *Hybrid) SaveSession(ctx context.Context, v domain.Session) error {
 	}
 	return s.SaveSession(ctx, v)
 }
+func (h *Hybrid) SessionMeta(ctx context.Context, id string) (map[string]any, error) {
+	s, e := h.target()
+	if e != nil {
+		return nil, e
+	}
+	return s.SessionMeta(ctx, id)
+}
+func (h *Hybrid) UpdateSettings(ctx context.Context, id string, fn func(*domain.Session)) error {
+	s, e := h.target()
+	if e != nil {
+		return e
+	}
+	return s.UpdateSettings(ctx, id, fn)
+}
 func (h *Hybrid) DeleteSession(ctx context.Context, id string) error {
 	s, e := h.target()
 	if e != nil {

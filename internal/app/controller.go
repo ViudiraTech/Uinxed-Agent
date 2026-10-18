@@ -233,16 +233,12 @@ func (c *Controller) ResolveApproval(runID, reqID string, d agent.Decision) bool
 // delegate children (delegate copies metadata into the child session).
 func (c *Controller) SetApprovalMode(ctx context.Context, sessionID, mode string) error {
 	m := approval.Normalize(mode)
-	s, err := c.Store.LoadSession(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	if s.Metadata == nil {
-		s.Metadata = map[string]any{}
-	}
-	s.Metadata["mode"] = string(m)
-	s.UpdatedAt = time.Now()
-	return c.Store.SaveSession(ctx, s)
+	return c.Store.UpdateSettings(ctx, sessionID, func(s *domain.Session) {
+		if s.Metadata == nil {
+			s.Metadata = map[string]any{}
+		}
+		s.Metadata["mode"] = string(m)
+	})
 }
 
 // ApprovalMode reports the effective mode for a session, falling back to the
@@ -263,22 +259,13 @@ func (c *Controller) SetAgent(ctx context.Context, sessionID, id string) error {
 	if !def.CanPrimary() {
 		return fmt.Errorf("%s is not a primary agent", id)
 	}
-	s, err := c.Store.LoadSession(ctx, sessionID)
-	if err != nil {
+	if err := c.Store.UpdateSettings(ctx, sessionID, func(s *domain.Session) { s.AgentID = id }); err != nil {
 		return err
 	}
-	s.AgentID = id
-	s.UpdatedAt = time.Now()
-	return c.Store.SaveSession(ctx, s)
+	return nil
 }
 func (c *Controller) SetModel(ctx context.Context, sessionID, model string) error {
-	s, err := c.Store.LoadSession(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	s.Model = model
-	s.UpdatedAt = time.Now()
-	if err := c.Store.SaveSession(ctx, s); err != nil {
+	if err := c.Store.UpdateSettings(ctx, sessionID, func(s *domain.Session) { s.Model = model }); err != nil {
 		return err
 	}
 	return c.Config.Update(func(x *config.Config) error { x.Model = model; return nil })
@@ -288,14 +275,10 @@ func (c *Controller) SetProvider(ctx context.Context, sessionID, id string) erro
 		return err
 	}
 	cfg := c.Config.Snapshot()
-	s, err := c.Store.LoadSession(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	s.ProviderID = id
-	s.Model = cfg.Model
-	s.UpdatedAt = time.Now()
-	return c.Store.SaveSession(ctx, s)
+	return c.Store.UpdateSettings(ctx, sessionID, func(s *domain.Session) {
+		s.ProviderID = id
+		s.Model = cfg.Model
+	})
 }
 
 // SetEffort applies a reasoning level to one session and, unless sessionOnly is
@@ -332,35 +315,22 @@ func (c *Controller) SetSupercode(ctx context.Context, sessionID string, on bool
 // setSessionMetadata writes one session metadata key. An empty value removes it,
 // so the session falls back to the configured default.
 func (c *Controller) setSessionMetadata(ctx context.Context, sessionID, key string, value any) error {
-	s, err := c.Store.LoadSession(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	if s.Metadata == nil {
-		s.Metadata = map[string]any{}
-	}
-	if value == "" {
-		delete(s.Metadata, key)
-	} else {
+	return c.Store.UpdateSettings(ctx, sessionID, func(s *domain.Session) {
+		if s.Metadata == nil {
+			s.Metadata = map[string]any{}
+		}
+		if value == "" {
+			delete(s.Metadata, key)
+			return
+		}
 		s.Metadata[key] = value
-	}
-	s.UpdatedAt = time.Now()
-	return c.Store.SaveSession(ctx, s)
+	})
 }
 func (c *Controller) SetThinking(ctx context.Context, sessionID string, on bool) error {
 	if err := c.Config.Update(func(x *config.Config) error { x.Thinking = on; return nil }); err != nil {
 		return err
 	}
-	s, err := c.Store.LoadSession(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	if s.Metadata == nil {
-		s.Metadata = map[string]any{}
-	}
-	s.Metadata["thinking"] = on
-	s.UpdatedAt = time.Now()
-	return c.Store.SaveSession(ctx, s)
+	return c.setSessionMetadata(ctx, sessionID, "thinking", on)
 }
 func (c *Controller) ChangeCWD(ctx context.Context, sessionID, dir string) error {
 	abs, err := filepath.Abs(dir)
@@ -371,13 +341,7 @@ func (c *Controller) ChangeCWD(ctx context.Context, sessionID, dir string) error
 	if err != nil || !st.IsDir() {
 		return fmt.Errorf("not a directory: %s", dir)
 	}
-	s, err := c.Store.LoadSession(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	s.CWD = abs
-	s.UpdatedAt = time.Now()
-	if err := c.Store.SaveSession(ctx, s); err != nil {
+	if err := c.Store.UpdateSettings(ctx, sessionID, func(s *domain.Session) { s.CWD = abs }); err != nil {
 		return err
 	}
 	_ = c.Config.Update(func(x *config.Config) error { x.CWD = abs; return nil })
@@ -444,13 +408,7 @@ func (c *Controller) RenameSession(ctx context.Context, id, name string) error {
 	if name == "" {
 		return errors.New("session name cannot be empty")
 	}
-	s, err := c.Store.LoadSession(ctx, id)
-	if err != nil {
-		return err
-	}
-	s.Name = name
-	s.UpdatedAt = time.Now()
-	return c.Store.SaveSession(ctx, s)
+	return c.Store.UpdateSettings(ctx, id, func(s *domain.Session) { s.Name = name })
 }
 
 func (c *Controller) Compact(ctx context.Context, id string) error {
@@ -599,13 +557,16 @@ func (c *Controller) AutoTitleSession(ctx context.Context, sessionID string) (st
 	if title == "" {
 		return "", nil
 	}
-	s.Name = title
-	if s.Metadata == nil {
-		s.Metadata = map[string]any{}
-	}
-	s.Metadata["autotitled"] = true
-	s.UpdatedAt = time.Now()
-	if err := c.Store.SaveSession(ctx, s); err != nil {
+	// Only the name and the "titled" marker are written. Saving the session the
+	// title was computed from would rewind whatever the next turn has already
+	// persisted while the model was streaming a title.
+	if err := c.Store.UpdateSettings(ctx, sessionID, func(s *domain.Session) {
+		s.Name = title
+		if s.Metadata == nil {
+			s.Metadata = map[string]any{}
+		}
+		s.Metadata["autotitled"] = true
+	}); err != nil {
 		return "", err
 	}
 	return title, nil
