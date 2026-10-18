@@ -106,37 +106,55 @@ func EstimateMessages(msgs []domain.Message) int {
 	return total
 }
 
+// FitMessages returns the newest suffix of msgs that fits the budget. The newest
+// message is always kept even when it alone exceeds maxTokens: sending one long
+// message is the only way to make progress, while sending nothing is not.
 func FitMessages(msgs []domain.Message, maxTokens int) []domain.Message {
 	if maxTokens <= 0 {
 		return nil
 	}
-	var out []domain.Message
 	used := 0
 	start := len(msgs)
 	for i := len(msgs) - 1; i >= 0; i-- {
 		t := EstimateMessages(msgs[i : i+1])
-		if len(out) > 0 && used+t > maxTokens {
+		// start < len(msgs) means at least one message is already kept.
+		if start < len(msgs) && used+t > maxTokens {
 			break
 		}
 		used += t
 		start = i
 	}
-	if start < len(msgs) {
-		out = append(out, msgs[start:]...)
-	}
-	if len(out) > 0 && out[0].Role == domain.RoleTool {
-		id := out[0].ToolCallID
-		for i := start - 1; i >= 0; i-- {
-			if msgs[i].Role != domain.RoleAssistant {
-				continue
-			}
-			for _, tc := range msgs[i].ToolCalls {
-				if tc.ID == id {
-					out = append([]domain.Message{msgs[i]}, out...)
-					return out
-				}
+	// A suffix must not begin with a tool result: the provider pairs every tool
+	// message with the assistant call that requested it. Move the cut back to that
+	// assistant so the round stays valid; when it cannot be found, drop the orphan
+	// rather than send an unpaired result.
+	if start < len(msgs) && msgs[start].Role == domain.RoleTool {
+		if at := assistantForTool(msgs, start); at >= 0 {
+			start = at
+		} else {
+			for start < len(msgs) && msgs[start].Role == domain.RoleTool {
+				start++
 			}
 		}
 	}
-	return out
+	if start >= len(msgs) {
+		return nil
+	}
+	return append([]domain.Message(nil), msgs[start:]...)
+}
+
+// assistantForTool finds the assistant message that owns the tool call at index at.
+func assistantForTool(msgs []domain.Message, at int) int {
+	id := msgs[at].ToolCallID
+	for i := at - 1; i >= 0; i-- {
+		if msgs[i].Role != domain.RoleAssistant {
+			continue
+		}
+		for _, tc := range msgs[i].ToolCalls {
+			if tc.ID == id {
+				return i
+			}
+		}
+	}
+	return -1
 }
