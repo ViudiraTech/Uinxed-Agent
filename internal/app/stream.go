@@ -97,6 +97,15 @@ func CoalesceEvents(ctx context.Context, in <-chan domain.Event, interval time.D
 					pending[key] = newPending(e)
 					order = append(order, key)
 				}
+				// A batch that has grown past the cap is flushed now instead of
+				// dropping the text that follows it. The next delta starts a new
+				// batch, so the cap bounds one event without losing any bytes.
+				if p := pending[key]; p != nil && p.text != nil && p.text.Len() >= maxBatchBytes {
+					if !flush() {
+						return
+					}
+					continue
+				}
 				if !active {
 					timer.Reset(interval)
 					active = true
@@ -132,9 +141,7 @@ func (p *pendingEvent) merge(e domain.Event) {
 		p.ev = e
 		return
 	}
-	if p.text.Len() < maxBatchBytes {
-		p.text.WriteString(deltaText(e))
-	}
+	p.text.WriteString(deltaText(e))
 }
 
 // materialize rebuilds the event around the accumulated text.
@@ -156,7 +163,8 @@ func (p *pendingEvent) materialize() domain.Event {
 }
 
 // maxBatchBytes caps a single batch so a runaway stream cannot grow one event
-// without bound; the remainder arrives in the next flush.
+// without bound. Reaching it triggers an early flush, so the text that follows
+// lands in the next event rather than being dropped.
 const maxBatchBytes = 256 << 10
 
 func isAppendMerged(k domain.EventKind) bool {
