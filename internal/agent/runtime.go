@@ -191,6 +191,11 @@ type turnState struct {
 	mu               sync.Mutex
 	s                domain.Session
 	referenceContext string
+	// wroteMeta holds the metadata keys this turn wrote. Settings live in the
+	// store and can change while the turn runs, so the turn's stale copy must not
+	// be written back over them: only these keys are applied on top of the stored
+	// metadata when the turn persists.
+	wroteMeta map[string]any
 }
 
 func (r *Runtime) runTurn(ctx context.Context, sessionID, text, runID string) error {
@@ -224,11 +229,7 @@ func (r *Runtime) runTurn(ctx context.Context, sessionID, text, runID string) er
 	r.emit(ctx, domain.Event{Kind: domain.EventMessageAdded, SessionID: sess.ID, RunID: runID, At: now, Data: userMsg})
 	st := &turnState{s: sess, referenceContext: referenceContext}
 	err = r.loop(ctx, p, st, runID)
-	st.mu.Lock()
-	final := st.s.Clone()
-	st.mu.Unlock()
-	final.UpdatedAt = time.Now()
-	saveErr := r.saveFinal(final)
+	saveErr := r.saveTurn(ctx, st)
 	if err == nil && saveErr != nil {
 		return fmt.Errorf("save final session: %w", saveErr)
 	}
@@ -255,7 +256,7 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 		sess := st.s.Clone()
 		st.mu.Unlock()
 		adef := Get(sess.AgentID)
-		mode := modeFromMetadata(sess.Metadata, r.approvalMode())
+		mode := r.liveMode(ctx, st)
 		// Project instructions come before the skill index: what this repository
 		// asks for outranks the catalogue of what the agent can load.
 		contextBlock := InstructionsBlock(sess.CWD) + skills.PromptBlock(sess.CWD)
@@ -323,10 +324,7 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 		if err := r.executeCalls(ctx, st, runID, message.ToolCalls, adef); err != nil {
 			return err
 		}
-		st.mu.Lock()
-		snap := st.s.Clone()
-		st.mu.Unlock()
-		if err := r.store.SaveSession(ctx, snap); err != nil {
+		if err := r.saveTurn(ctx, st); err != nil {
 			return err
 		}
 	}
@@ -345,7 +343,11 @@ func (a *toolAccumulator) Add(delta []domain.ToolCall) {
 				}
 			}
 		}
-		if idx < 0 && d.Index >= 0 {
+		// Index is only a fallback for deltas that carry no ID. A delta with an ID
+		// is a distinct call: Index is an int whose zero value is indistinguishable
+		// from "absent", so matching by it would fold every parallel call the
+		// Responses API emits (all Index 0) into the first one.
+		if idx < 0 && d.ID == "" && d.Index >= 0 {
 			for j := range a.calls {
 				if a.calls[j].Index == d.Index {
 					idx = j
@@ -429,8 +431,9 @@ func (r *Runtime) executeCalls(ctx context.Context, st *turnState, runID string,
 	st.mu.Lock()
 	sessionID := st.s.ID
 	parentID := st.s.ParentID
-	mode := modeFromMetadata(st.s.Metadata, r.approvalMode())
+	fallbackMode := modeFromMetadata(st.s.Metadata, r.approvalMode())
 	st.mu.Unlock()
+	mode := r.liveModeFrom(ctx, sessionID, fallbackMode)
 	rootID := r.rootSessionID(ctx, sessionID)
 	grants := r.broker.GrantsFor(rootID)
 
@@ -741,11 +744,10 @@ func (r *Runtime) planWrite(ctx context.Context, st *turnState, runID string, ra
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return tools.Result{}, err
 	}
-	st.mu.Lock()
-	if modeFromMetadata(st.s.Metadata, r.approvalMode()) != approval.ModePlan {
-		st.mu.Unlock()
+	if r.liveMode(ctx, st) != approval.ModePlan {
 		return tools.Result{}, errors.New("plan_write is only available in plan mode")
 	}
+	st.mu.Lock()
 	now := time.Now()
 	var steps []domain.PlanStep
 	for _, s := range a.Steps {
@@ -765,6 +767,10 @@ func (r *Runtime) planWrite(ctx context.Context, st *turnState, runID string, ra
 	} else if b, err := json.Marshal(steps); err == nil {
 		st.s.Metadata["plan"] = string(b)
 	}
+	if st.wroteMeta == nil {
+		st.wroteMeta = map[string]any{}
+	}
+	st.wroteMeta["plan"] = st.s.Metadata["plan"]
 	st.s.UpdatedAt = now
 	sid := st.s.ID
 	st.mu.Unlock()
@@ -785,20 +791,38 @@ func (r *Runtime) switchMode(ctx context.Context, st *turnState, runID string, r
 		return tools.Result{}, err
 	}
 	m := approval.Normalize(a.Mode)
-	st.mu.Lock()
-	if modeFromMetadata(st.s.Metadata, r.approvalMode()) == m {
-		st.mu.Unlock()
+	if r.liveMode(ctx, st) == m {
 		return tools.Result{Content: fmt.Sprintf("already in mode %s", m)}, nil
 	}
+	st.mu.Lock()
 	if st.s.Metadata == nil {
 		st.s.Metadata = map[string]any{}
 	}
 	st.s.Metadata["mode"] = string(m)
+	if st.wroteMeta == nil {
+		st.wroteMeta = map[string]any{}
+	}
+	st.wroteMeta["mode"] = string(m)
 	st.s.UpdatedAt = time.Now()
 	sid := st.s.ID
 	st.mu.Unlock()
+	if err := r.persistMode(ctx, sid, m); err != nil {
+		return tools.Result{}, err
+	}
 	r.emit(ctx, domain.Event{Kind: domain.EventSessionChanged, SessionID: sid, RunID: runID, At: time.Now(), Data: domain.SessionChanged{Mode: string(m)}})
 	return tools.Result{Content: fmt.Sprintf("session mode switched to %s", m)}, nil
+}
+
+// persistMode writes the mode the turn just chose so the very next liveMode read
+// sees it. Only the metadata column is touched, so this cannot race the turn's own
+// transcript writes.
+func (r *Runtime) persistMode(ctx context.Context, sessionID string, m approval.Mode) error {
+	return r.store.UpdateSettings(ctx, sessionID, func(s *domain.Session) {
+		if s.Metadata == nil {
+			s.Metadata = map[string]any{}
+		}
+		s.Metadata["mode"] = string(m)
+	})
 }
 
 // exitPlan is the Claude-style plan-approval gate. executeCalls already waited
@@ -818,18 +842,24 @@ func (r *Runtime) exitPlan(ctx context.Context, st *turnState, runID string, raw
 	if target == approval.ModePlan {
 		target = approval.ModeAutoEdit
 	}
-	st.mu.Lock()
-	if modeFromMetadata(st.s.Metadata, r.approvalMode()) != approval.ModePlan {
-		st.mu.Unlock()
+	if r.liveMode(ctx, st) != approval.ModePlan {
 		return tools.Result{}, errors.New("exit_plan is only available in plan mode")
 	}
+	st.mu.Lock()
 	if st.s.Metadata == nil {
 		st.s.Metadata = map[string]any{}
 	}
 	st.s.Metadata["mode"] = string(target)
+	if st.wroteMeta == nil {
+		st.wroteMeta = map[string]any{}
+	}
+	st.wroteMeta["mode"] = string(target)
 	st.s.UpdatedAt = time.Now()
 	sid := st.s.ID
 	st.mu.Unlock()
+	if err := r.persistMode(ctx, sid, target); err != nil {
+		return tools.Result{}, err
+	}
 	r.emit(ctx, domain.Event{Kind: domain.EventSessionChanged, SessionID: sid, RunID: runID, At: time.Now(), Data: domain.SessionChanged{Mode: string(target)}})
 	return tools.Result{Content: fmt.Sprintf("plan approved; session mode switched to %s", target)}, nil
 }
@@ -903,13 +933,31 @@ func (r *Runtime) delegate(ctx context.Context, parent *turnState, parentRunID s
 	st := &turnState{s: child}
 	subRun := r.id("run")
 	run := domain.AgentRun{ID: subRun, ParentID: parentRunID, SessionID: child.ID, AgentID: a.Agent, Task: a.Task, State: "running", StartedAt: now}
+
+	// A delegate child is a real session with a real loop, so it takes the same
+	// per-session run slot as a top-level turn. Without this entry Cancel(child)
+	// and DeleteSession(child) are silent no-ops, and a prompt submitted into the
+	// child's session would race the delegate for the same session.
+	childCtx, childCancel := context.WithCancel(ctx)
+	childHandle := &runHandle{cancel: childCancel, done: make(chan struct{})}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		childCancel()
+		return tools.Result{}, errors.New("agent runtime is closed")
+	}
+	r.runs[child.ID] = childHandle
+	r.mu.Unlock()
+
 	r.emit(ctx, domain.Event{Kind: domain.EventAgentStarted, SessionID: child.ID, RunID: subRun, At: now, Data: domain.AgentEvent{Run: run}})
-	err = r.loop(ctx, p, st, subRun)
-	st.mu.Lock()
-	fin := st.s.Clone()
-	st.mu.Unlock()
-	fin.UpdatedAt = time.Now()
-	saveErr := r.saveFinal(fin)
+	err = r.loop(childCtx, p, st, subRun)
+	r.mu.Lock()
+	delete(r.runs, child.ID)
+	r.mu.Unlock()
+	close(childHandle.done)
+	childCancel()
+
+	saveErr := r.saveTurn(ctx, st)
 	if err == nil && saveErr != nil {
 		err = fmt.Errorf("save child session: %w", saveErr)
 	}
@@ -926,6 +974,9 @@ func (r *Runtime) delegate(ctx context.Context, parent *turnState, parentRunID s
 	if err != nil {
 		return tools.Result{}, err
 	}
+	st.mu.Lock()
+	fin := st.s.Clone()
+	st.mu.Unlock()
 	answer := ""
 	for i := len(fin.Messages) - 1; i >= 0; i-- {
 		if fin.Messages[i].Role == domain.RoleAssistant && fin.Messages[i].Content != "" {
@@ -986,14 +1037,53 @@ func (r *Runtime) emitTerminal(e domain.Event) {
 	r.emit(ctx, e)
 }
 
-func (r *Runtime) saveFinal(sess domain.Session) error {
+// saveTurn persists the turn's session without reverting settings that were
+// written while it ran. The session's own metadata is stale by design — it was
+// cloned when the turn started — so the stored settings are the base and only the
+// keys this turn actually wrote are applied over them. Everything the turn owns
+// (messages, todos, tool activity, timestamps) comes from the turn state.
+func (r *Runtime) saveTurn(_ context.Context, st *turnState) error {
+	// Persist with a fresh bounded context: a cancelled turn must still record the
+	// messages it produced, and the cancellation that stopped the loop would
+	// otherwise abort the write too.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	err := r.store.SaveSession(ctx, sess)
-	if err != nil && r.log != nil {
-		r.log.Warn("final session persistence failed", "session_id", sess.ID, "error", err)
+	st.mu.Lock()
+	sess := st.s.Clone()
+	wrote := make(map[string]any, len(st.wroteMeta))
+	for k, v := range st.wroteMeta {
+		wrote[k] = v
 	}
-	return err
+	st.mu.Unlock()
+	sess.UpdatedAt = time.Now()
+
+	if stored, err := r.store.LoadSession(ctx, sess.ID); err == nil {
+		// Every setting column comes from the store; the turn only contributes its
+		// transcript and the metadata keys it wrote. Reading the whole session is
+		// deliberate: a rename or /cd during a turn has to survive it too.
+		sess.Name = stored.Name
+		sess.CWD = stored.CWD
+		sess.AgentID = stored.AgentID
+		sess.Model = stored.Model
+		sess.ProviderID = stored.ProviderID
+		sess.ParentID = stored.ParentID
+		sess.CreatedAt = stored.CreatedAt
+		meta := stored.Metadata
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		for k, v := range wrote {
+			meta[k] = v
+		}
+		sess.Metadata = meta
+	}
+	if err := r.store.SaveSession(ctx, sess); err != nil {
+		if r.log != nil {
+			r.log.Warn("session persistence failed", "session_id", sess.ID, "error", err)
+		}
+		return err
+	}
+	return nil
 }
 func (r *Runtime) id(prefix string) string {
 	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixMilli(), r.seq.Add(1))
@@ -1057,6 +1147,26 @@ func effortFromMetadata(m map[string]any) string {
 		return v
 	}
 	return "high"
+}
+
+// liveMode reads the mode from the store, not from the turn's snapshot. The
+// session's settings can be changed by the controller while a turn runs (Shift+Tab
+// on the keyboard, /effort, /thinking), and a safety control that only takes
+// effect on the next turn is not a control. The snapshot is the fallback when the
+// store cannot be read.
+func (r *Runtime) liveMode(ctx context.Context, st *turnState) approval.Mode {
+	st.mu.Lock()
+	sid := st.s.ID
+	fallback := modeFromMetadata(st.s.Metadata, r.approvalMode())
+	st.mu.Unlock()
+	return r.liveModeFrom(ctx, sid, fallback)
+}
+
+func (r *Runtime) liveModeFrom(ctx context.Context, sessionID string, fallback approval.Mode) approval.Mode {
+	if meta, err := r.store.SessionMeta(ctx, sessionID); err == nil {
+		return modeFromMetadata(meta, r.approvalMode())
+	}
+	return fallback
 }
 
 // modeFromMetadata reads the session's approval mode, falling back to the
