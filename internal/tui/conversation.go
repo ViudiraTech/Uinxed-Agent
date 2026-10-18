@@ -415,6 +415,7 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 	}
 	wantBottom := bottom + 12
 	pos := 0
+	linesStart := -1 // transcript row the first materialized block occupies
 	var lines []renderLine
 	acts := map[string]domain.ToolActivity{}
 	for _, a := range activities {
@@ -430,6 +431,9 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 				b.Estimate = len(rendered)
 				total += delta
 				bottom += delta
+			}
+			if linesStart < 0 {
+				linesStart = pos
 			}
 			lines = append(lines, rendered...)
 		} else if end >= top-20 && pos <= wantBottom+20 {
@@ -453,16 +457,21 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 	// Slice from bottom using actual visible line list. When scrolled far into lazily skipped blocks,
 	// estimates keep the location stable while only overscan blocks are materialized.
 	if len(lines) > height {
-		cut := len(lines) - height - c.scroll
+		// c.scroll already moved the render window: `bottom` is the last visible
+		// row with it applied. The cut is the distance from the first materialized
+		// row to the desired top, not another subtraction of c.scroll (which
+		// double-counted it and made every page-up overshoot).
+		if linesStart < 0 {
+			linesStart = 0
+		}
+		cut := bottom - height - linesStart
 		if cut < 0 {
 			cut = 0
 		}
-		end := cut + height
-		if end > len(lines) {
-			end = len(lines)
-			cut = max(0, end-height)
+		if cut > len(lines)-height {
+			cut = len(lines) - height
 		}
-		lines = lines[cut:end]
+		lines = lines[cut : cut+height]
 	}
 	// Pad to the viewport height. At the bottom of the transcript the newest
 	// content must sit just above the composer, so short conversations pad at

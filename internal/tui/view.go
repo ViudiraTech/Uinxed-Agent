@@ -107,6 +107,10 @@ func (m *Model) renderBase(t Theme) string {
 		Model:           m.session.Model,
 		CWD:             m.session.CWD,
 		HideBanner:      m.cfg.HideBanner,
+		// A running delegate's card reports what its child is doing. Without these
+		// two fields the tracker in update.go fed a renderer that never saw it.
+		Subagents:        m.sortedSubagents(),
+		SubagentProgress: m.subagentProgress,
 	})
 	for row, line := range convLines {
 		chatLines = append(chatLines, fitLine(line.Text, chatW))
@@ -166,7 +170,9 @@ func (m *Model) renderBase(t Theme) string {
 	m.regions = append(m.regions, Region{Rect: m.layout.chat, Kind: ActionChat, Value: "chat"})
 	// Chip regions were computed in chip-local coordinates; shift them to the
 	// rows they were rendered into.
-	chipY := m.layout.prompt.Y - 1
+	// The chip row sits above the todo block and the working line, not directly
+	// above the composer: prompt.Y counts those reserved rows too.
+	chipY := m.layout.prompt.Y - len(chips) - todoH - workH
 	for _, r := range chipRegs {
 		r.Rect.Y += chipY
 		m.regions = append(m.regions, r)
@@ -473,7 +479,30 @@ func (m *Model) renderOverlay(t Theme) string {
 		lines = append(lines, wrapPlain(m.infoText, max(10, w-4))...)
 	}
 	innerH := max(3, h-2)
-	scrollable := m.overlay == overlayHelp || m.overlay == overlayTodos || m.overlay == overlayPlan || m.overlay == overlayContext || m.overlay == overlayInfo || (m.overlay == overlayApproval && m.isPlanApproval())
+	// The plan dialog's choices are its escape hatch, so they are pinned: only the
+	// plan body above them scrolls. Slicing the whole dialog is what hid "Keep
+	// planning" and the key hint.
+	presliced := false
+	if m.overlay == overlayApproval && m.isPlanApproval() && len(lines) > innerH {
+		footer := 6 // blank, three choices, blank, key hint
+		if m.approvalFeedback {
+			footer = 4
+		}
+		footer = min(footer, len(lines))
+		head, tail := lines[:len(lines)-footer], lines[len(lines)-footer:]
+		body := max(1, innerH-len(tail))
+		if len(head) > body {
+			maxOff := len(head) - body
+			if m.overlayScroll > maxOff {
+				m.overlayScroll = maxOff
+			}
+			start := min(max(0, m.overlayScroll), maxOff)
+			head = head[start : start+body]
+		}
+		lines = append(head, tail...)
+		presliced = true
+	}
+	scrollable := !presliced && (m.overlay == overlayHelp || m.overlay == overlayTodos || m.overlay == overlayPlan || m.overlay == overlayContext || m.overlay == overlayInfo || (m.overlay == overlayApproval && m.isPlanApproval()))
 	if scrollable && len(lines) > innerH {
 		maxOff := max(0, len(lines)-innerH)
 		if m.overlayScroll > maxOff {
@@ -660,7 +689,7 @@ func (m *Model) busyIndicator(t Theme) string {
 	if m.busy {
 		return lipgloss.NewStyle().Foreground(t.Muted).Render("esc to interrupt")
 	}
-	if m.toast != "" {
+	if m.toast != "" && time.Now().Before(m.toastUntil) {
 		return lipgloss.NewStyle().Foreground(t.Accent).Render(terminalutil.SanitizeText(m.toast))
 	}
 	if m.errorText != "" {

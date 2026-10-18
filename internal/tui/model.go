@@ -63,9 +63,13 @@ type Model struct {
 	busy                bool
 	busySince           time.Time
 	mainRunID           string
-	streamContent       string
-	streamReasoning     string
-	streamMessageID     string
+	// mainRunSessionID is the session that owns the in-flight turn. It can differ
+	// from m.session.ID while the user browses another session, and the turn's
+	// completion must still clear busy state that belongs to it.
+	mainRunSessionID string
+	streamContent    string
+	streamReasoning  string
+	streamMessageID  string
 	// streamToolCalls are the calls the current round has emitted so far. They
 	// are promoted into a real message when the round settles.
 	streamToolCalls  []domain.ToolCall
@@ -222,6 +226,12 @@ func asyncOp(op string, fn func() (any, error)) tea.Cmd {
 
 func (m *Model) setSession(s domain.Session) {
 	if m.session.ID != s.ID {
+		// Busy belongs to the session that owns the running turn, not to whatever
+		// is on screen: viewing another session must leave the composer usable, and
+		// coming back to the running one must show it as busy again.
+		if m.mainRunSessionID != "" {
+			m.busy = m.mainRunSessionID == s.ID
+		}
 		// Per-turn working-line state belongs to the session that produced it.
 		// This must be keyed on an actual change: EventAgentFinished reloads the
 		// same session, and clearing unconditionally would wipe the settled line

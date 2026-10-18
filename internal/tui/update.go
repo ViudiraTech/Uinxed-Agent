@@ -194,21 +194,37 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 				m.busy = true
 				m.busySince = time.Now()
 				m.mainRunID = a.Run.ID
+				m.mainRunSessionID = a.Run.SessionID
 				m.beginTurn()
 				return m.startAnimation()
 			}
-			m.upsertSubagent(a.Run)
-			return m.startAnimation()
+			// A run in another session is only a subagent when it says so. Treating
+			// every foreign run as one turned another session's main turn into a
+			// delegate card the moment the user switched away from it.
+			if a.Run.ParentID != "" {
+				m.upsertSubagent(a.Run)
+				return m.startAnimation()
+			}
 		}
 	case domain.EventAgentFinished:
 		if a, ok := e.Data.(domain.AgentEvent); ok {
-			if a.Run.SessionID == m.session.ID {
+			// Clear the turn's busy state by the session that owns it, not by the
+			// session on screen. Filtering on the visible session left the composer
+			// wedged forever when the user switched away before the turn ended.
+			if m.mainRunSessionID != "" && a.Run.SessionID == m.mainRunSessionID {
+				owned := a.Run.SessionID == m.session.ID
 				m.busy = false
 				m.mainRunID = ""
-				m.finishTurn()
-				return tea.Batch(m.reloadSession(), m.autoTitle())
+				m.mainRunSessionID = ""
+				if owned {
+					m.finishTurn()
+					return tea.Batch(m.reloadSession(), m.autoTitle())
+				}
+				return nil
 			}
-			m.upsertSubagent(a.Run)
+			if a.Run.ParentID != "" {
+				m.upsertSubagent(a.Run)
+			}
 		}
 	case domain.EventStreamDelta:
 		if e.SessionID == m.session.ID {
@@ -710,6 +726,13 @@ func (m *Model) handleApprovalKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 	case "down", "j":
 		m.approvalChoice = min(2, m.approvalChoice+1)
 		return nil, true
+	case "pgup":
+		// The choices are pinned; the plan body above them scrolls.
+		m.overlayScroll = max(0, m.overlayScroll-5)
+		return nil, true
+	case "pgdown":
+		m.overlayScroll += 5
+		return nil, true
 	case "enter":
 		switch m.approvalChoice {
 		case 0:
@@ -762,6 +785,13 @@ func (m *Model) handlePlanApprovalKey(key string) (tea.Cmd, bool) {
 		return nil, true
 	case "down", "j":
 		m.approvalChoice = min(2, m.approvalChoice+1)
+		return nil, true
+	case "pgup":
+		// The choices are pinned; the plan body above them scrolls.
+		m.overlayScroll = max(0, m.overlayScroll-5)
+		return nil, true
+	case "pgdown":
+		m.overlayScroll += 5
 		return nil, true
 	case "enter":
 		switch m.approvalChoice {
@@ -1116,12 +1146,14 @@ func (m *Model) handleOp(x opMsg) tea.Cmd {
 	case "submit":
 		m.busy = true
 		m.busySince = time.Now()
+		m.mainRunSessionID = m.session.ID
 		m.beginTurn()
 	case "start_subagent":
 		if child, ok := x.value.(domain.Session); ok {
 			m.setSession(child)
 			m.busy = true
 			m.busySince = time.Now()
+			m.mainRunSessionID = child.ID
 			m.beginTurn()
 			return m.refreshSessions()
 		}
