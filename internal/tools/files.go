@@ -104,7 +104,7 @@ func (*WriteFileTool) Execute(ctx context.Context, raw json.RawMessage, env Exec
 	if err := decode(raw, &a); err != nil {
 		return Result{}, err
 	}
-	p, err := resolveInside(env.CWD, a.Path, true)
+	p, err := writeTarget(env.CWD, a.Path)
 	if err != nil {
 		return Result{}, err
 	}
@@ -136,7 +136,7 @@ func (*EditFileTool) Execute(ctx context.Context, raw json.RawMessage, env Execu
 	if a.Old == "" {
 		return Result{}, errors.New("old 不能为空")
 	}
-	p, err := resolveInside(env.CWD, a.Path, false)
+	p, err := writeTarget(env.CWD, a.Path)
 	if err != nil {
 		return Result{}, err
 	}

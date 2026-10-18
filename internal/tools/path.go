@@ -48,6 +48,35 @@ func resolveInside(root, input string, forCreate bool) (string, error) {
 	return p, nil
 }
 
+// writeTarget resolves a path for a write. When the final component is a symlink
+// the *target* is written, so the link survives and the change lands where the
+// user sees the file. Resolving is also the security check: a link pointing
+// outside the working directory must be refused, not followed by a write.
+func writeTarget(root, input string) (string, error) {
+	resolved, err := resolveInside(root, input, true)
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		// Nothing there yet: the write creates the file at the resolved path.
+		return resolved, nil
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	rootReal := rootAbs
+	if v, err := filepath.EvalSymlinks(rootAbs); err == nil {
+		rootReal = v
+	}
+	rel, err := filepath.Rel(rootReal, real)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return "", errors.New("path escapes working directory")
+	}
+	return real, nil
+}
+
 func evalExistingPrefix(p string) (string, error) {
 	cur := p
 	var suffix []string

@@ -41,7 +41,10 @@ func (*GrepTool) Execute(ctx context.Context, raw json.RawMessage, env Execution
 		return Result{}, err
 	}
 	if rg, err := exec.LookPath("rg"); err == nil {
-		args := []string{"--line-number", "--color", "never", "--no-heading", "--max-count", "200", a.Pattern, root}
+		// "--" terminates flag parsing. Without it a pattern that begins with "-"
+		// is interpreted by rg as an option, and options such as --pre run a
+		// command — from a tool the approval layer treats as read-only.
+		args := []string{"--line-number", "--color", "never", "--no-heading", "--max-count", "200", "--", a.Pattern, root}
 		if a.Include != "" {
 			args = append([]string{"--glob", a.Include}, args...)
 		}

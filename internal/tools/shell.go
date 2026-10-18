@@ -78,11 +78,15 @@ func (*BashTool) Execute(ctx context.Context, raw json.RawMessage, env Execution
 	code := 0
 	if waitErr != nil {
 		var ee *exec.ExitError
-		if errors.As(waitErr, &ee) {
-			code = ee.ExitCode()
-		} else if cctx.Err() != nil {
+		switch {
+		case errors.Is(cctx.Err(), context.DeadlineExceeded):
+			// The timeout convention, and the only branch that can report it: a
+			// process killed by the deadline comes back as an *exec.ExitError with
+			// code -1, so checking the context first is what makes 124 reachable.
 			code = 124
-		} else {
+		case errors.As(waitErr, &ee):
+			code = ee.ExitCode()
+		default:
 			return Result{}, waitErr
 		}
 	}

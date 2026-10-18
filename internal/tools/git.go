@@ -179,20 +179,26 @@ func (*GitCommitTool) Execute(ctx context.Context, raw json.RawMessage, env Exec
 	if err != nil {
 		return Result{}, err
 	}
+	resolved := make([]string, 0, len(a.Paths))
 	for _, p := range a.Paths {
 		if strings.TrimSpace(p.Path) == "" {
 			return Result{}, errors.New("empty path in paths")
 		}
 		// Bound-check every path before handing it to git add.
-		resolved, err := resolveInside(dir, p.Path, false)
+		abs, err := resolveInside(dir, p.Path, false)
 		if err != nil {
 			return Result{}, err
 		}
-		if _, err := runGit(ctx, dir, "add", "--", resolved); err != nil {
+		if _, err := runGit(ctx, dir, "add", "--", abs); err != nil {
 			return Result{}, err
 		}
+		resolved = append(resolved, abs)
 	}
-	out, err := runGit(ctx, dir, "commit", "-m", a.Message)
+	// A pathspec-limited commit. A bare "git commit" commits the whole index,
+	// which would sweep in whatever else the user (or an earlier bash call) had
+	// staged — silently, and with no way to tell from the result.
+	commitArgs := append([]string{"commit", "-m", a.Message, "--"}, resolved...)
+	out, err := runGit(ctx, dir, commitArgs...)
 	if err != nil {
 		return Result{}, err
 	}
