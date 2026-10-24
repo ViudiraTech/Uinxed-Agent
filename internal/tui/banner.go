@@ -17,10 +17,12 @@ const bannerMinInner = 20
 
 // bannerLines is the card a brand-new session opens with.
 //
-// It is transcript content rather than a fixed header: it fills the empty screen
-// and then scrolls away with the first message, instead of holding a row for the
-// life of the session. Nothing here is generated — every hint names something
-// this build actually does.
+// It is transcript content rather than a fixed header: it owns the first rows
+// of the screen and then scrolls off naturally as the conversation grows. It
+// used to be deleted the moment the first message arrived, which yanked every
+// following line to a new anchor and left the scroll position disagreeing with
+// the text. Nothing here is generated — every hint names something this build
+// actually does.
 func bannerLines(t Theme, width int, model, cwd string) []renderLine {
 	inner := min(width-4, bannerMaxInner)
 	if inner < bannerMinInner {

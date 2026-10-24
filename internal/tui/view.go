@@ -106,7 +106,9 @@ func (m *Model) renderBase(t Theme) string {
 		Frame:           m.activityFrame,
 		Model:           m.session.Model,
 		CWD:             m.session.CWD,
-		HideBanner:      m.cfg.HideBanner,
+		// A resumed transcript gets no card: it would greet the user above
+		// history they already know. freshSession is set when the session opens.
+		HideBanner: m.cfg.HideBanner || !m.freshSession,
 		// A running delegate's card reports what its child is doing. Without these
 		// two fields the tracker in update.go fed a renderer that never saw it.
 		Subagents:        m.sortedSubagents(),

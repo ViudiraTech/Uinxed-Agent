@@ -121,6 +121,12 @@ type Model struct {
 	historyQuery   string
 	historyMatches []string
 	historySel     int
+	// freshSession records that the session on screen started with no messages.
+	// The welcome card belongs to it and only it: a resumed transcript is not a
+	// greeting, and its card would otherwise sit above history the user has
+	// already read. It stays true for the life of the session, so the card keeps
+	// its place in the transcript until the conversation scrolls it away.
+	freshSession bool
 }
 
 // subagentProgress tracks live activity inside a delegate child so the
@@ -162,6 +168,7 @@ func New(ctx context.Context, ctrl *app.Controller, session domain.Session) *Mod
 	m.rippleStart = 0
 	m.setFocus(FocusPrompt)
 	m.activities = append([]domain.ToolActivity(nil), session.ToolActivities...)
+	m.freshSession = len(session.Messages) == 0
 	m.conv.SetSession(session, 80)
 	return m
 }
@@ -237,6 +244,10 @@ func (m *Model) setSession(s domain.Session) {
 		// same session, and clearing unconditionally would wipe the settled line
 		// the instant it appeared.
 		m.clearWorkingLine()
+		// The welcome card is decided when the session is opened, not when its
+		// messages reload: a session that starts empty keeps its card as
+		// transcript content, and one that is resumed never gains one.
+		m.freshSession = len(s.Messages) == 0
 	}
 	m.session = s
 	m.activities = m.activities[:0]

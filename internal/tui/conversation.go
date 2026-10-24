@@ -50,6 +50,14 @@ type Conversation struct {
 	// running delegate call can show the progress of the child run behind it.
 	subagents        []domain.AgentRun
 	subagentProgress map[string]subagentProgress
+	// bannerCache holds the welcome card for the current width/theme/model/cwd.
+	// It is static, so rebuilding its ~fifteen styled rows on every animation
+	// frame would undo the point of the block render cache.
+	bannerCacheKey string
+	bannerCache    []renderLine
+	// bannerH mirrors the card's height so scrolling clamps against the same
+	// total the renderer uses.
+	bannerH int
 }
 
 // renderCacheEntry memoizes one block's rendered lines. Streaming only mutates
@@ -218,7 +226,7 @@ func (c *Conversation) ScrollUp(n int) {
 		n = 1
 	}
 	c.scroll += n
-	max := c.totalEstimate()
+	max := c.totalEstimate() + c.bannerH
 	if c.scroll > max {
 		c.scroll = max
 	}
@@ -399,7 +407,14 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 	if width < 20 {
 		width = 20
 	}
-	total := c.totalEstimate()
+	// The welcome card is the first row of the transcript, not a header that
+	// vanishes when the session says something. It occupies real rows, so it is
+	// counted into the scroll estimate below; otherwise the first reply would
+	// shift every line under it and the scrollbar would stop matching the text.
+	banner := c.bannerLinesCached(t, o.Model, o.CWD, o.HideBanner)
+	bannerH := len(banner)
+	c.bannerH = bannerH
+	total := c.totalEstimate() + bannerH
 	streamEst := 0
 	if streamContent != "" || streamReasoning != "" {
 		streamEst = estimateBlockWithReasoning(streamContent, streamReasoning, width, toolRows(streamCalls), c.reasoningExpanded("__stream__"))
@@ -417,6 +432,13 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 	pos := 0
 	linesStart := -1 // transcript row the first materialized block occupies
 	var lines []renderLine
+	bannerShown := false
+	if bannerH > 0 && pos+bannerH >= top && pos <= wantBottom {
+		lines = append(lines, banner...)
+		linesStart = 0
+		bannerShown = true
+	}
+	pos += bannerH
 	acts := map[string]domain.ToolActivity{}
 	for _, a := range activities {
 		acts[a.CallID] = a
@@ -447,13 +469,6 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 		b := convBlock{ID: "__stream__", StreamID: o.StreamMessageID, Role: domain.RoleAssistant, Content: streamContent, Reasoning: streamReasoning, ToolCalls: streamCalls, Estimate: streamEst, Version: streamVersion(streamContent, streamReasoning, streamCalls)}
 		lines = append(lines, c.renderCached(&b, t, acts, hover, o.Frame)...)
 	}
-	// A session with no messages shows what to do next. The card is transcript
-	// content, so it leaves with the first message instead of holding a header
-	// row for the life of the session.
-	banner := len(lines) == 0 && len(c.blocks) == 0 && !o.HideBanner
-	if banner {
-		lines = append(lines, bannerLines(t, c.width, o.Model, o.CWD)...)
-	}
 	// Slice from bottom using actual visible line list. When scrolled far into lazily skipped blocks,
 	// estimates keep the location stable while only overscan blocks are materialized.
 	if len(lines) > height {
@@ -478,11 +493,12 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 	// the top; while scrolled back the remaining content belongs below.
 	if pad := height - len(lines); pad > 0 {
 		blank := make([]renderLine, pad)
-		if c.scroll == 0 && !banner {
+		if c.scroll == 0 && !bannerShown {
 			lines = append(blank, lines...)
 		} else {
-			// The welcome card is top-anchored: it reads from the top of an empty
-			// screen, so the free space belongs beneath it.
+			// Near the top of the transcript — where the welcome card still shows —
+			// the free space belongs beneath the content so the card keeps the top
+			// row instead of hanging in the middle of the screen.
 			lines = append(lines, blank...)
 		}
 	}
@@ -1153,6 +1169,22 @@ func (c *Conversation) totalEstimate() int {
 		n += b.Estimate
 	}
 	return n
+}
+
+// bannerLinesCached memoizes the welcome card. It depends only on the width,
+// theme, model and working directory, so a cache keyed on exactly those cannot
+// go stale.
+func (c *Conversation) bannerLinesCached(t Theme, model, cwd string, hide bool) []renderLine {
+	if hide {
+		return nil
+	}
+	key := fmt.Sprintf("%d\x00%s\x00%s\x00%s", c.width, c.mdKey, model, cwd)
+	if c.bannerCacheKey == key {
+		return c.bannerCache
+	}
+	c.bannerCacheKey = key
+	c.bannerCache = bannerLines(t, c.width, model, cwd)
+	return c.bannerCache
 }
 
 // streamVersion is the live block's content version. A tool call can arrive with

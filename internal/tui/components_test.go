@@ -348,7 +348,10 @@ func TestTranscriptIsBorderless(t *testing.T) {
 			}},
 		},
 	}, 80)
-	lines := c.Render(40, ThemeByName("uinxed"), RenderOptions{StreamContent: "", StreamReasoning: "", Activities: nil})
+	// HideBanner stands in for the model's decision: this session was resumed,
+	// so the welcome card is not part of its transcript. The card itself is a
+	// border on purpose and has its own tests.
+	lines := c.Render(40, ThemeByName("uinxed"), RenderOptions{StreamContent: "", StreamReasoning: "", Activities: nil, HideBanner: true})
 	var b strings.Builder
 	for _, l := range lines {
 		b.WriteString(stripANSI(l.Text))

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -13,6 +14,9 @@ func emptyModel(t *testing.T) *Model {
 	m := layoutModel(t)
 	m.session.Messages = nil
 	m.session.Todos = nil
+	// The card is only offered to a session that opened empty; the model records
+	// that once, when the session is opened.
+	m.freshSession = true
 	m.conv.SetSession(m.session, 100)
 	return m
 }
@@ -41,23 +45,70 @@ func TestBannerIsDroppedWhenTooNarrow(t *testing.T) {
 	}
 }
 
-// The card carries real content, sanitized, and leaves as soon as the session
-// has something to say.
-func TestBannerShowsThenScrollsAway(t *testing.T) {
+// The card is transcript content, not a header that gets deleted: the first
+// message pushes the conversation beneath it instead of making a whole block
+// vanish and re-anchoring the screen.
+func TestBannerStaysAboveTheFirstMessage(t *testing.T) {
 	m := emptyModel(t)
 	m.width, m.height = 100, 30
 	m.resize()
-	out := stripANSI(m.renderBase(themeFor(m.cfg)))
+	before := strings.Split(stripANSI(m.renderBase(themeFor(m.cfg))), "\n")
 	for _, want := range []string{"Welcome to Uinxed-Agent", "/connect", "Ctrl+P", "/home/someone/projects"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("banner missing %q:\n%s", want, out)
+		if !strings.Contains(strings.Join(before, "\n"), want) {
+			t.Fatalf("banner missing %q:\n%s", want, strings.Join(before, "\n"))
 		}
 	}
 
 	m.session.Messages = []domain.Message{{ID: "u1", Role: domain.RoleUser, Content: "hello there"}}
 	m.conv.SetSession(m.session, 100)
+	after := strings.Split(stripANSI(m.renderBase(themeFor(m.cfg))), "\n")
+
+	if !strings.Contains(strings.Join(after, "\n"), "Welcome to Uinxed-Agent") {
+		t.Fatalf("the welcome card must survive the first message:\n%s", strings.Join(after, "\n"))
+	}
+	if before[0] != after[0] {
+		t.Fatalf("the card jumped off its top row: %q -> %q", before[0], after[0])
+	}
+	bottom := -1
+	for i, l := range after {
+		if strings.Contains(l, "╰") {
+			bottom = i
+			break
+		}
+	}
+	if bottom < 0 {
+		t.Fatalf("no card bottom border:\n%s", strings.Join(after, "\n"))
+	}
+	if next := strings.Join(after[bottom+1:bottom+2], "\n"); !strings.Contains(next, "hello there") {
+		t.Fatalf("the message should sit just under the card, got %q:\n%s", next, strings.Join(after, "\n"))
+	}
+}
+
+// A full transcript scrolls the card off the top, and scrolling back to the
+// origin brings it back. That only works while the card's height is part of the
+// scroll estimate; otherwise the top of the scroll range stops short of it and
+// the last rows can never be reached.
+func TestBannerScrollsOffAndBack(t *testing.T) {
+	m := emptyModel(t)
+	for i := 0; i < 40; i++ {
+		m.session.Messages = append(m.session.Messages, domain.Message{
+			ID: fmt.Sprintf("u%d", i), Role: domain.RoleUser, Content: fmt.Sprintf("message %d with a little body text", i),
+		})
+	}
+	m.width, m.height = 100, 30
+	m.resize()
+	m.conv.SetSession(m.session, 100)
+
 	if got := stripANSI(m.renderBase(themeFor(m.cfg))); strings.Contains(got, "Welcome to Uinxed-Agent") {
-		t.Fatalf("the welcome card must leave once the session has content:\n%s", got)
+		t.Fatalf("a long conversation should scroll the card away, not pin it:\n%s", got)
+	}
+	m.conv.ScrollUp(10000)
+	top := strings.Split(stripANSI(m.renderBase(themeFor(m.cfg))), "\n")
+	if !strings.Contains(strings.Join(top, "\n"), "Welcome to Uinxed-Agent") {
+		t.Fatalf("scrolling to the top must reveal the card:\n%s", strings.Join(top, "\n"))
+	}
+	if !strings.Contains(top[0], "╭") {
+		t.Fatalf("the card should start on the first row, got %q", top[0])
 	}
 }
 
