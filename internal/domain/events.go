@@ -26,6 +26,11 @@ const (
 	EventSessionChanged EventKind = "session.changed"
 	EventUsageChanged   EventKind = "usage.changed"
 	EventCompaction     EventKind = "context.compaction"
+	// EventContextWarning is the one-shot notice that a session's context is
+	// close enough to the auto-compaction threshold that the next turn may be
+	// spent summarising instead of answering. It is emitted once per fill-up so
+	// a notice the user cannot act on never becomes noise.
+	EventContextWarning EventKind = "context.warning"
 	EventError          EventKind = "error"
 	EventStatus         EventKind = "status"
 
@@ -77,6 +82,19 @@ type ErrorData struct {
 	Op      string
 	Message string
 	Details string
+}
+
+// ContextWarning is the state behind EventContextWarning: how full the context
+// already is, and where the two thresholds sit. It carries percentages as well
+// as token counts because the notice is written for a reader, not a calculator,
+// and every consumer would otherwise repeat the same division.
+type ContextWarning struct {
+	Tokens         int `json:"tokens"`
+	Window         int `json:"window"`
+	WarnAt         int `json:"warn_at"`
+	CompactAt      int `json:"compact_at"`
+	Percent        int `json:"percent"`
+	CompactPercent int `json:"compact_percent"`
 }
 
 // ApprovalRequest is one pending tool call awaiting a user decision.

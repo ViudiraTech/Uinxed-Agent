@@ -75,6 +75,12 @@ func (m *Model) beginTurn() {
 	m.turnElapsed = 0
 	m.turnUsage = domain.Usage{}
 	m.lastActivityAt = time.Now()
+	// A /compact run outside a turn reports "started" but its failure has no
+	// terminal event; opening the next turn is what clears that leftover phase.
+	// Doing it inside this guard keeps the reverse case intact: a compaction that
+	// this turn already announced is not mistaken for a stale one when the submit
+	// op's beginTurn arrives a beat later.
+	m.compacting = false
 }
 
 // finishTurn freezes what the settled line needs. Clearing turnVerb is what
@@ -86,6 +92,9 @@ func (m *Model) finishTurn() {
 	m.completionVerb = completionVerbs[pickIndex(len(completionVerbs))]
 	m.turnElapsed = time.Since(m.busySince)
 	m.turnVerb = ""
+	// A compaction that never reported back — a failed one aborts the turn —
+	// must not leave the next turn labelled as compacting.
+	m.compacting = false
 }
 
 // clearWorkingLine drops per-turn state when the turn no longer applies — the
@@ -97,6 +106,26 @@ func (m *Model) clearWorkingLine() {
 	m.turnElapsed = 0
 	m.turnUsage = domain.Usage{}
 	m.lastActivityAt = time.Time{}
+	m.compacting = false
+}
+
+// noteCompaction folds the compaction lifecycle into the working line. Only
+// "started" opens the phase; every other value closes it, so a payload this
+// version does not know can leave the line plain but never stuck.
+func (m *Model) noteCompaction(data any) {
+	switch fmt.Sprint(data) {
+	case "started":
+		m.compacting = true
+		// Compacting is work, not a stall: without this the line would ramp
+		// toward the error color twenty seconds in, exactly while a compaction
+		// of a large session is still doing its job.
+		m.touchActivity()
+	case "completed":
+		m.compacting = false
+		m.showToast("✓ context compacted")
+	default:
+		m.compacting = false
+	}
 }
 
 // touchActivity records that the model produced something, which is what the
@@ -157,6 +186,12 @@ func (m *Model) renderWorkingLine(t Theme) string {
 	}
 
 	verb := m.turnVerb
+	if m.compacting {
+		// Compaction happens before the turn's own message is even sent, so a
+		// reader who only sees the turn's verb concludes the model is thinking
+		// about a question it has not received yet. Name the phase instead.
+		verb = "Compacting context"
+	}
 	if verb == "" {
 		// A turn whose EventAgentStarted was missed (a resumed run) still needs
 		// a label; the plain fallback beats an empty line.
@@ -203,6 +238,11 @@ func (m *Model) shimmerVerb(t Theme, text string) string {
 // stallIntensity reports how far into the stall ramp a turn has drifted: zero
 // while the model is still producing, rising to one over stallRamp once it stops.
 func (m *Model) stallIntensity() float64 {
+	if m.compacting {
+		// A compaction is silent by nature: holding its own lack of output
+		// against it would paint a working phase as a wedged one.
+		return 0
+	}
 	if m.lastActivityAt.IsZero() {
 		return 0
 	}

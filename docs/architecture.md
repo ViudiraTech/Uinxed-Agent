@@ -37,6 +37,8 @@ Rules enforced by package dependencies:
 
 `internal/domain/events.go` defines stream delta, reasoning delta, tool lifecycle, Agent lifecycle, Todo, session, usage, compaction and error events. Runtime event channels are bounded. `internal/app/stream.go` forwards model content/reasoning deltas immediately so provider SSE remains visibly live. Only cumulative `ToolOutput` snapshots are coalesced on the configurable render interval (minimum 8 ms).
 
+Compaction is announced rather than inferred. The runtime emits a one-shot `ContextWarning` when a session's estimate crosses the warn threshold (`WarnTokens`), re-arming only after a compaction succeeds, and the TUI labels the compaction phase in the working line (`Compacting context…`) instead of leaving the turn's own verb there. Compaction runs before the turn's message is sent, so without these two signals the turn that triggers it looks like one that never answered.
+
 This protects input latency when a fast model emits many tiny SSE chunks.
 
 ## Provider layer
@@ -90,6 +92,8 @@ rendering, and pointer-wheel routing uses those regions. Overlays include unifie
 Diff, Todos, connect wizard and confirmations.
 
 The conversation renderer keeps lightweight block estimates for all messages but only renders the visible region plus overscan. Completed Markdown uses an LRU-style cache keyed by message ID, content version, width and theme.
+
+Text selection is screen-anchored, not message-anchored (`selection.go`): the terminal's own drag-select is unavailable while mouse capture is on, so a drag over the transcript highlights cells and releasing copies them through OSC-52. The anchor indexes the cached frame, which is why scrolling, resizing and session replacement clear the selection — the frame moves out from under it. Painting rewrites each SGR reset inside the span so the highlight survives styled segments, and a wide glyph is pulled wholly into the selection rather than bisected.
 
 ## Persistence
 

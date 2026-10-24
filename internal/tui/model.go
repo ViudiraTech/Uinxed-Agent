@@ -62,7 +62,18 @@ type Model struct {
 	toastUntil          time.Time
 	busy                bool
 	busySince           time.Time
-	mainRunID           string
+	// compacting is true between a compaction's started and completed events.
+	// The working line names the phase instead of the turn's verb: a compaction
+	// produces no output for as long as it takes, and an unexplained pause reads
+	// as a turn that never answered.
+	compacting bool
+	// sel is the drag selection over the rendered frame, and frameText is the
+	// last frame's lines with their styling intact. The frame is cached because
+	// a drag has to be extracted from exactly the cells the user pointed at, and
+	// re-rendering to find them would mean rendering from inside Update.
+	sel       textSelection
+	frameText []string
+	mainRunID string
 	// mainRunSessionID is the session that owns the in-flight turn. It can differ
 	// from m.session.ID while the user browses another session, and the turn's
 	// completion must still clear busy state that belongs to it.
@@ -232,6 +243,10 @@ func asyncOp(op string, fn func() (any, error)) tea.Cmd {
 }
 
 func (m *Model) setSession(s domain.Session) {
+	// Every path that replaces the session — a switch, a reload after a turn, a
+	// new conversation — changes what the frame holds, so a highlight drawn over
+	// the previous content cannot survive it.
+	m.clearSelection()
 	if m.session.ID != s.ID {
 		// Busy belongs to the session that owns the running turn, not to whatever
 		// is on screen: viewing another session must leave the composer usable, and

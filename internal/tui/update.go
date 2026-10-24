@@ -23,6 +23,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch x := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = x.Width, x.Height
+		// Rows reflow under the anchor, so the highlight would cover other text.
+		m.clearSelection()
 		m.resize()
 		m.ensurePromptFocus()
 		return m, nil
@@ -128,12 +130,38 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.MouseClickMsg:
 		mouse := x.Mouse()
+		var cmds []tea.Cmd
+		// A second press ends a drag whose release never arrived: some terminals
+		// report button events but not releases, and a selection left half-open
+		// would turn every later pointer move into a highlight.
+		if m.sel.active {
+			if cmd := m.endSelection(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
 		r, ok := findRegion(m.regions, mouse.X, mouse.Y)
-		return m, m.handleMouseClick(mouse, r, ok)
+		// A press in the transcript opens a potential drag selection. The click's
+		// own action still runs on the same message: the region under it may be
+		// the focus region, and starting a drag from a tool card is not a way to
+		// select text anyway.
+		if m.canSelect(mouse, r, ok) {
+			m.startSelection(selectionPoint{row: mouse.Y, col: mouse.X})
+		}
+		cmds = append(cmds, m.handleMouseClick(mouse, r, ok))
+		return m, tea.Batch(cmds...)
+	case tea.MouseReleaseMsg:
+		return m, m.endSelection()
 	case tea.MouseWheelMsg:
+		// The frame scrolls under the anchor, so a stale highlight would cover
+		// different text than the one that was copied.
+		m.clearSelection()
 		return m, m.handleMouseWheel(x.Mouse(), m.layout)
 	case tea.MouseMotionMsg:
 		mouse := x.Mouse()
+		if m.sel.active {
+			m.dragSelection(selectionPoint{row: mouse.Y, col: mouse.X})
+			return m, nil
+		}
 		r, ok := findRegion(m.regions, mouse.X, mouse.Y)
 		m.handleMouseMotion(mouse, r, ok)
 		return m, nil
@@ -331,7 +359,15 @@ func (m *Model) handleRuntime(e domain.Event) tea.Cmd {
 		}
 	case domain.EventCompaction:
 		if e.SessionID == m.session.ID {
-			m.showToast("Context compact: " + fmt.Sprint(e.Data))
+			m.noteCompaction(e.Data)
+		}
+	case domain.EventContextWarning:
+		if e.SessionID == m.session.ID {
+			if w, ok := e.Data.(domain.ContextWarning); ok {
+				// Say where the compact line is, not just where the context is:
+				// "62%" alone does not explain what happens when it is reached.
+				m.showToast(fmt.Sprintf("context %d%% full · auto-compacts at %d%%", w.Percent, w.CompactPercent))
+			}
 		}
 	case domain.EventError:
 		if e.SessionID == m.session.ID {
@@ -542,6 +578,13 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (tea.Cmd, bool) {
 		return tea.Quit, true
 	}
 	if key == "esc" {
+		// A selection is the most recent thing the user made; esc drops it before
+		// it can mean "cancel the turn", which would be a jarring thing to do to a
+		// turn the user never asked to stop.
+		if m.hasSelection() {
+			m.clearSelection()
+			return nil, true
+		}
 		if m.overlay != overlayNone {
 			m.closeOverlay()
 			return nil, true

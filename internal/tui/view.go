@@ -32,6 +32,13 @@ func (m *Model) View() tea.View {
 	} else {
 		content = m.renderOverlay(t)
 	}
+	// Cache the styled frame before the selection paints over it: extraction has
+	// to read the unhighlighted cells, and the next frame has to start from them
+	// rather than from a frame that already carries a highlight.
+	m.frameText = strings.Split(content, "\n")
+	if m.overlay == overlayNone && m.hasSelection() {
+		content = m.paintFrame(t)
+	}
 	v := tea.NewView(content)
 	v.AltScreen = true
 	v.ReportFocus = true

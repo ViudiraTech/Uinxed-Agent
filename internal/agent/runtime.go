@@ -34,10 +34,14 @@ type Runtime struct {
 	approvalFallback approval.Mode
 	mu               sync.Mutex
 	runs             map[string]*runHandle
-	seq              atomic.Uint64
-	wg               sync.WaitGroup
-	closed           bool
-	log              *slog.Logger
+	// contextWarned records the sessions already told their context is filling
+	// up. Guarded by mu, and cleared when a compaction succeeds so the next
+	// climb earns its own warning.
+	contextWarned map[string]bool
+	seq           atomic.Uint64
+	wg            sync.WaitGroup
+	closed        bool
+	log           *slog.Logger
 }
 
 type runHandle struct {
@@ -49,7 +53,7 @@ func NewRuntime(store storage.Store, registry *tools.Registry, resolver Provider
 	if registry == nil {
 		registry = tools.DefaultRegistry()
 	}
-	r := &Runtime{store: store, registry: registry, resolve: resolver, events: make(chan domain.Event, 256), runs: map[string]*runHandle{}, approvalFallback: approval.DefaultMode}
+	r := &Runtime{store: store, registry: registry, resolve: resolver, events: make(chan domain.Event, 256), runs: map[string]*runHandle{}, contextWarned: map[string]bool{}, approvalFallback: approval.DefaultMode}
 	r.broker = NewBroker(func(e domain.Event) { r.emitTerminal(e) })
 	return r
 }
@@ -210,6 +214,9 @@ func (r *Runtime) runTurn(ctx context.Context, sessionID, text, runID string) er
 	if err != nil {
 		return err
 	}
+	// Tell the user before the context turns into work: at this size the next
+	// turn may start with a compaction, and nothing else announces it.
+	r.noteContextPressure(ctx, sess.ID, sess.Model, sess.Messages, runID)
 	if contextmgr.EstimateMessages(sess.Messages) >= contextmgr.CompactThreshold(sess.Model) {
 		if err := r.compact(ctx, p, &sess, runID); err != nil {
 			return err
@@ -327,6 +334,13 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 		if err := r.saveTurn(ctx, st); err != nil {
 			return err
 		}
+		// A long turn can cross the threshold on its own; warn at the round
+		// boundary so the notice arrives while the turn is still running rather
+		// than only when the next one starts.
+		st.mu.Lock()
+		grown := append([]domain.Message(nil), st.s.Messages...)
+		st.mu.Unlock()
+		r.noteContextPressure(ctx, sess.ID, sess.Model, grown, runID)
 	}
 }
 
@@ -987,6 +1001,62 @@ func (r *Runtime) delegate(ctx context.Context, parent *turnState, parentRunID s
 	return tools.Result{Content: answer, Metadata: map[string]any{"session_id": child.ID, "agent": a.Agent}}, nil
 }
 
+// noteContextPressure warns, once per fill-up, that the session is close enough
+// to the compaction threshold that the next turn may be spent summarising.
+//
+// It exists because compaction is invisible and arrives before the user's own
+// message: the turn that triggers it looks like one that simply never answered.
+// The flag is per session rather than per turn so a long conversation warns at
+// each crossing instead of on every round, and the estimate is recomputed here
+// rather than carried in, because what matters is the size at this moment.
+func (r *Runtime) noteContextPressure(ctx context.Context, sessionID, model string, messages []domain.Message, runID string) {
+	warnAt := contextmgr.WarnTokens(model)
+	if warnAt <= 0 {
+		return
+	}
+	used := contextmgr.EstimateMessages(messages)
+	if used < warnAt {
+		return
+	}
+	r.mu.Lock()
+	log := r.log
+	if r.contextWarned[sessionID] {
+		r.mu.Unlock()
+		return
+	}
+	r.contextWarned[sessionID] = true
+	r.mu.Unlock()
+
+	window := contextmgr.Window(model)
+	pct := func(n int) int {
+		if window <= 0 {
+			return 0
+		}
+		return n * 100 / window
+	}
+	compactAt := contextmgr.CompactThreshold(model)
+	r.emit(ctx, domain.Event{
+		Kind: domain.EventContextWarning, SessionID: sessionID, RunID: runID, At: time.Now(),
+		Data: domain.ContextWarning{
+			Tokens: used, Window: window,
+			WarnAt: warnAt, CompactAt: compactAt,
+			Percent: pct(used), CompactPercent: pct(compactAt),
+		},
+	})
+	if log != nil {
+		log.Info("context pressure warning", "session_id", sessionID, "tokens", used, "window", window, "compact_at", compactAt)
+	}
+}
+
+// rearmContextWarning forgets a warning so the next climb past the threshold
+// speaks again. Compaction is the only thing that empties the context, so it is
+// the only place that re-arms.
+func (r *Runtime) rearmContextWarning(sessionID string) {
+	r.mu.Lock()
+	delete(r.contextWarned, sessionID)
+	r.mu.Unlock()
+}
+
 func (r *Runtime) compact(ctx context.Context, p provider.Provider, sess *domain.Session, runID string) error {
 	started := time.Now()
 	if r.log != nil {
@@ -1017,6 +1087,8 @@ func (r *Runtime) compact(ctx context.Context, p provider.Provider, sess *domain
 	if err := r.store.SaveSession(ctx, *sess); err != nil {
 		return err
 	}
+	// The context has room again, so the next climb deserves its own warning.
+	r.rearmContextWarning(sess.ID)
 	r.emit(ctx, domain.Event{Kind: domain.EventCompaction, SessionID: sess.ID, RunID: runID, At: time.Now(), Data: "completed"})
 	if r.log != nil {
 		r.log.Info("context compaction finished", "run_id", runID, "session_id", sess.ID, "duration_ms", time.Since(started).Milliseconds(), "messages", len(sess.Messages))

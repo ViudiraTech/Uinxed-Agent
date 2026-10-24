@@ -408,3 +408,111 @@ func TestShimmerSplitsTheVerbOnlyWhenAnimating(t *testing.T) {
 	}
 	t.Fatal("no frame in the cycle split the verb; the sweep never renders")
 }
+
+// Compaction runs before the turn's own message is even sent, and it produces no
+// output while it works. The working line has to name the phase, or a turn that
+// spends its first seconds summarising reads as one that never answered.
+func TestWorkingLineNamesCompaction(t *testing.T) {
+	pinPick(t, 0)
+	th := ThemeByName("claude")
+	m := &Model{session: domain.Session{ID: "s1"}, busy: true, busySince: time.Now().Add(-2 * time.Second)}
+	m.beginTurn()
+	verb := m.turnVerb
+
+	m.noteCompaction("started")
+	if got := stripANSI(m.renderWorkingLine(th)); !strings.Contains(got, "Compacting context") {
+		t.Fatalf("compaction is not named in %q", got)
+	}
+	// The turn's own verb belongs to the model thinking, which has not started.
+	if got := stripANSI(m.renderWorkingLine(th)); strings.Contains(got, verb) {
+		t.Fatalf("the turn verb leaked into the compaction line: %q", got)
+	}
+
+	m.noteCompaction("completed")
+	if m.compacting {
+		t.Fatal("completion left the line stuck in the compaction phase")
+	}
+	if got := stripANSI(m.renderWorkingLine(th)); !strings.Contains(got, verb) {
+		t.Fatalf("the turn verb did not come back: %q", got)
+	}
+}
+
+// A compaction is silent by design, so its own lack of output must not be read
+// as a stalled turn — that ramp recolors the line as an error twenty seconds in.
+func TestCompactionDoesNotRampTowardTheErrorColor(t *testing.T) {
+	m := &Model{busy: true, busySince: time.Now()}
+	m.beginTurn()
+	m.noteCompaction("started")
+	m.lastActivityAt = time.Now().Add(-(stallAfter + stallRamp))
+	if got := m.stallIntensity(); got != 0 {
+		t.Fatalf("stall intensity during compaction = %v, want 0", got)
+	}
+
+	// Without the phase, the same idle time is a stall.
+	m.noteCompaction("completed")
+	if got := m.stallIntensity(); got != 1 {
+		t.Fatalf("stall intensity after compaction = %v, want 1", got)
+	}
+}
+
+// A failed compaction aborts the turn without a terminal compaction event, so
+// ending the turn has to clear the phase as well.
+func TestTurnEndClearsTheCompactionPhase(t *testing.T) {
+	m := &Model{busy: true, busySince: time.Now()}
+	m.beginTurn()
+	m.noteCompaction("started")
+	m.finishTurn()
+	if m.compacting {
+		t.Fatal("finishTurn left the compaction phase armed")
+	}
+
+	m.noteCompaction("started")
+	m.clearWorkingLine()
+	if m.compacting {
+		t.Fatal("clearWorkingLine left the compaction phase armed")
+	}
+
+	// An unknown payload is treated as the end rather than as a reason to stay.
+	m.noteCompaction("failed")
+	if m.compacting {
+		t.Fatal("an unrecognised compaction payload did not close the phase")
+	}
+}
+
+// The warning has to say where the automatic compaction starts, not only how
+// full the context already is: the percentage alone explains nothing.
+func TestContextWarningToastNamesBothThresholds(t *testing.T) {
+	m := &Model{session: domain.Session{ID: "s"}}
+	m.handleRuntime(domain.Event{Kind: domain.EventContextWarning, SessionID: "s", Data: domain.ContextWarning{Percent: 54, CompactPercent: 62}})
+	if !strings.Contains(m.toast, "54%") || !strings.Contains(m.toast, "62%") {
+		t.Fatalf("toast = %q, want both the fill and the compaction threshold", m.toast)
+	}
+
+	// A warning about another session is not this session's business.
+	m.toast = ""
+	m.handleRuntime(domain.Event{Kind: domain.EventContextWarning, SessionID: "other", Data: domain.ContextWarning{Percent: 54, CompactPercent: 62}})
+	if m.toast != "" {
+		t.Fatalf("a foreign session's warning surfaced in this one: %q", m.toast)
+	}
+}
+
+// /compact runs outside a turn, and a failed one never reports back. Opening the
+// next turn has to drop the leftover phase — while a compaction that the new turn
+// already announced must survive the submit op's second beginTurn.
+func TestBeginTurnClearsAStaleCompactionPhase(t *testing.T) {
+	pinPick(t, 0)
+	m := &Model{busy: true, busySince: time.Now()}
+	m.noteCompaction("started") // a /compact that never finished
+	m.beginTurn()
+	if m.compacting {
+		t.Fatal("the new turn inherited the failed /compact's phase")
+	}
+
+	// The turn's own compaction arrives after beginTurn; the duplicate beginTurn
+	// the submit op issues must not erase it.
+	m.noteCompaction("started")
+	m.beginTurn()
+	if !m.compacting {
+		t.Fatal("a repeated beginTurn dropped this turn's compaction")
+	}
+}
