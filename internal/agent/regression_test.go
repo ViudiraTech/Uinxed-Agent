@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -281,4 +282,83 @@ func TestDelegateChildCanBeCancelled(t *testing.T) {
 		t.Fatal("Cancel on a running delegate child returned false")
 	}
 	waitFinished(t, r, "s")
+}
+
+// commandAliasProvider asks for one bash call spelled the way Claude Code
+// spells it — `command` plus a `description` — then answers.
+type commandAliasProvider struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *commandAliasProvider) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
+	p.mu.Lock()
+	p.calls++
+	n := p.calls
+	p.mu.Unlock()
+	ch := make(chan provider.Event, 8)
+	go func() {
+		defer close(ch)
+		emit := func(e provider.Event) bool {
+			select {
+			case ch <- e:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		if n == 1 {
+			emit(provider.Event{Kind: provider.EventToolCall, ToolCalls: []domain.ToolCall{{
+				Index: 0, ID: "c-bash", Type: "function",
+				Function: domain.ToolCallFunction{Name: "bash", Arguments: `{"command":"echo alias-ran","description":"say it"}`},
+			}}})
+			emit(provider.Event{Kind: provider.EventDone, FinishReason: "tool_calls"})
+			return
+		}
+		emit(provider.Event{Kind: provider.EventContent, Text: "done"})
+		emit(provider.Event{Kind: provider.EventDone, FinishReason: "stop"})
+	}()
+	return ch, nil
+}
+func (*commandAliasProvider) Models(context.Context) ([]string, error) { return []string{"test"}, nil }
+func (*commandAliasProvider) CheckKey(context.Context, string) error   { return nil }
+
+// A bash call that names the command `command` must run, not fail the turn with
+// `invalid tool arguments: json: unknown field "command"`. The model has no way
+// to learn the house spelling from a decoder error, so the tool layer accepts
+// the schema it was trained on instead of making the user retry.
+func TestBashCallSpelledCommandRuns(t *testing.T) {
+	st := newMemStore()
+	sess := domain.Session{ID: "s", Name: "s", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		ProviderID: "p", Model: "test", AgentID: "build", CWD: t.TempDir(),
+		Metadata: map[string]any{"mode": "full-auto"}}
+	if err := st.SaveSession(context.Background(), sess); err != nil {
+		t.Fatal(err)
+	}
+	p := &commandAliasProvider{}
+	r := NewRuntime(st, nil, func(string) (provider.Provider, error) { return p, nil })
+	t.Cleanup(r.Close)
+
+	if _, err := r.StartTurn(context.Background(), "s", "run it"); err != nil {
+		t.Fatal(err)
+	}
+	waitFinished(t, r, "s")
+
+	got, err := st.LoadSession(context.Background(), "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var results []string
+	for _, m := range got.Messages {
+		if m.Role == domain.RoleTool {
+			results = append(results, m.Content)
+		}
+	}
+	out := strings.Join(results, "\n")
+	if strings.Contains(out, "unknown field") {
+		t.Fatalf("the alias was rejected again: %s", out)
+	}
+	if !strings.Contains(out, "alias-ran") {
+		t.Fatalf("bash produced no output for the aliased command: %s", out)
+	}
 }
