@@ -1251,13 +1251,16 @@ func displayWidth(s string) int { return ansi.StringWidth(s) }
 
 // toolArgKeys lists, per tool, the arguments worth showing in a collapsed
 // call line, in display order. Anything not listed falls back to argFallbackKeys
-// so a newly added tool still renders a useful one-line summary.
+// so a newly added tool still renders a useful one-line summary. Alias spellings
+// sit next to the canonical name because the transcript renders the arguments
+// the model actually sent, and it may have used another harness's name for the
+// same value (`command`, `file_path`); internal/tools folds those for execution.
 var toolArgKeys = map[string][]string{
-	"bash":        {"cmd"},
-	"read_file":   {"path", "offset"},
-	"write_file":  {"path"},
-	"edit_file":   {"path"},
-	"list_dir":    {"path"},
+	"bash":        {"cmd", "command"},
+	"read_file":   {"path", "file_path", "offset"},
+	"write_file":  {"path", "file_path"},
+	"edit_file":   {"path", "file_path"},
+	"list_dir":    {"path", "file_path"},
 	"grep":        {"pattern", "include"},
 	"glob":        {"pattern"},
 	"fetch_url":   {"url"},
@@ -1268,7 +1271,7 @@ var toolArgKeys = map[string][]string{
 	"todo_update": {"subject", "index"},
 }
 
-var argFallbackKeys = []string{"path", "cmd", "query", "url", "pattern", "expr", "skill", "subject", "task", "name"}
+var argFallbackKeys = []string{"path", "file_path", "cmd", "command", "query", "url", "pattern", "expr", "skill", "subject", "task", "name"}
 
 // toolSummary renders the parenthesized part of a collapsed tool-call line.
 // Showing the salient argument beats dumping raw JSON: `Read(src/app.go)` is

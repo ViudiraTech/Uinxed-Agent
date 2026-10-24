@@ -266,17 +266,6 @@ func obj(props map[string]any, required ...string) map[string]any {
 }
 func strp(desc string) map[string]any { return map[string]any{"type": "string", "description": desc} }
 func nump(desc string) map[string]any { return map[string]any{"type": "number", "description": desc} }
-func decode(raw json.RawMessage, v any) error {
-	if len(raw) == 0 {
-		raw = []byte("{}")
-	}
-	d := json.NewDecoder(bytes.NewReader(raw))
-	d.DisallowUnknownFields()
-	if err := d.Decode(v); err != nil {
-		return fmt.Errorf("invalid tool arguments: %w", err)
-	}
-	return nil
-}
 func intArg(v any, def int) int {
 	switch n := v.(type) {
 	case float64:

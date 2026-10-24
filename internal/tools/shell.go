@@ -30,7 +30,7 @@ func (*BashTool) Execute(ctx context.Context, raw json.RawMessage, env Execution
 		return Result{}, err
 	}
 	if strings.TrimSpace(a.Cmd) == "" {
-		return Result{}, errors.New("cmd 不能为空")
+		return Result{}, errors.New("cmd 不能为空：请把要执行的命令写进 cmd 字段（command 也可以）")
 	}
 	if a.Timeout <= 0 {
 		a.Timeout = 30

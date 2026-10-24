@@ -354,7 +354,11 @@ func summarizeApproval(tool string, args json.RawMessage) string {
 	if len(args) == 0 || json.Unmarshal(args, &m) != nil {
 		return ""
 	}
-	for _, key := range []string{"cmd", "path", "file_path", "query", "pattern", "task", "expr", "url"} {
+	// Aliases sit next to the canonical names because these arguments come
+	// straight from the model: bash's command may arrive as `cmd` or
+	// `command`, and a file as `path` or `file_path`. The prompt has to show
+	// what is being approved whichever spelling the model chose.
+	for _, key := range []string{"cmd", "command", "path", "file_path", "query", "pattern", "task", "expr", "url"} {
 		v, ok := m[key]
 		if !ok {
 			continue

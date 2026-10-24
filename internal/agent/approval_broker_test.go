@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -250,5 +251,25 @@ func TestWaitReceivesDecision(t *testing.T) {
 	d, decided := b.wait(context.Background(), req)
 	if !decided || !d.Allow || d.Reason != "ok" {
 		t.Fatalf("wait = (%#v, %v)", d, decided)
+	}
+}
+
+// TestApprovalSummaryReadsAliasSpellings keeps the prompt honest for calls that
+// name the argument the way another harness does: approving "bash" with no
+// command on screen is not a review.
+func TestApprovalSummaryReadsAliasSpellings(t *testing.T) {
+	cases := []struct {
+		tool string
+		args string
+		want string
+	}{
+		{"bash", `{"cmd":"go test ./..."}`, "go test ./..."},
+		{"bash", `{"command":"go test ./..."}`, "go test ./..."},
+		{"write_file", `{"file_path":"internal/tui/view.go"}`, "internal/tui/view.go"},
+	}
+	for _, c := range cases {
+		if got := summarizeApproval(c.tool, json.RawMessage(c.args)); got != c.want {
+			t.Errorf("summarizeApproval(%s, %s) = %q, want %q", c.tool, c.args, got, c.want)
+		}
 	}
 }

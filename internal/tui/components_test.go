@@ -464,6 +464,11 @@ func TestToolSummaryPrefersSalientArgument(t *testing.T) {
 		{"grep", `{"pattern":"TODO","include":"*.go"}`, "TODO"},
 		{"write_file", `{"path":"a/b/c.go","content":"package a"}`, "a/b/c.go"},
 		{"calc", `{"expr":"1+1"}`, "1+1"},
+		// The model may spell the argument the way another harness does; the
+		// collapsed line still has to show what ran.
+		{"bash", `{"command":"go build ./...","description":"build"}`, "go build ./..."},
+		{"read_file", `{"file_path":"src/app.go","offset":1}`, "src/app.go"},
+		{"bash", `{"cmd":"canonical","command":"alias"}`, "canonical"},
 	}
 	for _, c := range cases {
 		if got := toolSummary(c.tool, c.args); got != c.want {
