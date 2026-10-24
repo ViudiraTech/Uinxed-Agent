@@ -377,37 +377,48 @@ func layoutModelB(b *testing.B) *Model {
 	return m
 }
 
-// TestLiveStreamShowsReasoningText is the readability contract for streaming:
-// the block currently being written must show its reasoning as it arrives.
-// Collapsing it to an "N lines" summary left the screen apparently frozen
-// during long thinking, because neither the text nor the count visibly changed.
-func TestLiveStreamShowsReasoningText(t *testing.T) {
+// Live reasoning arrives collapsed. It used to unfold itself as it streamed,
+// which took over the screen exactly when the reader was still reading the
+// answer above it. The collapsed row counts the lines as they grow — that is
+// the live signal — and ctrl+t opens the text on request.
+func TestLiveReasoningStaysCollapsedUntilAsked(t *testing.T) {
 	m := layoutModel(t)
 	m.width, m.height = 90, 24
 	m.resize()
-	m.streamReasoning = "先确认认证模块的边界在哪里，再决定 token 校验的位置"
+	const text = "先确认认证模块的边界在哪里，再决定 token 校验的位置"
+	m.streamReasoning = text
 	m.streamContent = ""
 
 	out := stripANSI(m.renderBase(themeFor(m.cfg)))
+	if strings.Contains(out, "先确认认证模块的边界在哪里") {
+		t.Fatalf("live reasoning streamed unfolded:\n%s", out)
+	}
+	if !strings.Contains(out, "Thinking… (1 lines") {
+		t.Fatalf("collapsed live thinking must still count its lines:\n%s", out)
+	}
+
+	m.conv.ToggleThinking("__stream__")
+	out = stripANSI(m.renderBase(themeFor(m.cfg)))
 	if !strings.Contains(out, "先确认认证模块的边界在哪里") {
-		t.Fatalf("live reasoning text must be visible while streaming:\n%s", out)
+		t.Fatalf("ctrl+t must open the live reasoning:\n%s", out)
 	}
-	// The live block's own header must be the plain "Thinking…" form. The
-	// finished turn above it legitimately keeps its "(N lines · ctrl+t)"
-	// summary, so this checks the line directly above the streamed text.
-	lines := strings.Split(out, "\n")
-	idx := -1
-	for i, l := range lines {
-		if strings.Contains(l, "先确认认证模块的边界在哪里") {
-			idx = i
-			break
-		}
+	if !strings.Contains(out, "Thinking (ctrl+t to collapse)") {
+		t.Fatalf("an opened live block needs the collapse hint:\n%s", out)
 	}
-	if idx < 1 {
-		t.Fatalf("streamed reasoning not found in output:\n%s", out)
+}
+
+// A reader who opened the live reasoning keeps it open once the message settles,
+// and the next round's live block starts collapsed again.
+func TestExpandedLiveThinkingCarriesToTheSettledMessage(t *testing.T) {
+	c := NewConversation()
+	c.SetSession(domain.Session{ID: "s1"}, 100)
+	c.ToggleThinking("__stream__")
+	c.SettleStream("m1")
+	if !c.expandedThinking["m1"] {
+		t.Fatal("the settled message lost the reader's expansion")
 	}
-	if header := lines[idx-1]; !strings.Contains(header, "Thinking…") || strings.Contains(header, "lines") {
-		t.Fatalf("live reasoning should sit under a plain Thinking… header, got %q", header)
+	if c.expandedThinking["__stream__"] {
+		t.Fatal("the next round's live block must start collapsed")
 	}
 }
 

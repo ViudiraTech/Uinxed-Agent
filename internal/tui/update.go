@@ -514,6 +514,7 @@ func (m *Model) settleMessage(msg domain.Message) {
 	m.streamReasoning = ""
 	m.streamMessageID = ""
 	m.streamToolCalls = nil
+	m.conv.SettleStream(msg.ID)
 	m.conv.SetSession(m.session, m.conv.width)
 }
 

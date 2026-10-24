@@ -90,6 +90,80 @@ func TestWorkingVerbHoldsForTheTurnAndChangesOnTheNext(t *testing.T) {
 	}
 }
 
+// The marker is a fixed snowflake. It used to borrow the thinking spinner's
+// bouncing frames, so a settled turn froze on whichever sparkle happened to be
+// in flight — a dot on one turn, an asterisk on the next.
+func TestWorkingGlyphIsAFixedSnowflake(t *testing.T) {
+	th := ThemeByName("claude")
+	m := &Model{session: domain.Session{ID: "s1"}, busy: true, busySince: time.Now().Add(-time.Minute)}
+	m.beginTurn()
+	for frame := 0; frame < 2*len(th.Glyphs.Spinner); frame++ {
+		m.activityFrame = frame
+		if got := stripANSI(m.renderWorkingLine(th)); !strings.HasPrefix(got, th.Glyphs.Thinking+" ") {
+			t.Fatalf("frame %d drew %q, want the fixed snowflake", frame, got)
+		}
+	}
+	// Reduced motion must keep the same marker rather than swapping in a dot.
+	m.cfg.Animations = false
+	if got := stripANSI(m.renderWorkingLine(th)); !strings.HasPrefix(got, th.Glyphs.Thinking+" ") {
+		t.Fatalf("reduced motion drew %q, want the fixed snowflake", got)
+	}
+
+	m.busy = false
+	m.finishTurn()
+	if got := stripANSI(m.renderWorkingLine(th)); !strings.HasPrefix(got, th.Glyphs.Thinking+" ") {
+		t.Fatalf("the settled line drew %q, want the fixed snowflake", got)
+	}
+}
+
+// Providers report usage once per round, so the counter has to extrapolate the
+// round in flight. Reasoning is counted because on a thinking model it is
+// everything being generated before the first answer token.
+func TestWorkingTokenCounterFollowsStreamedThinking(t *testing.T) {
+	th := ThemeByName("claude")
+	m := &Model{session: domain.Session{ID: "s1"}, busy: true, busySince: time.Now()}
+	m.beginTurn()
+
+	if got := stripANSI(m.renderWorkingLine(th)); strings.Contains(got, "tokens") {
+		t.Fatalf("nothing has streamed yet, got %q", got)
+	}
+	m.streamReasoning = strings.Repeat("想", 200)
+	if got := stripANSI(m.renderWorkingLine(th)); !strings.Contains(got, "↓ 200 tokens") {
+		t.Fatalf("thinking tokens are missing from %q", got)
+	}
+	m.streamReasoning += strings.Repeat("想", 800)
+	if got := stripANSI(m.renderWorkingLine(th)); !strings.Contains(got, "↓ 1k tokens") {
+		t.Fatalf("the counter did not follow the stream: %q", got)
+	}
+
+	// The answer counts too, and it adds to what the provider already billed.
+	m.turnUsage = domain.Usage{OutputTokens: 500}
+	m.streamReasoning = ""
+	m.streamContent = strings.Repeat("a", 400) // ≈ 100 tokens
+	if got := stripANSI(m.renderWorkingLine(th)); !strings.Contains(got, "↓ 600 tokens") {
+		t.Fatalf("billed total and live estimate did not add up: %q", got)
+	}
+}
+
+// One ratio cannot serve both scripts: Latin runs about four characters to the
+// token, CJK about one per character.
+func TestStreamedTokensSplitsByScript(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int64
+	}{
+		{"", 0}, {"hi", 1}, {"hello world", 3}, {"想", 1}, {"思考内容", 4}, {"a想", 1 + 1},
+	}
+	for _, c := range cases {
+		if got := streamedTokens(c.in); got != c.want {
+			t.Fatalf("streamedTokens(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+	if got := streamedTokens("hello", "世界"); got != 2+2 {
+		t.Fatalf("parts must add up, got %d", got)
+	}
+}
+
 func TestWorkingColorRampsFromAccentToError(t *testing.T) {
 	// See components_test.go: NO_COLOR would strip the palette and turn every
 	// comparison into "" == "".

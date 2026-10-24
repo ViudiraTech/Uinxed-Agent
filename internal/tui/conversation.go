@@ -282,6 +282,18 @@ func (c *Conversation) ToggleThinking(id string) {
 	}
 }
 
+// SettleStream hands the live block's reasoning toggle to the message the
+// stream became. Expanding thinking while it is still being written is a choice
+// the reader made; dropping it the instant the answer lands would re-collapse
+// text they were in the middle of reading.
+func (c *Conversation) SettleStream(id string) {
+	expanded := c.expandedThinking["__stream__"]
+	delete(c.expandedThinking, "__stream__")
+	if id != "" && expanded {
+		c.expandedThinking[id] = true
+	}
+}
+
 func (c *Conversation) ToggleAllThinking() {
 	ids := make([]string, 0, len(c.blocks))
 	anyCollapsed := false
@@ -294,8 +306,8 @@ func (c *Conversation) ToggleAllThinking() {
 			anyCollapsed = true
 		}
 	}
-	// The live streaming block is always expanded while it is being written, so
-	// it takes no part in the toggle.
+	// The live block is rendered from the stream buffers rather than c.blocks,
+	// so this loop only ever sees settled turns; its own row carries the toggle.
 	for _, id := range ids {
 		if c.expandedThinking[id] == anyCollapsed {
 			continue
@@ -605,13 +617,15 @@ func (c *Conversation) renderUserBlock(b convBlock, t Theme, width int) []render
 	return out
 }
 
-// reasoningExpanded reports whether a block's reasoning should be shown in
-// full. The live streaming block is always expanded: collapsing it to a
-// one-line summary while it is still being written leaves the screen looking
-// frozen, because neither the text nor the line count visibly changes.
-// Collapsing is only right for history, where the answer is what matters.
+// reasoningExpanded reports whether a block's reasoning is shown in full.
+//
+// The live block is no exception. Thinking used to unfold itself as it arrived,
+// which took over the screen exactly when the reader was still reading the
+// answer above it; the collapsed row counts the lines as they grow, which is the
+// live signal that matters, and it stays clickable (ctrl+t) for the moment the
+// deliberation is worth watching.
 func (c *Conversation) reasoningExpanded(id string) bool {
-	return id == "__stream__" || c.expandedThinking[id]
+	return c.expandedThinking[id]
 }
 
 // renderReasoning returns the reasoning subtree. Collapsed it is a single dim
@@ -619,7 +633,6 @@ func (c *Conversation) reasoningExpanded(id string) bool {
 // the wrapped text in the reasoning color.
 func (c *Conversation) renderReasoning(b convBlock, t Theme, width int, hover string) []renderLine {
 	g := t.Glyphs
-	live := b.ID == "__stream__"
 	style := lipgloss.NewStyle().Foreground(t.Reasoning)
 	if hover == "thinking:"+b.ID {
 		style = style.Bold(true)
@@ -633,13 +646,8 @@ func (c *Conversation) renderReasoning(b convBlock, t Theme, width int, hover st
 			Value:  "thinking:" + b.ID,
 		}}
 	}
-	header := "Thinking (ctrl+t to collapse)"
-	if live {
-		// No toggle hint while streaming: this state is transient, not a choice.
-		header = "Thinking…"
-	}
 	out := []renderLine{{
-		Text:   "  " + style.Render(g.Thinking+" "+header),
+		Text:   "  " + style.Render(g.Thinking+" Thinking (ctrl+t to collapse)"),
 		Action: ActionThinking,
 		Value:  "thinking:" + b.ID,
 	}}

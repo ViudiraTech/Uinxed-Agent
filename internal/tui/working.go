@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
 	"github.com/ViudiraTech/Uinxed-Agent/internal/domain"
@@ -118,13 +119,12 @@ func (m *Model) workingLineVisible() bool {
 //
 //	✻ Worked for 1m 52s
 func (m *Model) renderWorkingLine(t Theme) string {
-	glyph := t.Glyphs.spinner(m.activityFrame)
-	if !m.cfg.Animations {
-		// Reduced motion: Claude Code holds a single dot instead of animating.
-		// With the tick stopped the sparkle would sit frozen on one frame of a
-		// grow-and-shrink sequence, which reads as a rendering glitch.
-		glyph = "●"
-	}
+	// The marker is a snowflake that stays put. It used to borrow the thinking
+	// spinner's bouncing frames, which meant a settled turn froze on whichever
+	// sparkle happened to be in flight — a dot on one turn, an asterisk on the
+	// next — and made the line look like a glitch rather than a status. The
+	// shimmer on the verb is what carries the motion now.
+	glyph := t.Glyphs.Thinking
 	style := lipgloss.NewStyle().Foreground(m.workingColor(t)).Bold(true)
 
 	if !m.busy {
@@ -142,7 +142,12 @@ func (m *Model) renderWorkingLine(t Theme) string {
 	if elapsed := formatWorkingElapsed(time.Since(m.busySince)); elapsed != "" {
 		parts = append(parts, elapsed)
 	}
-	if n := m.turnUsage.OutputTokens; n > 0 {
+	// Providers report usage only when a round ends, so a turn that is thinking
+	// would sit on the previous round's total while the model is actually
+	// producing. What has streamed but not been billed is estimated on top of
+	// the reported total — reasoning included, because on a thinking model that
+	// is most of what is being generated during the pause before the answer.
+	if n := m.turnUsage.OutputTokens + streamedTokens(m.streamContent, m.streamReasoning); n > 0 {
 		parts = append(parts, "↓ "+formatTokenCount(n)+" tokens")
 	}
 	// Reasoning streams ahead of the answer on thinking models, so this is the
@@ -303,6 +308,24 @@ func blendColor(from, to color.Color, f float64) color.Color {
 		return uint8((float64(a)*(1-f) + float64(b)*f) / 257)
 	}
 	return lipgloss.Color(fmt.Sprintf("#%02X%02X%02X", mix(fr, tr), mix(fg, tg), mix(fb, tb)))
+}
+
+// streamedTokens estimates the output tokens of text that has streamed but not
+// been billed yet. The ratio is per script rather than per character: Latin text
+// runs about four characters to the token while CJK runs about one, and a single
+// ratio would be off by an order of magnitude on one of the two.
+func streamedTokens(parts ...string) int64 {
+	var latin, wide int64
+	for _, s := range parts {
+		for _, r := range s {
+			if r < utf8.RuneSelf {
+				latin++
+				continue
+			}
+			wide++
+		}
+	}
+	return (latin+3)/4 + wide
 }
 
 // formatTokenCount renders a token count the way Claude Code does: exact under a
