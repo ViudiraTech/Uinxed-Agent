@@ -111,3 +111,93 @@ func renderStreamID(t *testing.T, c *Conversation, th Theme, streamID, content s
 }
 
 func sessionFixture() domain.Session { return domain.Session{ID: "s1"} }
+
+// The live render has to land on exactly the layout the settled reply will
+// have. A mismatch here is what makes the transcript jump when the turn ends.
+func TestStreamMatchesTheSettledRender(t *testing.T) {
+	cases := []string{
+		"段落\n\n- item",
+		"段落\n\n```go\nx := 1\n```",
+		"# 标题\n\n段落",
+		"# 标题\n\n- item",
+		"- a\n- b\n\n段落",
+		"```go\nx\n```\n\n段落",
+		"段落一\n\n段落二",
+		"## 小节\n\n一段**粗**体文字。\n\n> 引用\n\n1. 有序\n2. 列表\n\n| a | b |\n|---|---|\n| 1 | 2 |",
+	}
+	for _, content := range cases {
+		t.Run(strings.ReplaceAll(content, "\n", "\\n"), func(t *testing.T) {
+			live := transcript(LiveRender(t, content))
+			done := transcript(SettledRender(t, content))
+			if len(live) != len(done) {
+				t.Fatalf("live has %d rows, settled has %d\nlive:\n%s\nsettled:\n%s",
+					len(live), len(done), strings.Join(live, "\n"), strings.Join(done, "\n"))
+			}
+			for i := range live {
+				if live[i] != done[i] {
+					t.Fatalf("row %d differs\nlive:    %q\nsettled: %q", i, live[i], done[i])
+				}
+			}
+		})
+	}
+}
+
+// Growing the message one byte at a time drives every intermediate cut and cache
+// miss the live path can hit. The final frame must still equal the settled one,
+// which catches a stale prefix being stitched onto a newer tail.
+func TestStreamGrowsToTheSettledRender(t *testing.T) {
+	content := "## 标题\n\n第一段 **粗**。\n\n```go\nfmt.Println(1)\n```\n\n- 列表\n- 项目\n\n收尾段落。"
+	c := NewConversation()
+	c.SetSession(sessionFixture(), 80)
+	c.SetWidth(80)
+	th := ThemeByName("dark")
+	var last []renderLine
+	for i := 1; i <= len(content); i++ {
+		last = c.Render(120, th, RenderOptions{StreamContent: content[:i], StreamMessageID: "grow"})
+	}
+	live := transcript(last)
+	done := transcript(SettledRender(t, content))
+	if len(live) != len(done) {
+		t.Fatalf("grow has %d rows, settled has %d\nlive:\n%s\nsettled:\n%s",
+			len(live), len(done), strings.Join(live, "\n"), strings.Join(done, "\n"))
+	}
+	for i := range live {
+		if live[i] != done[i] {
+			t.Fatalf("row %d differs after growing\nlive:    %q\nsettled: %q", i, live[i], done[i])
+		}
+	}
+}
+
+func LiveRender(t *testing.T, content string) []renderLine {
+	t.Helper()
+	c := NewConversation()
+	c.SetSession(sessionFixture(), 80)
+	c.SetWidth(80)
+	return c.Render(120, ThemeByName("dark"), RenderOptions{StreamContent: content, StreamMessageID: "m1"})
+}
+
+func SettledRender(t *testing.T, content string) []renderLine {
+	t.Helper()
+	c := NewConversation()
+	c.SetSession(domain.Session{ID: "s1", Messages: []domain.Message{{ID: "a", Role: domain.RoleAssistant, Content: content}}}, 80)
+	c.SetWidth(80)
+	return c.Render(120, ThemeByName("dark"), RenderOptions{})
+}
+
+// transcript returns the assistant rows from the first marker on, with trailing
+// padding removed so blank rows compare as blank.
+func transcript(lines []renderLine) []string {
+	out := []string{}
+	started := false
+	for _, line := range lines {
+		s := strings.TrimRight(stripANSI(line.Text), " ")
+		if !started {
+			if !strings.Contains(s, "⏺") {
+				continue
+			}
+			started = true
+		}
+		out = append(out, s)
+	}
+	return out
+}

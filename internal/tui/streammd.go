@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	md "github.com/ViudiraTech/Uinxed-Agent/internal/markdown"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // streamMarkdown renders a growing assistant message in full Markdown while it
@@ -58,22 +59,49 @@ func (s *streamMarkdown) render(id, content string, width int, styleKey string, 
 		s.cut = cut
 	}
 
-	out := make([]string, len(s.lines), len(s.lines)+4)
-	copy(out, s.lines)
+	out := make([]string, 0, len(s.lines)+4)
+	out = append(out, trimBlankTail(s.lines)...)
 
 	tail := content[cut:]
 	if strings.TrimSpace(tail) == "" {
 		return out
 	}
-	// glamour gives a heading no trailing blank line, so a stitched tail has to
-	// keep the gap itself — otherwise a heading would sit glued to the paragraph
-	// that follows it.
+	tailLines := trimBlankHead(s.renderTail(tail, width, style))
+	// glamour separates block-level elements with its own blank line, but a
+	// heading gets none. Normalize both sides and re-add the single separator
+	// the document would have — otherwise the stream draws two blank lines
+	// before a list or a fence, where the settled reply draws one.
 	if len(out) > 0 && !headingTail(content[:cut]) {
 		out = append(out, "")
 	}
-	out = append(out, s.renderTail(tail, width, style)...)
+	out = append(out, tailLines...)
 	return out
 }
+
+// trimBlankTail drops the blank rows glamour leaves behind a block-level
+// element. TrimRight("\n") in the renderer keeps a trailing line that is only
+// padding spaces, and stitching onto it would double the gap.
+func trimBlankTail(lines []string) []string {
+	i := len(lines)
+	for i > 0 && blankLine(lines[i-1]) {
+		i--
+	}
+	return lines[:i]
+}
+
+// trimBlankHead drops the leading blank row glamour puts before a list, a fence
+// or a table. The caller re-adds one separator when the document needs it.
+func trimBlankHead(lines []string) []string {
+	i := 0
+	for i < len(lines) && blankLine(lines[i]) {
+		i++
+	}
+	return lines[i:]
+}
+
+// blankLine reports whether a rendered row carries no visible text. glamour
+// pads to the wrap width, so the row still holds spaces (and may hold escapes).
+func blankLine(s string) bool { return strings.TrimSpace(ansi.Strip(s)) == "" }
 
 func (s *streamMarkdown) renderTail(tail string, width int, style md.Style) []string {
 	if len(tail) > streamTailMax {
