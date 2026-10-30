@@ -588,3 +588,22 @@ func TestEntranceResolvesWithoutAnimations(t *testing.T) {
 		t.Fatalf("reveal = %v with animations off, want 1", got)
 	}
 }
+
+// The provider is asked for at least xhigh while supercode is on, so the status
+// line must not keep advertising the stored "low"/"high" level: a status line
+// that disagrees with the request is worse than no status line at all.
+func TestStatusLineShowsTheRequestedFloor(t *testing.T) {
+	m := layoutModel(t)
+	m.session.Metadata = map[string]any{"effort": "low", "supercode": true}
+	if got := m.effortForRequest(); got != "xhigh" {
+		t.Fatalf("effortForRequest = %q with supercode on, want xhigh", got)
+	}
+	m.session.Metadata = map[string]any{"effort": "max", "supercode": true}
+	if got := m.effortForRequest(); got != "max" {
+		t.Fatalf("effortForRequest = %q, want the deeper level kept", got)
+	}
+	m.session.Metadata = map[string]any{"effort": "low", "supercode": false}
+	if got := m.effortForRequest(); got != "low" {
+		t.Fatalf("effortForRequest = %q with supercode off, want the stored level", got)
+	}
+}

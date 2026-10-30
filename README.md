@@ -269,9 +269,9 @@ Uinxed-Agent features a hierarchical multi-agent architecture designed for auton
 - **`general`**: Versatile worker for running benchmarks, compiling dependencies, or multi-step tasks.
 
 ### ⚡ Supercode Mode
-Toggle `supercode` with `/effort supercode`, or by pressing `Tab` in the effort slider. Complex prompts are decomposed into parallel subagent workflows that explore, implement and verify at once.
+Toggle `supercode` with `/effort supercode`, or by sliding the effort slider onto its last stop. Complex prompts are decomposed into parallel subagent workflows that explore, implement and verify at once.
 
-`supercode` is deliberately **not** an effort level: it answers "fan the work out", not "think harder", and turning it on leaves the reasoning level alone. While it is on, the composer's top border carries a static `supercode` tag and ring, so the mode is visible without opening the slider; the animated water surface lives in the effort panel, which keeps the row directly above the input still while you type.
+`supercode` is deliberately **not** an effort level: it answers "fan the work out", not "think harder". Turning it on does not lower a level you picked, but the request is raised to at least `xhigh` — the slider's own caption says `xhigh + workflows` — so the mode never degrades into whatever level the session happened to be on. Subagents do not inherit the mode: they do the task they were handed instead of delegating again. While it is on, the composer's top border carries a static `supercode` tag and ring, so the mode is visible without opening the slider.
 
 ---
 

@@ -267,7 +267,11 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 		// Project instructions come before the skill index: what this repository
 		// asks for outranks the catalogue of what the agent can load.
 		contextBlock := InstructionsBlock(sess.CWD) + skills.PromptBlock(sess.CWD)
-		sys := SystemPromptMode(adef, sess.Model, contextBlock, supercodeFromMetadata(sess.Metadata), string(mode))
+		// supercode is a top-level mode. A delegated child inherits the parent's
+		// metadata, and a child that is told it is in orchestration mode recounts
+		// the task into more delegates instead of doing the work it was handed.
+		supercode := supercodeFromMetadata(sess.Metadata) && sess.ParentID == ""
+		sys := SystemPromptMode(adef, sess.Model, contextBlock, supercode, string(mode))
 		history := contextmgr.FitMessages(sess.Messages, contextmgr.HistoryBudget(sess.Model))
 		msgs := make([]domain.Message, 0, len(history)+1)
 		msgs = append(msgs, domain.Message{Role: domain.RoleSystem, Content: sys})
@@ -276,7 +280,7 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 			msgs = append(msgs, domain.Message{Role: domain.RoleUser, Content: st.referenceContext})
 		}
 		defs := r.registry.ProviderDefinitions(adef.ToolAllowed)
-		req := provider.Request{Model: sess.Model, Messages: msgs, Tools: defs, Effort: effortFromMetadata(sess.Metadata), Thinking: thinkingFromMetadata(sess.Metadata)}
+		req := provider.Request{Model: sess.Model, Messages: msgs, Tools: defs, Effort: effectiveEffort(sess.Metadata), Thinking: thinkingFromMetadata(sess.Metadata)}
 		stream, err := p.Stream(ctx, req)
 		if err != nil {
 			return err
@@ -934,8 +938,13 @@ func (r *Runtime) delegate(ctx context.Context, parent *turnState, parentRunID s
 	parent.mu.Lock()
 	ps := parent.s.Clone()
 	parent.mu.Unlock()
+	// The child keeps the parent's provider, model and kind of session, but not
+	// its orchestration mode: delegate owns the fan-out, and a child that thinks
+	// it is in supercode would fan out again instead of finishing its task.
+	meta := cloneMeta(ps.Metadata)
+	delete(meta, "supercode")
 	now := time.Now()
-	child := domain.Session{ID: r.id("sub"), Name: a.Agent + ": " + truncateName(a.Task), CreatedAt: now, UpdatedAt: now, ProviderID: ps.ProviderID, Model: ps.Model, AgentID: a.Agent, CWD: ps.CWD, ParentID: ps.ID, Metadata: cloneMeta(ps.Metadata)}
+	child := domain.Session{ID: r.id("sub"), Name: a.Agent + ": " + truncateName(a.Task), CreatedAt: now, UpdatedAt: now, ProviderID: ps.ProviderID, Model: ps.Model, AgentID: a.Agent, CWD: ps.CWD, ParentID: ps.ID, Metadata: meta}
 	if err := r.store.SaveSession(ctx, child); err != nil {
 		return tools.Result{}, err
 	}
@@ -1206,9 +1215,10 @@ func cloneMeta(in map[string]any) map[string]any {
 }
 
 // supercodeFromMetadata reads the concurrent-orchestration toggle. It is a
-// separate flag from the effort level, which it deliberately leaves alone —
-// Claude Code's ultracode behaves the same way, and the two answer different
-// questions: how hard to think, and whether to fan the work out.
+// separate flag from the effort level — the two answer different questions:
+// how hard to think, and whether to fan the work out — but turning it on is not
+// free of the level: effectiveEffort raises the request to at least xhigh, which
+// is what the slider's own "xhigh + workflows" caption promises.
 func supercodeFromMetadata(m map[string]any) bool {
 	v, _ := m["supercode"].(bool)
 	return v
@@ -1219,6 +1229,37 @@ func effortFromMetadata(m map[string]any) string {
 		return v
 	}
 	return "high"
+}
+
+// effortOrder is the reasoning scale, weakest first. It is duplicated from
+// config rather than imported: internal/agent is headless and does not depend on
+// the config package, and the ordering is the only part this layer needs.
+var effortOrder = []string{"low", "medium", "high", "xhigh", "max"}
+
+func effortRank(level string) int {
+	for i, l := range effortOrder {
+		if l == level {
+			return i
+		}
+	}
+	return -1
+}
+
+// effectiveEffort is the level actually sent with the request. supercode used to
+// be an effort level that forced max reasoning; when it became a separate toggle
+// the level stopped moving, and turning it on changed only a paragraph of the
+// prompt — the mode then behaved exactly like the session's existing level,
+// usually xhigh. Enforcing a floor of xhigh here is what makes the toggle mean
+// what the panel says it means. A deeper level the user picked (max) is kept.
+func effectiveEffort(m map[string]any) string {
+	level := effortFromMetadata(m)
+	if !supercodeFromMetadata(m) {
+		return level
+	}
+	if effortRank(level) < effortRank("xhigh") {
+		return "xhigh"
+	}
+	return level
 }
 
 // liveMode reads the mode from the store, not from the turn's snapshot. The

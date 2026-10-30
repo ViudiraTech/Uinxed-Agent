@@ -58,7 +58,7 @@ func (m *Model) runStatusCommand() tea.Cmd {
 		Model: m.session.Model, CWD: m.session.CWD,
 		SessionID: m.session.ID, SessionName: m.session.Name,
 		Agent: m.session.AgentID, Provider: m.session.ProviderID,
-		Effort: m.currentEffort(), Busy: m.busy,
+		Effort: m.effortForRequest(), Busy: m.busy,
 		ContextUsed: used, ContextLimit: limit, ContextPct: pct,
 	})
 	parent := m.ctx

@@ -151,10 +151,16 @@ Timezone: %s (UTC%s%02d:%02d)
 	if mode == "plan" {
 		p += "\n\n" + planPrompt
 	}
-	if supercode {
-		p += `\n\n## Supercode 模式
-你正处于 supercode 模式:开启多子 agent 并发编排,推理档位保持会话当前设置。
-对每个实质任务,先自主规划:把任务拆分为可并行的独立工作流(理解→实施→验证),在同一轮回复中多次并发调用 delegate 子 agent(explorer/general/coding)执行;全部返回后汇总评估、修正补做,直到任务彻底完成才结束回合。`
+	// supercode is meaningless in plan mode: the agent is read-only and the
+	// delegate tool is not in its registry, so insisting on parallel delegation
+	// would only make the model call a tool it does not have.
+	if supercode && mode != "plan" {
+		p += `\n\n## Supercode 模式（已开启）
+supercode 是执行模式，不是更深的推理档位：请求已至少提升到 xhigh，你要做的是把工作铺开。
+- 收到实质任务后先拆解：列出 2–4 个可独立推进的工作流（理解 / 实施 / 验证），并写明各自交给哪个子 agent。
+- 首轮就要并发发起 delegate：在同一条消息里放多个工具调用（explorer 探索、general 多步执行、coding 实现），它们会并行执行；不要一次只委托一个、串行等待。
+- 子 agent 返回后必须自己汇总、比对、修正补做，并运行测试验证；委托完成不等于任务完成。
+- 任务小到不值得拆分时，直接自己做，并一句话说明为什么不需要拆。`
 	}
 	return p
 }

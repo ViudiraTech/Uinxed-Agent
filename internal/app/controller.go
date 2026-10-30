@@ -177,7 +177,7 @@ func (c *Controller) NewSession(ctx context.Context, name string) (domain.Sessio
 		cwd, _ = os.Getwd()
 	}
 	now := time.Now()
-	s := domain.Session{ID: fmt.Sprintf("s-%d", now.UnixNano()), Name: name, CreatedAt: now, UpdatedAt: now, ProviderID: cfg.ActiveProvider, Model: cfg.Model, AgentID: "build", CWD: cwd, Metadata: map[string]any{"effort": cfg.Effort, "thinking": cfg.Thinking}}
+	s := domain.Session{ID: fmt.Sprintf("s-%d", now.UnixNano()), Name: name, CreatedAt: now, UpdatedAt: now, ProviderID: cfg.ActiveProvider, Model: cfg.Model, AgentID: "build", CWD: cwd, Metadata: map[string]any{"effort": cfg.Effort, "thinking": cfg.Thinking, "supercode": cfg.Supercode}}
 	if err := c.Store.SaveSession(ctx, s); err != nil {
 		return s, err
 	}

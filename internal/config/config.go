@@ -56,8 +56,9 @@ type Config struct {
 	StatuslineCommand      string     `json:"statusline_command,omitempty"`
 	Debug                  bool       `json:"debug,omitempty"`
 	// Supercode turns on concurrent subagent orchestration. It is deliberately
-	// not an effort level: it answers "fan the work out", not "think harder",
-	// and it leaves the level untouched.
+	// not an effort level: it answers "fan the work out", not "think harder".
+	// The request still carries a floor of xhigh while it is on — see
+	// agent.effectiveEffort — because that is what the mode's own panel promises.
 	Supercode bool `json:"supercode,omitempty"`
 	// HideBanner is opt-out rather than opt-in: JSON cannot tell an absent
 	// boolean from a false one, so a `banner` key defaulting to on would switch

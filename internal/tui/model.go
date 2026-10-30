@@ -346,6 +346,21 @@ func (m *Model) currentEffort() string {
 	}
 	return m.cfg.Effort
 }
+
+// effortForRequest mirrors the runtime's xhigh floor for supercode: the stored
+// level stays what the user picked, but the provider is asked for at least xhigh
+// while the mode is on. The status line and the statusline-command payload use
+// this, so neither claims "low effort" while a deeper level is being sent.
+func (m *Model) effortForRequest() string {
+	level := m.currentEffort()
+	if !m.supercodeOn() {
+		return level
+	}
+	if effortIndex(level) < effortIndex("xhigh") {
+		return "xhigh"
+	}
+	return level
+}
 func (m *Model) thinkingEnabled() bool {
 	if v, ok := m.session.Metadata["thinking"].(bool); ok {
 		return v
