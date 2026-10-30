@@ -46,3 +46,20 @@ func TestSystemPromptInjectsAuthoritativeRuntimeDate(t *testing.T) {
 		}
 	}
 }
+
+// Every primary prompt has to ask for stepwise progress reports; a long silent
+// tool loop is what leaves the user staring at a spinner with no idea whether
+// anything is happening.
+func TestPrimaryPromptsRequireStepwiseProgress(t *testing.T) {
+	for _, id := range []string{"build", "plan", "coding"} {
+		prompt := Get(id).Prompt
+		for _, want := range []string{"下一步", "正在"} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("%s prompt never asks for a stepwise report (missing %q)", id, want)
+			}
+		}
+	}
+	if !strings.Contains(Get("coding").Prompt, "## 过程汇报") {
+		t.Error("coding prompt has no progress-report section")
+	}
+}
