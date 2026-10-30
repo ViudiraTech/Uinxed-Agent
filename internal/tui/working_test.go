@@ -90,29 +90,46 @@ func TestWorkingVerbHoldsForTheTurnAndChangesOnTheNext(t *testing.T) {
 	}
 }
 
-// The marker is a fixed snowflake. It used to borrow the thinking spinner's
-// bouncing frames, so a settled turn froze on whichever sparkle happened to be
-// in flight — a dot on one turn, an asterisk on the next.
-func TestWorkingGlyphIsAFixedSnowflake(t *testing.T) {
+// A live turn's marker advances with the animation clock, so the line keeps
+// moving even while the model is silent. The settled line holds one fixed
+// snowflake instead of freezing on whichever frame the ticker stopped at.
+func TestWorkingGlyphAnimatesThenSettles(t *testing.T) {
 	th := ThemeByName("claude")
 	m := &Model{session: domain.Session{ID: "s1"}, busy: true, busySince: time.Now().Add(-time.Minute)}
+	m.cfg.Animations = true
 	m.beginTurn()
+
+	seen := map[string]bool{}
 	for frame := 0; frame < 2*len(th.Glyphs.Spinner); frame++ {
 		m.activityFrame = frame
-		if got := stripANSI(m.renderWorkingLine(th)); !strings.HasPrefix(got, th.Glyphs.Thinking+" ") {
-			t.Fatalf("frame %d drew %q, want the fixed snowflake", frame, got)
+		want := th.Glyphs.spinner(frame) + " "
+		got := stripANSI(m.renderWorkingLine(th))
+		if !strings.HasPrefix(got, want) {
+			t.Fatalf("frame %d drew %q, want the %q spinner frame", frame, got, th.Glyphs.spinner(frame))
 		}
+		seen[th.Glyphs.spinner(frame)] = true
 	}
-	// Reduced motion must keep the same marker rather than swapping in a dot.
+	if len(seen) < 2 {
+		t.Fatal("the working marker never changed frames; the spinner is frozen")
+	}
+
+	// Reduced motion pins the marker rather than leaving it on an arbitrary
+	// sparkle size.
 	m.cfg.Animations = false
+	m.activityFrame = 3
 	if got := stripANSI(m.renderWorkingLine(th)); !strings.HasPrefix(got, th.Glyphs.Thinking+" ") {
 		t.Fatalf("reduced motion drew %q, want the fixed snowflake", got)
 	}
 
+	// A settled turn must not move at all.
+	m.cfg.Animations = true
 	m.busy = false
 	m.finishTurn()
-	if got := stripANSI(m.renderWorkingLine(th)); !strings.HasPrefix(got, th.Glyphs.Thinking+" ") {
-		t.Fatalf("the settled line drew %q, want the fixed snowflake", got)
+	for frame := 0; frame < 2*len(th.Glyphs.Spinner); frame++ {
+		m.activityFrame = frame
+		if got := stripANSI(m.renderWorkingLine(th)); !strings.HasPrefix(got, th.Glyphs.Thinking+" ") {
+			t.Fatalf("settled frame %d drew %q, want the fixed snowflake", frame, got)
+		}
 	}
 }
 

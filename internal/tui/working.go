@@ -148,18 +148,17 @@ func (m *Model) workingLineVisible() bool {
 //
 //	✻ Worked for 1m 52s
 func (m *Model) renderWorkingLine(t Theme) string {
-	// The marker is a snowflake that stays put. It used to borrow the thinking
-	// spinner's bouncing frames, which meant a settled turn froze on whichever
-	// sparkle happened to be in flight — a dot on one turn, an asterisk on the
-	// next — and made the line look like a glitch rather than a status. The
-	// shimmer on the verb is what carries the motion now.
-	glyph := t.Glyphs.Thinking
 	style := lipgloss.NewStyle().Foreground(m.workingColor(t)).Bold(true)
 
 	if !m.busy {
 		if m.completionVerb == "" {
 			return ""
 		}
+		// Settled turns keep one fixed snowflake. A finished line has to stop
+		// moving: when it stayed on the spinner it froze on whichever sparkle
+		// happened to be in flight, so the marker differed turn to turn — a dot
+		// here, an asterisk there — which read as a glitch rather than a status.
+		glyph := t.Glyphs.Thinking
 		elapsed := formatWorkingElapsed(m.turnElapsed)
 		if elapsed == "" {
 			return style.Render(glyph + " " + m.completionVerb)
@@ -197,11 +196,22 @@ func (m *Model) renderWorkingLine(t Theme) string {
 		// a label; the plain fallback beats an empty line.
 		verb = "Working"
 	}
-	line := style.Render(glyph) + " " + m.shimmerVerb(t, verb+"…")
+	line := style.Render(m.workingGlyph(t)) + " " + m.shimmerVerb(t, verb+"…")
 	if len(parts) > 0 {
 		line += style.Render(" (" + strings.Join(parts, " · ") + ")")
 	}
 	return line
+}
+
+// workingGlyph is the marker on a live working line: the thinking spinner's
+// frames, advancing with the animation clock so a silent model still reads as in
+// flight. Reduced motion holds the snowflake — freezing a frame mid-cycle would
+// leave the line stuck on an arbitrary sparkle size.
+func (m *Model) workingGlyph(t Theme) string {
+	if !m.cfg.Animations {
+		return t.Glyphs.Thinking
+	}
+	return t.Glyphs.spinner(m.activityFrame)
 }
 
 // shimmerVerb renders the verb with Claude Code's travelling highlight: the text
