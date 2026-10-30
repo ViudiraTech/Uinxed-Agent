@@ -18,21 +18,28 @@ import (
 // floor is what makes the mode mean what its panel says.
 func TestEffectiveEffortRaisesSupercodeToXHigh(t *testing.T) {
 	cases := []struct {
-		name string
-		meta map[string]any
-		want string
+		name              string
+		meta              map[string]any
+		fallbackEffort    string
+		fallbackSupercode bool
+		want              string
 	}{
-		{"off keeps the level", map[string]any{"effort": "low"}, "low"},
-		{"off defaults to high", map[string]any{}, "high"},
-		{"on lifts low", map[string]any{"effort": "low", "supercode": true}, "xhigh"},
-		{"on lifts medium", map[string]any{"effort": "medium", "supercode": true}, "xhigh"},
-		{"on lifts high", map[string]any{"effort": "high", "supercode": true}, "xhigh"},
-		{"on keeps xhigh", map[string]any{"effort": "xhigh", "supercode": true}, "xhigh"},
-		{"on never downgrades max", map[string]any{"effort": "max", "supercode": true}, "max"},
-		{"on with no level", map[string]any{"supercode": true}, "xhigh"},
+		{"off keeps the level", map[string]any{"effort": "low"}, "high", false, "low"},
+		{"off defaults to high", map[string]any{}, "high", false, "high"},
+		{"on lifts low", map[string]any{"effort": "low", "supercode": true}, "high", false, "xhigh"},
+		{"on lifts medium", map[string]any{"effort": "medium", "supercode": true}, "high", false, "xhigh"},
+		{"on lifts high", map[string]any{"effort": "high", "supercode": true}, "high", false, "xhigh"},
+		{"on keeps xhigh", map[string]any{"effort": "xhigh", "supercode": true}, "high", false, "xhigh"},
+		{"on never downgrades max", map[string]any{"effort": "max", "supercode": true}, "high", false, "max"},
+		{"on with no level", map[string]any{"supercode": true}, "high", false, "xhigh"},
+		// The reported bug: a session with no "supercode" key at all (created
+		// before the default was copied in) must still honour the config.
+		{"config default turns it on", map[string]any{"effort": "low"}, "high", true, "xhigh"},
+		{"session override wins over config", map[string]any{"supercode": false}, "high", true, "high"},
+		{"no level falls back to config", map[string]any{}, "max", false, "max"},
 	}
 	for _, tc := range cases {
-		if got := effectiveEffort(tc.meta); got != tc.want {
+		if got := effectiveEffort(tc.meta, tc.fallbackEffort, tc.fallbackSupercode); got != tc.want {
 			t.Errorf("%s: effectiveEffort = %q, want %q", tc.name, got, tc.want)
 		}
 	}

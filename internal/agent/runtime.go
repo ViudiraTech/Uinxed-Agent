@@ -32,8 +32,17 @@ type Runtime struct {
 	// approvalFallback is the mode applied to sessions without an explicit
 	// metadata mode. Guarded by mu.
 	approvalFallback approval.Mode
-	mu               sync.Mutex
-	runs             map[string]*runHandle
+	// effortFallback and supercodeFallback are the configured defaults applied
+	// to sessions that carry no explicit value. The UI reads the same config, so
+	// without these the runtime and the screen disagree for exactly the sessions
+	// the user has not touched — a config with supercode on drew the composer
+	// ring while the request carried neither the mode nor its xhigh floor.
+	// Guarded by mu.
+	effortFallback    string
+	thinkingFallback  bool
+	supercodeFallback bool
+	mu                sync.Mutex
+	runs              map[string]*runHandle
 	// contextWarned records the sessions already told their context is filling
 	// up. Guarded by mu, and cleared when a compaction succeeds so the next
 	// climb earns its own warning.
@@ -53,7 +62,7 @@ func NewRuntime(store storage.Store, registry *tools.Registry, resolver Provider
 	if registry == nil {
 		registry = tools.DefaultRegistry()
 	}
-	r := &Runtime{store: store, registry: registry, resolve: resolver, events: make(chan domain.Event, 256), runs: map[string]*runHandle{}, contextWarned: map[string]bool{}, approvalFallback: approval.DefaultMode}
+	r := &Runtime{store: store, registry: registry, resolve: resolver, events: make(chan domain.Event, 256), runs: map[string]*runHandle{}, contextWarned: map[string]bool{}, approvalFallback: approval.DefaultMode, effortFallback: "high", thinkingFallback: true}
 	r.broker = NewBroker(func(e domain.Event) { r.emitTerminal(e) })
 	return r
 }
@@ -267,10 +276,15 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 		// Project instructions come before the skill index: what this repository
 		// asks for outranks the catalogue of what the agent can load.
 		contextBlock := InstructionsBlock(sess.CWD) + skills.PromptBlock(sess.CWD)
+		// A session that never wrote its own level or mode follows the configured
+		// default, the same way the UI does. Reading it here rather than once per
+		// turn would be cheaper but wrong: /effort mid-turn must take effect on
+		// the next round.
+		fallbackEffort, fallbackThinking, fallbackSupercode := r.settingDefaults()
 		// supercode is a top-level mode. A delegated child inherits the parent's
 		// metadata, and a child that is told it is in orchestration mode recounts
 		// the task into more delegates instead of doing the work it was handed.
-		supercode := supercodeFromMetadata(sess.Metadata) && sess.ParentID == ""
+		supercode := supercodeFromMetadata(sess.Metadata, fallbackSupercode) && sess.ParentID == ""
 		sys := SystemPromptMode(adef, sess.Model, contextBlock, supercode, string(mode))
 		history := contextmgr.FitMessages(sess.Messages, contextmgr.HistoryBudget(sess.Model))
 		msgs := make([]domain.Message, 0, len(history)+1)
@@ -280,7 +294,7 @@ func (r *Runtime) loop(ctx context.Context, p provider.Provider, st *turnState, 
 			msgs = append(msgs, domain.Message{Role: domain.RoleUser, Content: st.referenceContext})
 		}
 		defs := r.registry.ProviderDefinitions(adef.ToolAllowed)
-		req := provider.Request{Model: sess.Model, Messages: msgs, Tools: defs, Effort: effectiveEffort(sess.Metadata), Thinking: thinkingFromMetadata(sess.Metadata)}
+		req := provider.Request{Model: sess.Model, Messages: msgs, Tools: defs, Effort: effectiveEffort(sess.Metadata, fallbackEffort, fallbackSupercode), Thinking: thinkingFromMetadata(sess.Metadata, fallbackThinking)}
 		stream, err := p.Stream(ctx, req)
 		if err != nil {
 			return err
@@ -1214,21 +1228,25 @@ func cloneMeta(in map[string]any) map[string]any {
 	return out
 }
 
-// supercodeFromMetadata reads the concurrent-orchestration toggle. It is a
-// separate flag from the effort level — the two answer different questions:
-// how hard to think, and whether to fan the work out — but turning it on is not
-// free of the level: effectiveEffort raises the request to at least xhigh, which
-// is what the slider's own "xhigh + workflows" caption promises.
-func supercodeFromMetadata(m map[string]any) bool {
-	v, _ := m["supercode"].(bool)
-	return v
+// supercodeFromMetadata reads the concurrent-orchestration toggle, falling back
+// to the configured default when the session carries no explicit value. A
+// session created before the default was copied into metadata — or one whose key
+// was never written — must still honour a config that has the mode on.
+func supercodeFromMetadata(m map[string]any, fallback bool) bool {
+	if v, ok := m["supercode"].(bool); ok {
+		return v
+	}
+	return fallback
 }
 
-func effortFromMetadata(m map[string]any) string {
+func effortFromMetadata(m map[string]any, fallback string) string {
 	if v, ok := m["effort"].(string); ok && v != "" {
 		return v
 	}
-	return "high"
+	if fallback == "" {
+		return "high"
+	}
+	return fallback
 }
 
 // effortOrder is the reasoning scale, weakest first. It is duplicated from
@@ -1251,15 +1269,33 @@ func effortRank(level string) int {
 // prompt — the mode then behaved exactly like the session's existing level,
 // usually xhigh. Enforcing a floor of xhigh here is what makes the toggle mean
 // what the panel says it means. A deeper level the user picked (max) is kept.
-func effectiveEffort(m map[string]any) string {
-	level := effortFromMetadata(m)
-	if !supercodeFromMetadata(m) {
+func effectiveEffort(m map[string]any, fallbackEffort string, fallbackSupercode bool) string {
+	level := effortFromMetadata(m, fallbackEffort)
+	if !supercodeFromMetadata(m, fallbackSupercode) {
 		return level
 	}
 	if effortRank(level) < effortRank("xhigh") {
 		return "xhigh"
 	}
 	return level
+}
+
+// SetSettingDefaults records the configured reasoning defaults. The controller
+// calls it on construction and whenever /effort or /effort supercode changes the
+// saved default, so a session without its own metadata value behaves the way the
+// UI already draws it.
+func (r *Runtime) SetSettingDefaults(effort string, thinking, supercode bool) {
+	r.mu.Lock()
+	r.effortFallback = effort
+	r.thinkingFallback = thinking
+	r.supercodeFallback = supercode
+	r.mu.Unlock()
+}
+
+func (r *Runtime) settingDefaults() (effort string, thinking, supercode bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.effortFallback, r.thinkingFallback, r.supercodeFallback
 }
 
 // liveMode reads the mode from the store, not from the turn's snapshot. The
@@ -1306,11 +1342,11 @@ func (r *Runtime) approvalMode() approval.Mode {
 	defer r.mu.Unlock()
 	return r.approvalFallback
 }
-func thinkingFromMetadata(m map[string]any) bool {
+func thinkingFromMetadata(m map[string]any, fallback bool) bool {
 	if v, ok := m["thinking"].(bool); ok {
 		return v
 	}
-	return true
+	return fallback
 }
 
 func (r *Runtime) Compact(ctx context.Context, sessionID string) error {

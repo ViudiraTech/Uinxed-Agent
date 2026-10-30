@@ -78,6 +78,7 @@ func New(ctx context.Context, cfg *config.Store, log *slog.Logger) (*Controller,
 	c.Runtime = agent.NewRuntime(hybrid, reg, c.resolveProvider)
 	c.Runtime.SetLogger(log)
 	c.Runtime.SetApprovalFallback(approval.Normalize(cfg.Snapshot().ApprovalMode))
+	c.syncSettingDefaults()
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 	c.cancel = streamCancel
 	interval := time.Duration(cfg.Snapshot().StreamRenderIntervalMS) * time.Millisecond
@@ -291,13 +292,23 @@ func (c *Controller) SetEffort(ctx context.Context, sessionID, effort string, se
 	if sessionOnly {
 		return nil
 	}
-	return c.Config.Update(func(x *config.Config) error { x.Effort = effort; return nil })
+	if err := c.Config.Update(func(x *config.Config) error { x.Effort = effort; return nil }); err != nil {
+		return err
+	}
+	c.syncSettingDefaults()
+	return nil
 }
 
 // ClearEffort drops the session's own level so it follows the configured default
 // again, which is what /effort auto means.
 func (c *Controller) ClearEffort(ctx context.Context, sessionID string) error {
-	return c.setSessionMetadata(ctx, sessionID, "effort", "")
+	if err := c.setSessionMetadata(ctx, sessionID, "effort", ""); err != nil {
+		return err
+	}
+	// The session now follows the configured level again, so the runtime has to
+	// stop using whatever it last saw for this session.
+	c.syncSettingDefaults()
+	return nil
 }
 
 // SetSupercode turns concurrent subagent orchestration on or off. It deliberately
@@ -309,7 +320,11 @@ func (c *Controller) SetSupercode(ctx context.Context, sessionID string, on bool
 	if sessionOnly {
 		return nil
 	}
-	return c.Config.Update(func(x *config.Config) error { x.Supercode = on; return nil })
+	if err := c.Config.Update(func(x *config.Config) error { x.Supercode = on; return nil }); err != nil {
+		return err
+	}
+	c.syncSettingDefaults()
+	return nil
 }
 
 // setSessionMetadata writes one session metadata key. An empty value removes it,
@@ -330,8 +345,19 @@ func (c *Controller) SetThinking(ctx context.Context, sessionID string, on bool)
 	if err := c.Config.Update(func(x *config.Config) error { x.Thinking = on; return nil }); err != nil {
 		return err
 	}
+	c.syncSettingDefaults()
 	return c.setSessionMetadata(ctx, sessionID, "thinking", on)
 }
+
+// syncSettingDefaults pushes the saved defaults into the runtime. Sessions that
+// carry their own metadata value are unaffected; the point is the sessions that
+// do not — a config with supercode or thinking switched on used to render as on
+// while the request behaved as off.
+func (c *Controller) syncSettingDefaults() {
+	cfg := c.Config.Snapshot()
+	c.Runtime.SetSettingDefaults(cfg.Effort, cfg.Thinking, cfg.Supercode)
+}
+
 func (c *Controller) ChangeCWD(ctx context.Context, sessionID, dir string) error {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
