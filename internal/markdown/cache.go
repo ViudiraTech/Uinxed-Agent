@@ -32,7 +32,6 @@ func (c *Cache) Render(id string, version, width int, styleKey, content string, 
 	if width < 20 {
 		width = 20
 	}
-	content = terminalutil.SanitizeText(content)
 	k := key{id, version, width, styleKey}
 	c.mu.RLock()
 	v, ok := c.items[k]
@@ -40,15 +39,10 @@ func (c *Cache) Render(id string, version, width int, styleKey, content string, 
 	if ok {
 		return v, nil
 	}
-	r, err := glamour.NewTermRenderer(glamour.WithStyles(ansiConfig(style)), glamour.WithWordWrap(width))
+	out, err := RenderOnce(width, content, style)
 	if err != nil {
 		return "", err
 	}
-	out, err := r.Render(content)
-	if err != nil {
-		return "", err
-	}
-	out = strings.TrimRight(out, "\n")
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, ok := c.items[k]; !ok {
@@ -62,6 +56,30 @@ func (c *Cache) Render(id string, version, width int, styleKey, content string, 
 	}
 	return out, nil
 }
+
+// RenderOnce glams content to a styled string without memoizing it.
+//
+// The streaming path renders the still-open tail of a message every frame, and
+// those partial documents never recur. Routing them through Cache would let a
+// single long answer evict every finished paragraph from its LRU while buying
+// nothing in return, so the tail renders directly and only the closed prefixes
+// (which do repeat) go through the cache.
+func RenderOnce(width int, content string, style Style) (string, error) {
+	if width < 20 {
+		width = 20
+	}
+	content = terminalutil.SanitizeText(content)
+	r, err := glamour.NewTermRenderer(glamour.WithStyles(ansiConfig(style)), glamour.WithWordWrap(width))
+	if err != nil {
+		return "", err
+	}
+	out, err := r.Render(content)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(out, "\n"), nil
+}
+
 func (c *Cache) InvalidateWidth(width int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

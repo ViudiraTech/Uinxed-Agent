@@ -251,7 +251,10 @@ func TestReasoningRawMouseClickTogglesExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestStreamingAssistantUsesLightweightPlainRenderer(t *testing.T) {
+// The live message is styled as Markdown while it streams. It used to sit in a
+// plain renderer until completion, so the whole reply snapped into shape at
+// once — the one moment the reader is least able to follow the change.
+func TestStreamingAssistantRendersMarkdownInFlight(t *testing.T) {
 	c := NewConversation()
 	c.SetSession(domain.Session{ID: "s1"}, 80)
 	lines := c.Render(8, ThemeByName("dark"), RenderOptions{StreamContent: "**hello**", StreamReasoning: "", Activities: nil})
@@ -260,8 +263,12 @@ func TestStreamingAssistantUsesLightweightPlainRenderer(t *testing.T) {
 		b.WriteString(stripANSI(line.Text))
 		b.WriteByte('\n')
 	}
-	if !strings.Contains(b.String(), "**hello**") {
-		t.Fatalf("streaming content should use the lightweight plain renderer until completion:\n%s", b.String())
+	got := b.String()
+	if strings.Contains(got, "**") {
+		t.Fatalf("streaming content still shows literal Markdown emphasis:\n%s", got)
+	}
+	if !strings.Contains(got, "hello") {
+		t.Fatalf("streaming content lost its text:\n%s", got)
 	}
 }
 

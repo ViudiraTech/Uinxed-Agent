@@ -45,7 +45,7 @@ type Conversation struct {
 	mdStyle          md.Style
 	mdKey            string
 	rendered         map[string]renderCacheEntry
-	stream           streamWrap
+	streamMD         streamMarkdown
 	// subagents and subagentProgress are refreshed each frame by Render so a
 	// running delegate call can show the progress of the child run behind it.
 	subagents        []domain.AgentRun
@@ -479,7 +479,17 @@ func (c *Conversation) Render(height int, t Theme, o RenderOptions) []renderLine
 	}
 	if streamContent != "" || streamReasoning != "" || len(streamCalls) > 0 {
 		b := convBlock{ID: "__stream__", StreamID: o.StreamMessageID, Role: domain.RoleAssistant, Content: streamContent, Reasoning: streamReasoning, ToolCalls: streamCalls, Estimate: streamEst, Version: streamVersion(streamContent, streamReasoning, streamCalls)}
-		lines = append(lines, c.renderCached(&b, t, acts, hover, o.Frame)...)
+		rendered := c.renderCached(&b, t, acts, hover, o.Frame)
+		// Markdown styling adds blank lines the plain-text estimate never
+		// counted, so the live block has to correct `bottom` with its real
+		// height just like a materialized block does. Without this the view
+		// clamps against an underestimate and cuts the newest lines off the
+		// bottom of the transcript.
+		if delta := len(rendered) - b.Estimate; delta != 0 {
+			total += delta
+			bottom += delta
+		}
+		lines = append(lines, rendered...)
 	}
 	// Slice from bottom using actual visible line list. When scrolled far into lazily skipped blocks,
 	// estimates keep the location stable while only overscan blocks are materialized.
@@ -556,8 +566,9 @@ func (c *Conversation) renderBlock(b convBlock, t Theme, acts map[string]domain.
 	if strings.TrimSpace(b.Content) != "" {
 		var contentLines []string
 		if b.ID == "__stream__" {
-			// The streaming path wraps incrementally; see streamWrap.
-			contentLines = c.stream.wrap(b.Content, contentW, b.StreamID)
+			// Closed paragraphs render as Markdown while the rest of the reply is
+			// still arriving; see streamMarkdown.
+			contentLines = c.streamMD.render(b.StreamID, b.Content, contentW, c.mdKey, c.cache, c.mdStyle)
 		} else {
 			rendered, err := c.cache.Render(b.ID, b.Version, contentW, c.mdKey, b.Content, c.mdStyle)
 			if err != nil {
